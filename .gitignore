@@ -1,0 +1,33 @@
+# Dependencies
+/vendor/
+/node_modules/
+
+# Logs and Caches
+*.log
+/briqpay-init.log
+/.phpunit.result.cache
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.settings/
+nbproject/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Build and Packages
+/dist/
+/build/
+/packages/
+*.zip
+*.tar.gz
+
+# Environment/Secrets
+.env

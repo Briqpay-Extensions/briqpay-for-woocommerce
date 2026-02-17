@@ -1,0 +1,127 @@
+================================================================================
+BRIQPAY FOR WOOCOMMERCE - DEVELOPER & INTEGRATOR GUIDE
+================================================================================
+
+This guide is intended for developers and technical integrators working with 
+the Briqpay for WooCommerce plugin.
+
+--------------------------------------------------------------------------------
+1. INSTALLATION
+--------------------------------------------------------------------------------
+- Standard WordPress Installation: Upload the 'briqpay-for-woocommerce' folder 
+  to your '/wp-content/plugins/' directory or upload the ZIP via the admin.
+- Activate the plugin through the 'Plugins' menu in WordPress.
+
+--------------------------------------------------------------------------------
+2. ENABLING THE GATEWAY
+--------------------------------------------------------------------------------
+- Once activated, navigate to: WooCommerce > Settings > Payments.
+- Locate 'Briqpay' in the list and toggle the switch to 'Enabled'.
+- Click 'Finish set up' or 'Manage' to enter the configuration screen.
+
+--------------------------------------------------------------------------------
+3. ADMIN CONFIGURATION
+--------------------------------------------------------------------------------
+- Merchant ID (MID): Your unique identifier provided by Briqpay.
+- Shared Secret: Used for API authentication and webhook security.
+- Test Mode: Enable this to use the Briqpay Playground/Sandboxed environment.
+- Order Management: If enabled, WP will automatically trigger captures/refunds 
+  on the Briqpay side when order statuses change in WooCommerce.
+- Logging: Enable this during integration to see a detailed trail in 
+  WooCommerce > Status > Logs.
+
+--------------------------------------------------------------------------------
+4. ORDER MANAGEMENT
+--------------------------------------------------------------------------------
+The plugin supports both automated and manual order management:
+
+- Automated: 
+  - Processing -> Completed: Triggers a full capture.
+  - Refund processed in WC: Triggers a refund in Briqpay.
+- Manual: 
+  - Inside the Order Edit screen, a 'Briqpay Payment Details' meta box appears.
+  - You can perform partial captures by selecting specific items and quantities.
+  - The capture history is displayed directly in the meta box for transparency.
+
+--------------------------------------------------------------------------------
+5. ACTION SCHEDULER & BACKGROUND PROCESSING
+--------------------------------------------------------------------------------
+Webhooks from Briqpay are processed asynchronously to ensure high availability 
+and to prevent timeouts during complex order operations.
+
+- Background Task: Incoming webhooks are enqueued as 'briqpay_v3_process_webhook_callback'.
+- Reliability: If a webhook fails to process (e.g., database lock), Action 
+  Scheduler will automatically retry.
+- Monitoring: You can view the status of these background tasks in:
+  WooCommerce > Status > Scheduled Actions.
+- Recommendation: For high-volume stores, ensure your server CRON is correctly 
+  configured to run the WordPress cron frequently (every minute).
+
+--------------------------------------------------------------------------------
+6. RECOMMENDED WOOCOMMERCE SETTINGS
+--------------------------------------------------------------------------------
+- Guest Checkout: Briqpay works best when 'Allow customers to place orders without 
+  an account' is enabled, as it handles the customer identification itself.
+- Force SSL: Ensure your checkout page is served over HTTPS; otherwise, 
+  the Briqpay iFrame may be blocked by modern browsers.
+- HPOS: This plugin is fully compatible with High-Performance Order Storage.
+
+--------------------------------------------------------------------------------
+7. THEME & DESIGN INTEGRATION
+--------------------------------------------------------------------------------
+The Briqpay iFrame is highly dynamic. To ensure it functions correctly:
+
+- Address Fields: When Briqpay is active, it takes control of the address data. 
+  If you have custom checkout fields or scripts that manipulate address data, 
+  ensure they sync with the WooCommerce Customer object, as the plugin 
+  validates the Briqpay session against the WC Cart/Customer state.
+- Hiding the Placement Button: The plugin adds a '.briqpay-selected' body class. 
+  It uses high-frequency JS sentinels to hide the native 'Place Order' button 
+  to avoid conflicting actions.
+- Recommendations: 
+  - Use standard WooCommerce hooks for UI additions (`woocommerce_before_checkout_form`, etc.).
+  - Avoid using CSS `display: none!important` on standard WC checkout containers 
+    unless you are targeting the `.briqpay-selected` class specifically.
+
+--------------------------------------------------------------------------------
+8. DEVELOPER HOOKS (ACTIONS & FILTERS)
+--------------------------------------------------------------------------------
+Integrators can customize the plugin behavior using the following hooks:
+
+FILTERS:
+- `briqpay_create_session_data`: (array) Modify the payload sent to Briqpay when 
+  creating a checkout session.
+- `briqpay_update_session_data`: (array, string) Modify the update payload.
+- `briqpay_cart_items`: (array) Filter the cart items list before it is mapped 
+  to the Briqpay format.
+- `briqpay_is_available`: (bool) Programmatically enable/disable the gateway.
+- `briqpay_order_metadata`: (array) Add custom metadata to the WC Order when 
+  created via Briqpay.
+
+ACTIONS:
+- `briqpay_before_create_session`: (array) Runs before the API call.
+- `briqpay_after_create_session`: (result, array) Runs after session creation.
+- `briqpay_webhook_received`: (data, session, order) Triggered when a 
+  validated webhook event is processed.
+- `briqpay_payment_complete`: (order, session) Runs when the payment is 
+  fully verified at the return handler.
+
+--------------------------------------------------------------------------------
+CODE EXAMPLE: MANIPULATING THE SESSION PAYLOAD
+--------------------------------------------------------------------------------
+Add this to your theme's functions.php or a custom plugin:
+
+add_filter('briqpay_create_session_data', 'my_custom_briqpay_payload');
+function my_custom_briqpay_payload($data) {
+    // Add custom metadata to the Briqpay session
+    $data['metadata'] = array(
+        'source_platform' => 'Custom Integrator v1.0',
+        'referral_code'   => 'SALE2024'
+    );
+    
+    // Force a specific locale if needed
+    $data['locale'] = 'sv-se';
+    
+    return $data;
+}
+--------------------------------------------------------------------------------

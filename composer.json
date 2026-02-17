@@ -1,0 +1,20 @@
+{
+    "name": "briqpay/briqpay-for-woocommerce",
+    "description": "Briqpay for WooCommerce",
+    "type": "wordpress-plugin",
+    "require-dev": {
+        "phpunit/phpunit": "^9.5",
+        "10up/wp_mock": "^1.0",
+        "mockery/mockery": "^1.4"
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Briqpay\\WooCommerce\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "composer/installers": true
+        }
+    }
+}

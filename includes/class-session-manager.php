@@ -1,0 +1,675 @@
+<?php
+namespace Briqpay\WooCommerce;
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+/**
+ * Briqpay Session Manager
+ */
+class Session_Manager
+{
+    /**
+     * Log message
+     */
+    private function log($message)
+    {
+        if (defined('WC_LOG_DIR')) {
+            $logger = wc_get_logger();
+            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
+        }
+    }
+
+
+    /**
+     * Constructor
+     */
+    public function __construct()
+    {
+        // Initialization
+    }
+
+    /**
+     * Get Briqpay Session ID from WC Session
+     */
+    public static function get_session_id()
+    {
+        return WC()->session->get('briqpay_session_id');
+    }
+
+    /**
+     * Set Briqpay Session ID in WC Session
+     */
+    public static function set_session_id($session_id)
+    {
+        WC()->session->set('briqpay_session_id', $session_id);
+    }
+
+    /**
+     * Create or Update Briqpay Session
+     */
+    public function get_or_create_session()
+    {
+        $this->log('get_or_create_session() entered.');
+
+        /**
+         * Filter to force a new session creation.
+         *
+         * @param bool $force_new Whether to force a new session. Default: false.
+         */
+        if (apply_filters('briqpay_force_new_session', false)) {
+            $this->log('Forcing new session via filter briqpay_force_new_session.');
+            self::set_session_id(null);
+        }
+
+        $session_id = self::get_session_id();
+        $api = $this->get_api();
+
+        if ($this->has_customer_type_changed()) {
+            $this->log('Customer type changed or reset requested, discarding old session and creating new one.');
+            self::set_session_id(null);
+            $session_id = null;
+        }
+
+        if ($session_id) {
+            $this->log('Found existing session: ' . $session_id);
+            // Check if session is still valid/exists
+            $session = $api->get_session($session_id);
+            if (!is_wp_error($session) && !empty($session['sessionId']) && $session['status'] !== 'completed') {
+                $this->log('Existing session is not completed, updating...');
+                // Update session with latest cart
+                $updated_session = $this->update_session($session_id);
+                if (is_wp_error($updated_session)) {
+                    $this->log('Update failed: ' . $updated_session->get_error_message());
+                    return $session; // Fallback to old one if update failed
+                }
+                return $updated_session;
+            }
+            $this->log('Existing session invalid, expired, or completed.');
+        }
+
+        // If customer type changed or no session, create new one
+        $this->log('Creating new session...');
+        $data = $this->get_session_data();
+
+        /**
+         * Filter the session data before creating a new session.
+         *
+         * @param array $data Full session payload.
+         */
+        $data = apply_filters('briqpay_create_session_data', $data);
+
+        /**
+         * Action before a new Briqpay session is created.
+         *
+         * @param array $data Session payload.
+         */
+        do_action('briqpay_before_create_session', $data);
+
+        $session = $api->create_session($data);
+
+        if (is_wp_error($session)) {
+            $this->log('Error creating session: ' . $session->get_error_message());
+        } elseif (!empty($session['sessionId'])) {
+            $this->log('Session created: ' . $session['sessionId']);
+            self::set_session_id($session['sessionId']);
+
+            /**
+             * Action after a new Briqpay session is created.
+             *
+             * @param array $session  API response.
+             * @param array $data     Session payload that was sent.
+             */
+            do_action('briqpay_after_create_session', $session, $data);
+        } else {
+            $this->log('Session creation returned unexpected data: ' . print_r($session, true));
+        }
+
+        return $session;
+    }
+
+    /**
+     * Update Session
+     */
+    public function update_session($session_id)
+    {
+        $api = $this->get_api();
+        $data = $this->get_session_data(true); // Partial update data
+
+        /**
+         * Filter the update payload before PATCH.
+         *
+         * @param array  $data       Update payload.
+         * @param string $session_id Briqpay session ID.
+         */
+        $data = apply_filters('briqpay_update_session_data', $data, $session_id);
+
+        /**
+         * Action before a Briqpay session is updated.
+         *
+         * @param string $session_id Briqpay session ID.
+         * @param array  $data       Update payload.
+         */
+        do_action('briqpay_before_update_session', $session_id, $data);
+
+        $result = $api->update_session($session_id, $data);
+
+        // If update was successful, fetch the full session to get the latest htmlSnippet
+        if (!is_wp_error($result) && isset($result['sessionId'])) {
+            $this->log('Update successful, fetching full session to ensure latest snippet.');
+            $result = $api->get_session($session_id);
+        }
+
+        /**
+         * Action after a Briqpay session is updated.
+         *
+         * @param array|WP_Error $result     API response.
+         * @param string         $session_id Briqpay session ID.
+         */
+        do_action('briqpay_after_update_session', $result, $session_id);
+
+        return $result;
+    }
+
+    /**
+     * Get API Instance
+     */
+    private function get_api()
+    {
+        $settings = get_option('woocommerce_briqpay_settings');
+        return new API($settings['merchant_id'], $settings['shared_secret'], 'yes' === $settings['testmode']);
+    }
+
+    /**
+     * Prepare Session Data
+     */
+    public function get_session_data($update = false)
+    {
+        $this->log('get_session_data() started. Update: ' . ($update ? 'yes' : 'no'));
+
+        if (!function_exists('WC') || null === WC() || null === WC()->cart) {
+            $this->log('Error: WC()->cart is not available.');
+            return array();
+        }
+
+        try {
+            $this->log('Building order data...');
+            $cart_items = $this->get_cart_items();
+
+            // Calculate totals from items to ensure perfect match with Briqpay validation
+            $sum_inc = 0;
+            $sum_ex = 0;
+            foreach ($cart_items as $item) {
+                // sales_tax productType has totalTaxAmount instead of unitPrice/totalAmount
+                if ('sales_tax' === ($item['productType'] ?? '')) {
+                    $sum_inc += $item['totalTaxAmount'];
+                    continue;
+                }
+
+                $item_qty = isset($item['quantity']) ? $item['quantity'] : 1;
+                // Briqpay calculates total as (unitPrice * quantity) + (sum of totalVatAmount)
+                // However, they also validate that (unitPrice * quantity) == totalAmount - totalVatAmount
+                $sum_ex += $item['unitPrice'] * $item_qty;
+                $sum_inc += $item['totalAmount'];
+            }
+
+            $this->log(sprintf('Final Summed Totals: Inc=%d, Ex=%d', $sum_inc, $sum_ex));
+
+            $data = array(
+                'data' => array(
+                    'order' => array(
+                        'currency' => get_woocommerce_currency(),
+                        'amountIncVat' => $sum_inc,
+                        'amountExVat' => $sum_ex,
+                        'cart' => $cart_items,
+                    ),
+                ),
+            );
+
+            // Only include billing/shipping if data exists
+            $billing = $this->get_billing_address();
+            if ($billing !== null) {
+                $data['data']['billing'] = $billing;
+            }
+
+            $shipping = $this->get_shipping_address();
+            if ($shipping !== null) {
+                $data['data']['shipping'] = $shipping;
+            }
+
+            // Handle B2B Company Data
+            if ($this->get_customer_type() === 'business') {
+                $company_name = (null !== WC()->customer) ? WC()->customer->get_billing_company() : '';
+                $data['data']['company'] = array(
+                    'name' => $company_name,
+                    'cin' => '1111111111', // Placeholder CIN as per user request
+                );
+            }
+
+            if (!$update) {
+                $this->log('Building extra session data (non-update)...');
+                $data['product'] = array('type' => 'payment', 'intent' => 'payment_one_time');
+                $data['customerType'] = $this->get_customer_type();
+
+                // Country should strictly follow store base or sell-to location
+                // If selling to specific countries, use the first one as default if customer hasn't chosen one
+                // But user wants it locked to the selling country.
+                $base_country = WC()->countries->get_base_country();
+                $data['country'] = $base_country ?: 'SE';
+
+                $data['locale'] = $this->get_locale();
+
+                $this->log('Setting URLs...');
+                $data['urls'] = array(
+                    'terms' => get_permalink(wc_get_page_id('terms')) ?: get_home_url(),
+                    'redirect' => add_query_arg('briqpay_return', '1', wc_get_checkout_url()),
+                );
+
+                $this->log('Setting hooks...');
+                $data['hooks'] = $this->get_webhooks();
+                $data['modules'] = array(
+                    'loadModules' => array('payment'),
+                    'config' => array(
+                        'payment' => array(
+                            'decision' => array(
+                                'enabled' => true
+                            )
+                        )
+                    )
+                );
+            }
+
+            $this->log('get_session_data() completed.');
+
+            /**
+             * Filter the complete session data before it is used.
+             *
+             * @param array $data   Session data array.
+             * @param bool  $update Whether this is an update (true) or create (false).
+             */
+            $data = apply_filters('briqpay_session_data', $data, $update);
+
+            return $data;
+        } catch (\Exception $e) {
+            $this->log('EXCEPTION in get_session_data: ' . $e->getMessage());
+            return array();
+        }
+    }
+
+    /**
+     * Get Billing Address
+     */
+    private function get_billing_address()
+    {
+        if (null === WC()->customer) {
+            return null;
+        }
+
+        $customer = WC()->customer;
+
+        // Get address fields
+        $email = $customer->get_billing_email();
+        $address = $customer->get_billing_address_1();
+        $city = $customer->get_billing_city();
+        $zip = $customer->get_billing_postcode();
+        $country = $customer->get_billing_country();
+
+        // Only return address if we have complete address data
+        // Require all essential fields: address, city, zip, and country
+        if (empty($address) || empty($city) || empty($zip) || empty($country)) {
+            return null;
+        }
+
+        $billing = array(
+            'firstName' => $customer->get_billing_first_name(),
+            'lastName' => $customer->get_billing_last_name(),
+            'email' => $email,
+            'streetAddress' => $address,
+            'streetAddress2' => $customer->get_billing_address_2(),
+            'zip' => $zip,
+            'city' => $city,
+            'region' => $customer->get_billing_state(),
+            'country' => $country,
+            'phoneNumber' => $customer->get_billing_phone(),
+        );
+
+        /**
+         * Filter the billing address sent to Briqpay.
+         *
+         * @param array $billing Billing address fields.
+         */
+        return apply_filters('briqpay_billing_address', $billing);
+    }
+
+    /**
+     * Get Shipping Address
+     */
+    private function get_shipping_address()
+    {
+        if (null === WC()->customer) {
+            return null;
+        }
+
+        $customer = WC()->customer;
+
+        // Get address fields
+        $address = $customer->get_shipping_address_1();
+        $city = $customer->get_shipping_city();
+        $zip = $customer->get_shipping_postcode();
+        $country = $customer->get_shipping_country();
+
+        // Only return address if we have complete address data
+        // Require all essential fields: address, city, zip, and country
+        if (empty($address) || empty($city) || empty($zip) || empty($country)) {
+            return null;
+        }
+
+        $shipping = array(
+            'firstName' => $customer->get_shipping_first_name(),
+            'lastName' => $customer->get_shipping_last_name(),
+            'email' => $customer->get_billing_email(),
+            'streetAddress' => $address,
+            'streetAddress2' => $customer->get_shipping_address_2(),
+            'zip' => $zip,
+            'city' => $city,
+            'region' => $customer->get_shipping_state(),
+            'country' => $country,
+            'phoneNumber' => $customer->get_billing_phone(),
+        );
+
+        /**
+         * Filter the shipping address sent to Briqpay.
+         *
+         * @param array $shipping Shipping address fields.
+         */
+        return apply_filters('briqpay_shipping_address', $shipping);
+    }
+
+    /**
+     * Get Cart Items
+     */
+    private function get_cart_items()
+    {
+        $this->log('get_cart_items() started.');
+        $items = array();
+        $cart = WC()->cart;
+
+        $is_us = (null !== WC()->customer) ? 'US' === WC()->customer->get_billing_country() : false;
+        $total_tax_amount_float = 0;
+
+        // Products
+        foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
+            /** @var \WC_Product $product */
+            $product = $cart_item['data'];
+            $this->log('Processing item: ' . (is_object($product) ? $product->get_name() : 'non-object'));
+
+            // Calculate V3 cart fields
+            $quantity = $cart_item['quantity'];
+            $line_total_exc_tax = $cart_item['line_subtotal'];
+            $line_tax = $cart_item['line_subtotal_tax'];
+            $line_total_inc_tax = $line_total_exc_tax + $line_tax;
+
+            // Unit price excluding VAT in minor units
+            $unit_price = $this->to_int($line_total_exc_tax / $quantity);
+
+            // Tax rate (e.g. 2500 for 25%)
+            $tax_rate = $is_us ? 0 : $this->get_tax_rate($product);
+
+            // Unit price including VAT
+            $unit_price_inc_vat = $is_us ? $unit_price : $this->to_int($line_total_inc_tax / $quantity);
+
+            // Total VAT amount
+            $total_vat_amount = $is_us ? 0 : $this->to_int($line_tax);
+
+            // Total amount including VAT (before discounts)
+            $total_amount = $is_us ? ($unit_price * $quantity) : $this->to_int($line_total_inc_tax);
+
+            if ($is_us) {
+                $total_tax_amount_float += $line_tax;
+            }
+
+            // Get product image URL
+            $image_url = wp_get_attachment_image_url($product->get_image_id(), 'medium');
+
+            // Robust reference fallback: SKU -> ID -> Empty string
+            $sku = $product->get_sku();
+            $id = $product->get_id();
+            $reference = !empty($sku) ? $sku : (!empty($id) ? (string) $id : "");
+
+            $item = array(
+                'productType' => 'physical',
+                'reference' => $reference,
+                'name' => $product->get_name() ?: __('Product', 'briqpay-for-woocommerce'),
+                'quantity' => $quantity,
+                'quantityUnit' => 'pc',
+                'unitPrice' => $unit_price,
+                'taxRate' => $tax_rate,
+                'unitPriceIncVat' => $unit_price_inc_vat,
+                'totalVatAmount' => $total_vat_amount,
+                'totalAmount' => $total_amount,
+            );
+
+            // Only add imageUrl if image exists
+            if ($image_url) {
+                $item['imageUrl'] = $image_url;
+            }
+
+            $items[] = $item;
+        }
+
+        // Shipping
+        $this->log('Shipping Total: ' . $cart->get_shipping_total());
+        if ($cart->get_shipping_total() > 0) {
+            $this->log('Processing shipping...');
+            $ship_total = $cart->get_shipping_total();
+            $ship_tax = $cart->get_shipping_tax();
+
+            $items[] = array(
+                'productType' => 'shipping_fee',
+                'reference' => 'shipping',
+                'name' => __('Shipping', 'woocommerce'),
+                'quantity' => 1,
+                'quantityUnit' => 'pc',
+                'unitPrice' => $this->to_int($ship_total),
+                'taxRate' => $is_us ? 0 : (int) (($ship_total > 0) ? ($ship_tax / $ship_total * 10000) : 0),
+                'unitPriceIncVat' => $is_us ? $this->to_int($ship_total) : $this->to_int($ship_total + $ship_tax),
+                'totalVatAmount' => $is_us ? 0 : $this->to_int($ship_tax),
+                'totalAmount' => $is_us ? $this->to_int($ship_total) : $this->to_int($ship_total + $ship_tax),
+            );
+
+            if ($is_us) {
+                $total_tax_amount_float += $ship_tax;
+            }
+        }
+
+        // Fees
+        foreach ($cart->get_fees() as $fee) {
+            $this->log('Processing fee: ' . $fee->name);
+            $items[] = array(
+                'productType' => 'physical',
+                'reference' => $fee->id,
+                'name' => $fee->name,
+                'quantity' => 1,
+                'quantityUnit' => 'pc',
+                'unitPrice' => $this->to_int($fee->total),
+                'taxRate' => $is_us ? 0 : (int) (($fee->total > 0) ? ($fee->tax / $fee->total * 10000) : 0),
+                'unitPriceIncVat' => $is_us ? $this->to_int($fee->total) : $this->to_int($fee->total + $fee->tax),
+                'totalVatAmount' => $is_us ? 0 : $this->to_int($fee->tax),
+                'totalAmount' => $is_us ? $this->to_int($fee->total) : $this->to_int($fee->total + $fee->tax),
+            );
+
+            if ($is_us) {
+                $total_tax_amount_float += $fee->tax;
+            }
+        }
+
+        // Coupons/Discounts
+        foreach ($cart->get_applied_coupons() as $coupon_code) {
+            $this->log('Processing coupon: ' . $coupon_code);
+            $discount_amount = (float) $cart->get_coupon_discount_amount($coupon_code);
+            $discount_tax = (float) $cart->get_coupon_discount_tax_amount($coupon_code);
+
+            if ($discount_amount > 0 || $discount_tax > 0) {
+                // Get the actual tax rate from the first cart item's product
+                // instead of deriving it from amounts (which causes precision errors like 25.01%)
+                $coupon_tax_rate = 0;
+                $cart_contents = $cart->get_cart();
+                if (!empty($cart_contents)) {
+                    $first_item = reset($cart_contents);
+                    if (isset($first_item['data']) && $first_item['data'] instanceof \WC_Product) {
+                        $coupon_tax_rate = $this->get_tax_rate($first_item['data']);
+                    }
+                }
+
+                $items[] = array(
+                    'productType' => 'physical',
+                    'reference' => 'discount_' . $coupon_code,
+                    'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $coupon_code),
+                    'quantity' => 1,
+                    'quantityUnit' => 'pc',
+                    'unitPrice' => $this->to_int($discount_amount * -1),
+                    'taxRate' => $is_us ? 0 : $coupon_tax_rate,
+                    'unitPriceIncVat' => $is_us ? $this->to_int($discount_amount * -1) : $this->to_int(($discount_amount + $discount_tax) * -1),
+                    'totalVatAmount' => $is_us ? 0 : $this->to_int($discount_tax * -1),
+                    'totalAmount' => $is_us ? $this->to_int($discount_amount * -1) : $this->to_int(($discount_amount + $discount_tax) * -1),
+                );
+
+                if ($is_us) {
+                    $total_tax_amount_float -= $discount_tax;
+                }
+            }
+        }
+
+        // Add USA Sales Tax Item
+        if ($is_us && $total_tax_amount_float > 0) {
+            $items[] = array(
+                'productType' => 'sales_tax',
+                'name' => __('Sales tax', 'briqpay-for-woocommerce'),
+                'reference' => 'sales_tax',
+                'totalTaxAmount' => $this->to_int($total_tax_amount_float),
+            );
+        }
+
+        $this->log('get_cart_items() completed.');
+
+        /**
+         * Filter the cart items sent to Briqpay.
+         *
+         * @param array $items Cart line items array.
+         */
+        return apply_filters('briqpay_cart_items', $items);
+    }
+
+    /**
+     * Map float value to integer (multiplier 100)
+     */
+    private function to_int($value)
+    {
+        if (is_string($value)) {
+            if (strpos($value, '<span') !== false) {
+                $value = strip_tags($value);
+            }
+            // Remove all whitespace including non-breaking spaces
+            $value = preg_replace('/\s+|&nbsp;/', '', $value);
+            // Handle comma as decimal separator
+            $value = str_replace(',', '.', $value);
+            // Remove everything except numbers and decimal point
+            $value = preg_replace('/[^\d.]/', '', $value);
+        }
+
+        return (int) round(((float) $value) * 100);
+    }
+
+    /**
+     * Get Tax Rate in Briqpay format (e.g. 2500 for 25%)
+     */
+    private function get_tax_rate($product)
+    {
+        $tax_class = $product->get_tax_class();
+        $tax_rates = \WC_Tax::get_rates($tax_class);
+        if (!empty($tax_rates)) {
+            $rate = reset($tax_rates);
+            return (int) ($rate['rate'] * 100);
+        }
+        return 0;
+    }
+
+    /**
+     * Get Customer Type
+     */
+    private function get_customer_type()
+    {
+        $customer_type = 'consumer';
+        if (null !== WC() && null !== WC()->customer) {
+            $billing_company = WC()->customer->get_billing_company();
+            $customer_type = !empty($billing_company) ? 'business' : 'consumer';
+        }
+
+        return apply_filters('briqpay_customer_type', $customer_type);
+    }
+
+    /**
+     * Check if customer type has changed
+     */
+    private function has_customer_type_changed()
+    {
+        if (null === WC() || null === WC()->session) {
+            return false;
+        }
+
+        $current_type = $this->get_customer_type();
+        $previous_type = WC()->session->get('briqpay_customer_type');
+
+        // Initial session creation - save the type and don't force change
+        if (!$previous_type) {
+            WC()->session->set('briqpay_customer_type', $current_type);
+            return false;
+        }
+
+        $changed = $previous_type !== $current_type;
+
+        if ($changed) {
+            $this->log(sprintf('Customer type changed: %s -> %s. Forcing new session.', $previous_type, $current_type));
+            WC()->session->set('briqpay_customer_type', $current_type);
+        }
+
+        return $changed;
+    }
+
+    /**
+     * Get Locale
+     */
+    private function get_locale()
+    {
+        return strtolower(str_replace('_', '-', get_locale()));
+    }
+
+    /**
+     * Get Webhooks
+     */
+    private function get_webhooks()
+    {
+        $url = home_url('/wc-api/briqpay_webhook');
+        return array(
+            array(
+                'eventType' => 'order_status',
+                'statuses' => array('order_pending', 'order_rejected', 'order_cancelled', 'order_approved_not_captured'),
+                'method' => 'POST',
+                'url' => $url,
+            ),
+            array(
+                'eventType' => 'capture_status',
+                'statuses' => array('pending', 'approved', 'rejected'),
+                'method' => 'POST',
+                'url' => $url,
+            ),
+            array(
+                'eventType' => 'refund_status',
+                'statuses' => array('pending', 'approved', 'rejected'),
+                'method' => 'POST',
+                'url' => $url,
+            ),
+        );
+    }
+}

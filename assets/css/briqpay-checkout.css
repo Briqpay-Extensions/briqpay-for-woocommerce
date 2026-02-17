@@ -1,0 +1,52 @@
+/**
+ * Briqpay Checkout Styles
+ */
+
+/* Classic Checkout */
+body.briqpay-selected #place_order {
+    display: none !important;
+}
+
+/* WooCommerce Blocks Checkout */
+body.briqpay-selected .wc-block-components-checkout-place-order-button {
+    display: none !important;
+}
+
+/* Ensure the iframe container is visible */
+#briqpay-iframe-container {
+    width: 100%;
+    padding-top: 10px;
+    min-height: 300px;
+    clear: both;
+    position: relative;
+}
+
+/* Hide Payment Method Selection */
+.wc_payment_method.payment_method_briqpay>label:first-child,
+.wc_payment_method.payment_method_briqpay>input[type="radio"],
+label[for="payment_method_briqpay"],
+.wc-block-components-radio-control__option[for*="briqpay"],
+label[for*="briqpay"] .wc-block-components-radio-control__label-group,
+.wc-block-components-checkout-payment-method-option--briqpay .wc-block-components-radio-control__option {
+    display: none !important;
+}
+
+/* Remove borders and padding from the container if it's the only method */
+.wc_payment_method.payment_method_briqpay {
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Checkout Overlay */
+#briqpay-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #fff;
+    opacity: 0.8;
+    z-index: 9998;
+}

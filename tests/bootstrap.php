@@ -1,0 +1,44 @@
+<?php
+
+if (!defined('ABSPATH')) {
+    define('ABSPATH', __DIR__ . '/../../');
+}
+
+if (!defined('BRIQPAY_WC_PATH')) {
+    define('BRIQPAY_WC_PATH', __DIR__ . '/../');
+}
+
+// WordPress Constants
+if (!defined('MINUTE_IN_SECONDS'))
+    define('MINUTE_IN_SECONDS', 60);
+if (!defined('HOUR_IN_SECONDS'))
+    define('HOUR_IN_SECONDS', 3600);
+if (!defined('DAY_IN_SECONDS'))
+    define('DAY_IN_SECONDS', 86400);
+if (!defined('WEEK_IN_SECONDS'))
+    define('WEEK_IN_SECONDS', 604800);
+if (!defined('MONTH_IN_SECONDS'))
+    define('MONTH_IN_SECONDS', 2592000);
+if (!defined('YEAR_IN_SECONDS'))
+    define('YEAR_IN_SECONDS', 31536000);
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+WP_Mock::bootstrap();
+
+/**
+ * Custom autoloader for Briqpay classes to handle class-*.php naming convention.
+ */
+spl_autoload_register(function ($class) {
+    if (strpos($class, 'Briqpay\\WooCommerce\\') !== 0) {
+        return;
+    }
+
+    $relative_class = substr($class, strlen('Briqpay\\WooCommerce\\'));
+    $filename = 'class-' . str_replace('_', '-', strtolower($relative_class)) . '.php';
+    $file = __DIR__ . '/../includes/' . $filename;
+
+    if (file_exists($file)) {
+        require_once $file;
+    }
+});
