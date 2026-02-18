@@ -143,17 +143,19 @@ class Gateway extends \WC_Payment_Gateway
         $is_checkout_page = is_page(wc_get_page_id('checkout'));
         $has_checkout_block = has_block('woocommerce/checkout');
         $has_iframe_shortcode = has_shortcode($post_content, 'briqpay_iframe');
+        $has_b2b_shortcode = has_shortcode($post_content, 'briqpay_b2b_checkout');
 
         $this->log(sprintf(
-            'Script Check: is_checkout=%s, is_checkout_page=%s, has_checkout_block=%s, has_iframe_shortcode=%s, page_id=%s',
+            'Script Check: is_checkout=%s, is_checkout_page=%s, has_checkout_block=%s, has_iframe_shortcode=%s, has_b2b_shortcode=%s, page_id=%s',
             $is_checkout ? 'yes' : 'no',
             $is_checkout_page ? 'yes' : 'no',
             $has_checkout_block ? 'yes' : 'no',
             $has_iframe_shortcode ? 'yes' : 'no',
+            $has_b2b_shortcode ? 'yes' : 'no',
             get_the_ID()
         ));
 
-        if (!$is_checkout && !$is_checkout_page && !$has_checkout_block && !$has_iframe_shortcode) {
+        if (!$is_checkout && !$is_checkout_page && !$has_checkout_block && !$has_iframe_shortcode && !$has_b2b_shortcode) {
             $this->log('payment_scripts() aborted. Not identified as checkout or iframe page.');
             return;
         }

@@ -35,7 +35,6 @@ class Blocks_Integration extends AbstractPaymentMethodType
     public function is_active()
     {
         $active = !empty($this->settings['enabled']) && 'yes' === $this->settings['enabled'];
-        error_log('[Briqpay] Blocks_Integration::is_active: ' . ($active ? 'yes' : 'no'));
         return $active;
     }
 

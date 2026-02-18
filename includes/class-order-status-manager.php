@@ -47,6 +47,7 @@ class Order_Status_Manager
             'exclude_from_search' => true,
             'show_in_admin_all_list' => false,
             'show_in_admin_status_list' => false,
+            // translators: %s: number of orders
             'label_count' => _n_noop('Briqpay Temporary <span class="count">(%s)</span>', 'Briqpay Temporary <span class="count">(%s)</span>', 'briqpay-for-woocommerce'),
         ));
     }
@@ -96,9 +97,10 @@ class Order_Status_Manager
         $threshold_hours = 5;
         $threshold_time = time() - ($threshold_hours * HOUR_IN_SECONDS);
 
+        // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
         $args = array(
             'status' => 'pending',
-            'meta_key' => '_briqpay_session_id',
+            'meta_key' => '_briqpay_session_id', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
             'date_created' => '<' . $threshold_time,
             'limit' => 50, // Process in batches
         );

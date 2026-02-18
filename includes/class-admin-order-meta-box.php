@@ -62,7 +62,7 @@ class Admin_Order_Meta_Box
         $order = ($post_or_order instanceof \WC_Order) ? $post_or_order : wc_get_order($post_or_order->ID);
 
         if (!$order || 'briqpay' !== $order->get_payment_method()) {
-            echo '<p>' . __('Not a Briqpay order.', 'briqpay-for-woocommerce') . '</p>';
+            echo '<p>' . esc_html__('Not a Briqpay order.', 'briqpay-for-woocommerce') . '</p>';
             return;
         }
 
@@ -77,10 +77,10 @@ class Admin_Order_Meta_Box
         ?>
         <div class="briqpay-admin-meta-box">
             <p>
-                <strong><?php _e('Session ID:', 'briqpay-for-woocommerce'); ?></strong><br>
+                <strong><?php esc_html_e('Session ID:', 'briqpay-for-woocommerce'); ?></strong><br>
                 <?php if ($backoffice_url): ?>
                     <a href="<?php echo esc_url($backoffice_url); ?>" target="_blank"
-                        title="<?php _e('Open in Briqpay Backoffice', 'briqpay-for-woocommerce'); ?>">
+                        title="<?php esc_attr_e('Open in Briqpay Backoffice', 'briqpay-for-woocommerce'); ?>">
                         <?php echo esc_html($session_id); ?> <span class="dashicons dashicons-external"></span>
                     </a>
                 <?php else: ?>
@@ -88,15 +88,15 @@ class Admin_Order_Meta_Box
                 <?php endif; ?>
             </p>
             <p>
-                <strong><?php _e('PSP Name:', 'briqpay-for-woocommerce'); ?></strong><br>
+                <strong><?php esc_html_e('PSP Name:', 'briqpay-for-woocommerce'); ?></strong><br>
                 <?php echo esc_html($psp_name ?: __('N/A', 'briqpay-for-woocommerce')); ?>
             </p>
             <p>
-                <strong><?php _e('Integration:', 'briqpay-for-woocommerce'); ?></strong><br>
+                <strong><?php esc_html_e('Integration:', 'briqpay-for-woocommerce'); ?></strong><br>
                 <?php echo esc_html($integration_name ?: __('N/A', 'briqpay-for-woocommerce')); ?>
             </p>
             <p>
-                <strong><?php _e('Reservation ID:', 'briqpay-for-woocommerce'); ?></strong><br>
+                <strong><?php esc_html_e('Reservation ID:', 'briqpay-for-woocommerce'); ?></strong><br>
                 <?php echo esc_html($reservation_id ?: __('N/A', 'briqpay-for-woocommerce')); ?>
             </p>
 
@@ -104,7 +104,7 @@ class Admin_Order_Meta_Box
 
             <!-- Captures Section -->
             <div class="briqpay-captures-section">
-                <h4><?php _e('Captures', 'briqpay-for-woocommerce'); ?></h4>
+                <h4><?php esc_html_e('Captures', 'briqpay-for-woocommerce'); ?></h4>
                 <?php $this->render_captures_list($order); ?>
                 <?php $this->render_capture_form($order); ?>
             </div>
@@ -183,7 +183,7 @@ class Admin_Order_Meta_Box
     {
         $history = $order->get_meta('_briqpay_capture_history') ?: array();
         if (empty($history)) {
-            echo '<p><i>' . __('No captures found.', 'briqpay-for-woocommerce') . '</i></p>';
+            echo '<p><i>' . esc_html__('No captures found.', 'briqpay-for-woocommerce') . '</i></p>';
             return;
         }
 
@@ -192,7 +192,7 @@ class Admin_Order_Meta_Box
             <div class="briqpay-capture-item">
                 <strong>ID: <?php echo esc_html($capture['captureId']); ?></strong><br>
                 <span><?php echo esc_html($capture['date']); ?></span><br>
-                <span><?php echo wc_price($capture['amount'] / 100); ?></span>
+                <span><?php echo wp_kses_post(wc_price($capture['amount'] / 100)); ?></span>
             </div>
             <?php
         }
@@ -210,19 +210,20 @@ class Admin_Order_Meta_Box
 
         $remaining = $this->get_remaining_items($order);
         if (empty($remaining)) {
-            echo '<p><span class="dashicons dashicons-yes-alt"></span> ' . __('Fully captured.', 'briqpay-for-woocommerce') . '</p>';
+            echo '<p><span class="dashicons dashicons-yes-alt"></span> ' . esc_html__('Fully captured.', 'briqpay-for-woocommerce') . '</p>';
             return;
         }
 
         ?>
-        <a href="#" class="button briqpay-capture-form-toggle"><?php _e('Manual Capture', 'briqpay-for-woocommerce'); ?></a>
+        <a href="#"
+            class="button briqpay-capture-form-toggle"><?php esc_html_e('Manual Capture', 'briqpay-for-woocommerce'); ?></a>
         <div class="briqpay-capture-form">
-            <input type="hidden" id="briqpay_capture_order_id" value="<?php echo $order->get_id(); ?>">
+            <input type="hidden" id="briqpay_capture_order_id" value="<?php echo esc_attr($order->get_id()); ?>">
             <table>
                 <thead>
                     <tr>
-                        <th><?php _e('Item', 'briqpay-for-woocommerce'); ?></th>
-                        <th><?php _e('Qty', 'briqpay-for-woocommerce'); ?></th>
+                        <th><?php esc_html_e('Item', 'briqpay-for-woocommerce'); ?></th>
+                        <th><?php esc_html_e('Qty', 'briqpay-for-woocommerce'); ?></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -244,7 +245,7 @@ class Admin_Order_Meta_Box
                 </tbody>
             </table>
             <button
-                class="button button-primary briqpay-do-capture"><?php _e('Execute Capture', 'briqpay-for-woocommerce'); ?></button>
+                class="button button-primary briqpay-do-capture"><?php esc_html_e('Execute Capture', 'briqpay-for-woocommerce'); ?></button>
             <div class="briqpay-capture-loading" style="display:none;"><span class="spinner is-active"></span></div>
         </div>
         <?php
@@ -313,11 +314,33 @@ class Admin_Order_Meta_Box
             $remaining[] = array(
                 'productType' => 'shipping_fee',
                 'reference' => 'shipping',
-                'name' => __('Shipping', 'woocommerce'),
+                'name' => __('Shipping', 'briqpay-for-woocommerce'),
                 'quantity' => 1,
                 'unitPriceIncVat' => (int) round(($shipping_total + $shipping_tax) * 100),
                 'taxRate' => $this->get_shipping_tax_rate($order),
             );
+        }
+
+        // Coupons / Discounts
+        foreach ($order->get_items('coupon') as $coupon_item) {
+            $code = $coupon_item->get_code();
+            $ref = 'discount_' . $code;
+
+            if (!isset($captured_counts[$ref])) {
+                $discount_amount = (float) $coupon_item->get_discount();
+                $discount_tax = (float) $coupon_item->get_discount_tax();
+                $amount_inc_vat = ($discount_amount + $discount_tax) * -1;
+
+                $remaining[] = array(
+                    'productType' => 'physical',
+                    'reference' => $ref,
+                    // translators: %s: coupon code
+                    'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                    'quantity' => 1,
+                    'unitPriceIncVat' => (int) round($amount_inc_vat * 100),
+                    'taxRate' => $this->get_coupon_tax_rate($order),
+                );
+            }
         }
 
         return $remaining;
@@ -365,8 +388,9 @@ class Admin_Order_Meta_Box
             wp_send_json_error(array('message' => __('Permission denied.', 'briqpay-for-woocommerce')));
         }
 
-        $order_id = intval($_POST['order_id']);
-        $items = $_POST['items'] ?? array();
+        $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- items contain numeric capture data validated by Order_Management
+        $items = isset($_POST['items']) ? wp_unslash($_POST['items']) : array();
 
         if (!$order_id || empty($items)) {
             wp_send_json_error(array('message' => __('Invalid request.', 'briqpay-for-woocommerce')));

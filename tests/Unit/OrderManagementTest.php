@@ -42,9 +42,13 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_subtotal')->andReturn(100.00);
         $item->shouldReceive('get_subtotal_tax')->andReturn(25.00);
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 25.00)));
+        $item->shouldReceive('get_product_id')->andReturn(123);
+        $item->shouldReceive('get_variation_id')->andReturn(0);
+        $item->shouldReceive('get_code')->andReturn('shipping');
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
+        $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
         $order->shouldReceive('get_fees')->andReturn(array());
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());
@@ -87,7 +91,8 @@ class OrderManagementTest extends TestCase
         $parent_item->shouldReceive('get_quantity')->andReturn(1);
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
-        $order->shouldReceive('get_items')->andReturn(array($parent_item));
+        $order->shouldReceive('get_items')->with()->andReturn(array($parent_item));
+        $order->shouldReceive('get_items')->with('line_item')->andReturn(array($parent_item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
         $order->shouldReceive('get_item')->with(12345)->andReturn($parent_item);
         $order->shouldReceive('get_fees')->andReturn(array());
@@ -103,6 +108,9 @@ class OrderManagementTest extends TestCase
         $refund_item->shouldReceive('get_name')->andReturn('Test Product');
         $refund_item->shouldReceive('get_total')->andReturn(-50.00);
         $refund_item->shouldReceive('get_total_tax')->andReturn(-12.50);
+        $refund_item->shouldReceive('get_subtotal')->andReturn(-50.00);
+        $refund_item->shouldReceive('get_subtotal_tax')->andReturn(-12.50);
+        $refund_item->shouldReceive('get_code')->andReturn('sku1');
         $refund_item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 12.50)));
 
         $refund->shouldReceive('get_items')->with()->andReturn(array($refund_item));
@@ -143,6 +151,7 @@ class OrderManagementTest extends TestCase
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
+        $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());
         $order->shouldReceive('get_shipping_total')->andReturn(99.99);
@@ -194,13 +203,27 @@ class OrderManagementTest extends TestCase
         $parent_item->shouldReceive('get_quantity')->andReturn(1);
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
-        $order->shouldReceive('get_items')->andReturn(array($parent_item));
+        $order->shouldReceive('get_items')->with()->andReturn(array($parent_item));
+        $order->shouldReceive('get_items')->with('line_item')->andReturn(array($parent_item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
         $order->shouldReceive('get_fees')->andReturn(array());
 
         // Mock Refund with shipping
         $refund = Mockery::mock('WC_Order_Refund');
-        $refund->shouldReceive('get_items')->with()->andReturn(array());
+        $refund_item = Mockery::mock('WC_Order_Item_Product');
+        $refund_item->shouldReceive('get_product')->andReturn($this->mockProduct('SKU1', 'Test', 123));
+        $refund_item->shouldReceive('get_product_id')->andReturn(123);
+        $refund_item->shouldReceive('get_variation_id')->andReturn(0);
+        $refund_item->shouldReceive('get_quantity')->andReturn(0);
+        $refund_item->shouldReceive('get_name')->andReturn('Test');
+        $refund_item->shouldReceive('get_total')->andReturn(0.00);
+        $refund_item->shouldReceive('get_total_tax')->andReturn(0.00);
+        $refund_item->shouldReceive('get_subtotal')->andReturn(0.00);
+        $refund_item->shouldReceive('get_subtotal_tax')->andReturn(0.00);
+        $refund_item->shouldReceive('get_taxes')->andReturn(array('total' => array()));
+        $refund_item->shouldReceive('get_code')->andReturn('sku1');
+
+        $refund->shouldReceive('get_items')->with()->andReturn(array($refund_item));
         $refund->shouldReceive('get_items')->with('coupon')->andReturn(array());
 
         $refund_shipping = Mockery::mock('WC_Order_Item_Shipping');
@@ -259,6 +282,7 @@ class OrderManagementTest extends TestCase
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
+        $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
         $order->shouldReceive('get_fees')->andReturn(array());
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());

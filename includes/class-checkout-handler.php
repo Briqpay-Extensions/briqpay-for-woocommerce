@@ -226,6 +226,7 @@ class Checkout_Handler
      */
     public function handle_briqpay_return()
     {
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         if (!isset($_GET['briqpay_return'])) {
             return;
         }
@@ -238,17 +239,18 @@ class Checkout_Handler
         if (!$session_id) {
             $this->log('Error: No session ID found in WC session.');
             wc_add_notice(__('Payment session not found.', 'briqpay-for-woocommerce'), 'error');
-            wp_redirect(wc_get_checkout_url());
+            wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
 
         // Find the existing temporary order
+        // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
         $order = $this->get_order_by_session_id($session_id);
 
         if (!$order) {
             $this->log('Warning: No temporary order found for session. This should not happen.');
             wc_add_notice(__('Order not found.', 'briqpay-for-woocommerce'), 'error');
-            wp_redirect(wc_get_checkout_url());
+            wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
 
@@ -262,7 +264,7 @@ class Checkout_Handler
         if (is_wp_error($session)) {
             $this->log('Error retrieving session: ' . $session->get_error_message());
             wc_add_notice(__('Could not verify payment.', 'briqpay-for-woocommerce'), 'error');
-            wp_redirect(wc_get_checkout_url());
+            wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
 
@@ -318,10 +320,57 @@ class Checkout_Handler
 
         $order->save();
 
+        // B2B specific cleanup - Must happen BEFORE early exit to ensure data reset
+        $is_b2b = (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) || (isset($_COOKIE['briqpay_b2b_active']) && $_COOKIE['briqpay_b2b_active'] === '1');
+        if ($is_b2b) {
+            $this->log('B2B Checkout detected. Resetting customer session and fail-safe cookies.');
+
+            // Clear all flags and cookies
+            if (null !== WC() && null !== WC()->session) {
+                WC()->session->set('briqpay_b2b_active', false);
+                WC()->session->set('briqpay_customer_type', null);
+                WC()->session->set('briqpay_prev_b2b_active', null);
+            }
+            Session_Manager::set_session_id(null); // This clears both session and cookie
+
+            setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
+
+            // Reset customer address data to prevent persistence for next business user
+            if (null !== WC() && null !== WC()->customer) {
+                $this->log('Clearing customer address data for B2B cleanup.');
+                WC()->customer->set_billing_first_name('');
+                WC()->customer->set_billing_last_name('');
+                WC()->customer->set_billing_company('');
+                WC()->customer->set_billing_address_1('');
+                WC()->customer->set_billing_address_2('');
+                WC()->customer->set_billing_city('');
+                WC()->customer->set_billing_state('');
+                WC()->customer->set_billing_postcode('');
+                WC()->customer->set_billing_country('');
+                WC()->customer->set_billing_email('');
+                WC()->customer->set_billing_phone('');
+
+                WC()->customer->set_shipping_first_name('');
+                WC()->customer->set_shipping_last_name('');
+                WC()->customer->set_shipping_company('');
+                WC()->customer->set_shipping_address_1('');
+                WC()->customer->set_shipping_address_2('');
+                WC()->customer->set_shipping_city('');
+                WC()->customer->set_shipping_state('');
+                WC()->customer->set_shipping_postcode('');
+                WC()->customer->set_shipping_country('');
+                WC()->customer->save();
+            }
+
+            if (null !== WC() && null !== WC()->session) {
+                WC()->session->save_data();
+            }
+        }
+
         // If already upgraded to pending, just redirect now after updating title
         if ($order->has_status(array('pending', 'processing', 'completed'))) {
             $this->log('Order already processed. Redirecting to order received page.');
-            wp_redirect($order->get_checkout_order_received_url());
+            wp_safe_redirect($order->get_checkout_order_received_url());
             exit;
         }
 
@@ -331,9 +380,10 @@ class Checkout_Handler
 
         if ($order_status !== 'completed') {
             $this->log('Session not completed. Status: ' . $order_status);
-            $order->add_order_note(__('Payment verification failed. Status: ' . $order_status, 'briqpay-for-woocommerce'));
+            // translators: %s: session status
+            $order->add_order_note(sprintf(__('Payment verification failed. Status: %s', 'briqpay-for-woocommerce'), $order_status));
             wc_add_notice(__('Payment not approved.', 'briqpay-for-woocommerce'), 'error');
-            wp_redirect(wc_get_checkout_url());
+            wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
 
@@ -354,7 +404,7 @@ class Checkout_Handler
         WC()->cart->empty_cart();
 
         // Redirect to order received page
-        wp_redirect($order->get_checkout_order_received_url());
+        wp_safe_redirect($order->get_checkout_order_received_url());
         exit;
     }
 
@@ -364,8 +414,8 @@ class Checkout_Handler
     private function get_order_by_session_id($session_id)
     {
         $orders = wc_get_orders(array(
-            'meta_key' => '_briqpay_session_id',
-            'meta_value' => $session_id,
+            'meta_key' => '_briqpay_session_id', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+            'meta_value' => $session_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
             'limit' => 1,
         ));
         return !empty($orders) ? reset($orders) : null;
@@ -374,21 +424,19 @@ class Checkout_Handler
     /**
      * AJAX: Get Session
      */
-    /**
-     * AJAX: Get Session
-     */
     public function ajax_get_session()
     {
+        check_ajax_referer('briqpay_nonce', 'nonce');
         $this->log('ajax_get_session() triggered.');
         $this->log('POST data: ' . json_encode($_POST));
-        check_ajax_referer('briqpay_nonce', 'nonce');
 
         // Capture total BEFORE processing to detect changes
         $total_before = WC()->cart->get_total('edit');
 
         // Handle Blocks Data
         if (isset($_POST['blocks_data'])) {
-            $blocks_data = json_decode(stripslashes($_POST['blocks_data']), true);
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JSON decoded and each field sanitized individually below
+            $blocks_data = json_decode(wp_unslash($_POST['blocks_data']), true);
             if ($blocks_data) {
                 $this->log('Updating WC Customer from blocks data: ' . json_encode($blocks_data));
                 // Update Billing
@@ -448,7 +496,8 @@ class Checkout_Handler
         // Update WC Customer data from posted form data if available (Classic Checkout)
         if (isset($_POST['checkout_data'])) {
             $checkout_data = array();
-            parse_str($_POST['checkout_data'], $checkout_data);
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- data is sanitized per-field below
+            parse_str(wp_unslash($_POST['checkout_data']), $checkout_data);
 
             if (!empty($checkout_data)) {
                 $this->log('Updating WC Customer from checkout data.');
@@ -551,6 +600,7 @@ class Checkout_Handler
         }
 
         $this->log('AJAX Success.');
+        WC()->session->save_data();
         wp_send_json_success($session);
     }
 
@@ -561,7 +611,7 @@ class Checkout_Handler
     {
         check_ajax_referer('briqpay_nonce', 'nonce');
 
-        $session_id = sanitize_text_field($_POST['sessionId']);
+        $session_id = isset($_POST['sessionId']) ? sanitize_text_field(wp_unslash($_POST['sessionId'])) : '';
         if (!$session_id) {
             wp_send_json_error(array('message' => 'Missing session ID'));
         }
@@ -849,8 +899,24 @@ class Checkout_Handler
         }
 
         // Set shipping
-        $shipping_methods = WC()->checkout->get_posted_data()['shipping_method'] ?? array();
-        // This part needs more robust mapping from WC checkout session
+        $chosen_methods = WC()->session->get('chosen_shipping_methods');
+        if (!empty($chosen_methods)) {
+            $shipping_packages = WC()->shipping()->get_packages();
+            foreach ($shipping_packages as $i => $package) {
+                if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
+                    $rate = $package['rates'][$chosen_methods[$i]];
+                    $item = new \WC_Order_Item_Shipping();
+                    $item->set_props(array(
+                        'method_title' => $rate->label,
+                        'method_id' => $rate->method_id,
+                        'instance_id' => $rate->instance_id,
+                        'total' => wc_format_decimal($rate->cost),
+                        'taxes' => array('total' => $rate->taxes),
+                    ));
+                    $order->add_item($item);
+                }
+            }
+        }
 
         // Get PSP display name from session data using robust lookup
         $psp_name = 'Briqpay';

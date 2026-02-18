@@ -1,0 +1,144 @@
+/**
+ * Briqpay B2B Checkout Styles
+ */
+
+.woocommerce {
+    width: 100%;
+    margin: 0 auto;
+}
+
+form.woocommerce-checkout {
+    margin: 0 auto;
+    max-width: 1400px;
+    width: 100%;
+}
+
+/* Hide standard payment method selection on B2B page */
+.briqpay-b2b-page #payment,
+.briqpay-b2b-page #order_review_heading,
+.briqpay-b2b-page .woocommerce-checkout-payment {
+    display: none !important;
+}
+
+.briqpay-b2b-checkout-wrapper {
+    display: flex;
+    flex-direction: row;
+    gap: 60px;
+    align-items: flex-start;
+    justify-content: center;
+    margin: 60px auto;
+}
+
+/* Order Summary Column */
+.briqpay-b2b-summary-column {
+    flex: 0 0 450px;
+    order: 2;
+    /* Summary on the right by default */
+    background: #fdfdfd;
+    padding: 30px;
+    border-radius: 12px;
+    border: 1px solid #eee;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+}
+
+.briqpay-b2b-summary-column h3 {
+    margin-top: 0;
+    font-size: 1.25em;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+
+/* iframe Column */
+.briqpay-b2b-iframe-column {
+    flex: 0 1 750px;
+    min-width: 600px;
+    order: 1;
+    /* iframe on the left */
+}
+
+#briqpay-iframe-container {
+    min-width: 600px;
+    width: 100%;
+}
+
+/* Table styling within summary */
+.briqpay-order-summary table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 0;
+}
+
+.briqpay-order-summary table th,
+.briqpay-order-summary table td {
+    padding: 15px 0;
+    border-bottom: 1px solid #eee;
+    text-align: left;
+    vertical-align: middle;
+}
+
+.briqpay-order-summary table th:last-child,
+.briqpay-order-summary table td:last-child {
+    text-align: right;
+}
+
+.briqpay-order-summary table tr.order-total th,
+.briqpay-order-summary table tr.order-total td {
+    border-bottom: none;
+    font-weight: bold;
+    font-size: 1.3em;
+    padding-top: 25px;
+    color: #333;
+}
+
+.briqpay-order-summary .product-quantity {
+    color: #888;
+    font-size: 0.9em;
+    margin-left: 5px;
+}
+
+/* Mobile Responsive */
+@media screen and (max-width: 768px) {
+    .briqpay-b2b-checkout-wrapper {
+        flex-direction: column-reverse;
+        /* Summary ABOVE iframe */
+        gap: 40px;
+        margin: 20px 0;
+        padding: 0;
+    }
+
+    .briqpay-b2b-summary-column {
+        flex: none;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 20px;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+        background: #fdfdfd;
+    }
+
+    .briqpay-b2b-iframe-column {
+        flex: none;
+        width: 100%;
+        min-width: 0;
+        padding: 0;
+    }
+
+    #briqpay-iframe-container {
+        min-width: 0;
+        width: 100%;
+    }
+}
+
+/* Loader Styles */
+.briqpay-loader .spinner {
+    display: inline-block;
+    margin-bottom: 15px;
+}
+
+/* Hide native WC checkout buttons and method selection if they leak in */
+body.briqpay-b2b-page #place_order,
+body.briqpay-b2b-page .form-row.place-order {
+    display: none !important;
+}

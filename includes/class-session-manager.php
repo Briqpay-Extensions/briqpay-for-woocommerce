@@ -35,7 +35,14 @@ class Session_Manager
      */
     public static function get_session_id()
     {
-        return WC()->session->get('briqpay_session_id');
+        $session_id = (null !== WC() && null !== WC()->session) ? WC()->session->get('briqpay_session_id') : null;
+
+        // Fail-safe: recover from cookie if session is lost
+        if (!$session_id && isset($_COOKIE['briqpay_session_id'])) {
+            $session_id = sanitize_text_field(wp_unslash($_COOKIE['briqpay_session_id']));
+        }
+
+        return $session_id;
     }
 
     /**
@@ -43,7 +50,15 @@ class Session_Manager
      */
     public static function set_session_id($session_id)
     {
-        WC()->session->set('briqpay_session_id', $session_id);
+        if (null !== WC() && null !== WC()->session) {
+            WC()->session->set('briqpay_session_id', $session_id);
+        }
+
+        if ($session_id) {
+            setcookie('briqpay_session_id', $session_id, time() + HOUR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN);
+        } else {
+            setcookie('briqpay_session_id', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
+        }
     }
 
     /**
@@ -53,44 +68,59 @@ class Session_Manager
     {
         $this->log('get_or_create_session() entered.');
 
-        /**
-         * Filter to force a new session creation.
-         *
-         * @param bool $force_new Whether to force a new session. Default: false.
-         */
-        if (apply_filters('briqpay_force_new_session', false)) {
-            $this->log('Forcing new session via filter briqpay_force_new_session.');
+        $force_new_input = false;
+        $force_new = apply_filters('briqpay_force_new_session', $force_new_input);
+        if ($force_new) {
+            $this->log(sprintf('Forcing new session via filter briqpay_force_new_session: TRUE (Input was: %s)', $force_new_input ? 'TRUE' : 'FALSE'));
             self::set_session_id(null);
+        } else {
+            $this->log('briqpay_force_new_session filter: FALSE');
         }
 
         $session_id = self::get_session_id();
+        $type_changed = $this->has_customer_type_changed();
+
+        $this->log(sprintf(
+            'Session Stats - ID: %s, Force New: %s, Type Changed: %s',
+            $session_id ?: 'NONE',
+            $force_new ? 'YES' : 'NO',
+            $type_changed ? 'YES' : 'NO'
+        ));
+
+        if ($force_new || $type_changed || !$session_id) {
+            if (!$session_id) {
+                $this->log('No session ID found or forced new, creating new one.');
+            }
+            return $this->create_session();
+        }
+
+        $this->log('Found existing session: ' . $session_id);
         $api = $this->get_api();
 
-        if ($this->has_customer_type_changed()) {
-            $this->log('Customer type changed or reset requested, discarding old session and creating new one.');
-            self::set_session_id(null);
-            $session_id = null;
-        }
-
-        if ($session_id) {
-            $this->log('Found existing session: ' . $session_id);
-            // Check if session is still valid/exists
-            $session = $api->get_session($session_id);
-            if (!is_wp_error($session) && !empty($session['sessionId']) && $session['status'] !== 'completed') {
-                $this->log('Existing session is not completed, updating...');
-                // Update session with latest cart
-                $updated_session = $this->update_session($session_id);
-                if (is_wp_error($updated_session)) {
-                    $this->log('Update failed: ' . $updated_session->get_error_message());
-                    return $session; // Fallback to old one if update failed
-                }
-                return $updated_session;
+        // Check if session is still valid/exists
+        $session = $api->get_session($session_id);
+        if (!is_wp_error($session) && !empty($session['sessionId']) && $session['status'] !== 'completed') {
+            $this->log('Existing session is not completed, updating...');
+            // Update session with latest cart
+            $updated_session = $this->update_session($session_id);
+            if (is_wp_error($updated_session)) {
+                $this->log('Update failed: ' . $updated_session->get_error_message());
+                return $session; // Fallback to old one if update failed
             }
-            $this->log('Existing session invalid, expired, or completed.');
+            return $updated_session;
         }
 
-        // If customer type changed or no session, create new one
+        $this->log('Existing session invalid, expired, or completed. Creating new one.');
+        return $this->create_session();
+    }
+
+    /**
+     * Create a new Briqpay session
+     */
+    private function create_session()
+    {
         $this->log('Creating new session...');
+        $api = $this->get_api();
         $data = $this->get_session_data();
 
         /**
@@ -123,7 +153,7 @@ class Session_Manager
              */
             do_action('briqpay_after_create_session', $session, $data);
         } else {
-            $this->log('Session creation returned unexpected data: ' . print_r($session, true));
+            $this->log('Session creation returned unexpected data.');
         }
 
         return $session;
@@ -238,8 +268,17 @@ class Session_Manager
                 $data['data']['shipping'] = $shipping;
             }
 
-            // Handle B2B Company Data
-            if ($this->get_customer_type() === 'business') {
+            // Handle B2B Company/Billing/Shipping Data
+            $is_b2b_shortcode = (bool) apply_filters('briqpay_is_b2b_active', (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')));
+
+            // Omit company/billing/shipping data if we are in B2B mode and updating (PATCH)
+            // because these modules are active and Briqpay owns the data.
+            if ($is_b2b_shortcode && $update) {
+                unset($data['data']['billing']);
+                unset($data['data']['shipping']);
+            }
+
+            if ($this->get_customer_type() === 'business' && !$is_b2b_shortcode) {
                 $company_name = (null !== WC()->customer) ? WC()->customer->get_billing_company() : '';
                 $data['data']['company'] = array(
                     'name' => $company_name,
@@ -468,7 +507,7 @@ class Session_Manager
             $items[] = array(
                 'productType' => 'shipping_fee',
                 'reference' => 'shipping',
-                'name' => __('Shipping', 'woocommerce'),
+                'name' => __('Shipping', 'briqpay-for-woocommerce'),
                 'quantity' => 1,
                 'quantityUnit' => 'pc',
                 'unitPrice' => $this->to_int($ship_total),
@@ -525,6 +564,7 @@ class Session_Manager
                 $items[] = array(
                     'productType' => 'physical',
                     'reference' => 'discount_' . $coupon_code,
+                    // translators: %s: coupon code
                     'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $coupon_code),
                     'quantity' => 1,
                     'quantityUnit' => 'pc',
@@ -568,7 +608,7 @@ class Session_Manager
     {
         if (is_string($value)) {
             if (strpos($value, '<span') !== false) {
-                $value = strip_tags($value);
+                $value = wp_strip_all_tags($value);
             }
             // Remove all whitespace including non-breaking spaces
             $value = preg_replace('/\s+|&nbsp;/', '', $value);
@@ -618,23 +658,51 @@ class Session_Manager
             return false;
         }
 
-        $current_type = $this->get_customer_type();
-        $previous_type = WC()->session->get('briqpay_customer_type');
+        $current_type = (string) $this->get_customer_type();
+        $previous_type = (string) WC()->session->get('briqpay_customer_type');
 
-        // Initial session creation - save the type and don't force change
-        if (!$previous_type) {
+        $current_b2b_active = (bool) apply_filters('briqpay_is_b2b_active', (bool) WC()->session->get('briqpay_b2b_active'));
+        $previous_b2b_active = WC()->session->get('briqpay_prev_b2b_active');
+
+        $this->log(sprintf(
+            'Type Check - Current: %s, Prev: %s | B2B Active - Current: %s, Prev: %s',
+            $current_type,
+            $previous_type,
+            $current_b2b_active ? 'YES' : 'NO',
+            $previous_b2b_active === null ? 'NULL' : ($previous_b2b_active ? 'YES' : 'NO')
+        ));
+
+        // 1. First-time initialization of session flags
+        if (empty($previous_type)) {
+            $this->log('Initializing Briqpay session type for the first time: ' . $current_type);
             WC()->session->set('briqpay_customer_type', $current_type);
-            return false;
+            WC()->session->set('briqpay_prev_b2b_active', $current_b2b_active);
+            return false; // Stay stable on first-ever load
         }
 
-        $changed = $previous_type !== $current_type;
-
-        if ($changed) {
+        // 2. Check for actual Customer Type Change
+        $type_changed = ($previous_type !== $current_type);
+        if ($type_changed) {
             $this->log(sprintf('Customer type changed: %s -> %s. Forcing new session.', $previous_type, $current_type));
             WC()->session->set('briqpay_customer_type', $current_type);
         }
 
-        return $changed;
+        // 3. Check for B2B Mode Transition
+        $b2b_changed = false;
+        if (null !== $previous_b2b_active) {
+            $previous_b2b_active = (bool) $previous_b2b_active;
+            $b2b_changed = ($current_b2b_active !== $previous_b2b_active);
+            if ($b2b_changed) {
+                $this->log(sprintf('B2B Active state changed: %s -> %s. Forcing new session.', $previous_b2b_active ? 'yes' : 'no', $current_b2b_active ? 'yes' : 'no'));
+                WC()->session->set('briqpay_prev_b2b_active', $current_b2b_active);
+            }
+        } else {
+            // First time seeing B2B flag, initialize it and don't trigger change
+            $this->log('Initializing B2B active state: ' . ($current_b2b_active ? 'yes' : 'no'));
+            WC()->session->set('briqpay_prev_b2b_active', $current_b2b_active);
+        }
+
+        return $type_changed || $b2b_changed;
     }
 
     /**

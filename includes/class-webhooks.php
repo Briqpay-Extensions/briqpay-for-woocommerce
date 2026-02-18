@@ -28,7 +28,9 @@ class Webhooks
         $payload = file_get_contents('php://input');
 
         // Log receipt for debugging, but don't fail on signature since it's not mandatory for this project
-        $header_signature = $_SERVER['HTTP_X_BRIQ_SIGNATURE'] ?? ($_SERVER['HTTP_X_BRIQPAY_SIGNATURE'] ?? '');
+        $briq_sig = isset($_SERVER['HTTP_X_BRIQ_SIGNATURE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_BRIQ_SIGNATURE'])) : '';
+        $briqpay_sig = isset($_SERVER['HTTP_X_BRIQPAY_SIGNATURE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_BRIQPAY_SIGNATURE'])) : '';
+        $header_signature = $briq_sig ?: $briqpay_sig;
         $this->log('Webhook received. Signature Header: ' . ($header_signature ?: 'none'));
 
         $data = json_decode($payload, true);
@@ -155,9 +157,10 @@ class Webhooks
      */
     private function get_order_by_session_id($session_id)
     {
+        // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
         $orders = wc_get_orders(array(
-            'meta_key' => '_briqpay_session_id',
-            'meta_value' => $session_id,
+            'meta_key' => '_briqpay_session_id', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+            'meta_value' => $session_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
             'limit' => 1,
         ));
         return !empty($orders) ? reset($orders) : null;
@@ -180,6 +183,7 @@ class Webhooks
                 break;
             case 'order_rejected':
             case 'order_cancelled':
+                // translators: %s: order status
                 $order->update_status('cancelled', sprintf(__('Briqpay: Order %s.', 'briqpay-for-woocommerce'), $status));
                 break;
         }
@@ -256,6 +260,7 @@ class Webhooks
                 return;
             }
 
+            // translators: %s: capture ID
             $order->add_order_note(sprintf(__('Briqpay: Capture approved. ID: %s', 'briqpay-for-woocommerce'), $capture_id));
 
             // Store capture ID for potential refunds
