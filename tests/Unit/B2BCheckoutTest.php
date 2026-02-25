@@ -12,6 +12,7 @@ class B2BCheckoutTest extends TestCase
 
     private $b2b;
     public static $wc_return = null;
+    public static $wc_received_return = false;
     public static $ajax_return = false;
     public static $referer_return = '';
 
@@ -21,16 +22,31 @@ class B2BCheckoutTest extends TestCase
         WP_Mock::setUp();
 
         self::$wc_return = null;
+        self::$wc_received_return = false;
         self::$ajax_return = false;
         self::$referer_return = '';
 
         // Dynamic mocks
-        WP_Mock::userFunction('WC', array('return' => function () {
-            return self::$wc_return; }));
-        WP_Mock::userFunction('wp_doing_ajax', array('return' => function () {
-            return self::$ajax_return; }));
-        WP_Mock::userFunction('wp_get_raw_referer', array('return' => function () {
-            return self::$referer_return; }));
+        WP_Mock::userFunction('WC', array(
+            'return' => function () {
+                return self::$wc_return;
+            }
+        ));
+        WP_Mock::userFunction('is_order_received_page', array(
+            'return' => function () {
+                return self::$wc_received_return;
+            }
+        ));
+        WP_Mock::userFunction('wp_doing_ajax', array(
+            'return' => function () {
+                return self::$ajax_return;
+            }
+        ));
+        WP_Mock::userFunction('wp_get_raw_referer', array(
+            'return' => function () {
+                return self::$referer_return;
+            }
+        ));
 
         // Static mocks
         WP_Mock::userFunction('is_singular', array('return' => false));
