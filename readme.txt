@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.4
+Stable tag: 1.0.5
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -31,6 +31,10 @@ Briqpay for WooCommerce allows you to integrate the Briqpay V3 payment platform 
 3. Configure your Briqpay settings in WooCommerce > Settings > Payments > Briqpay.
 
 == Changelog ==
+
+= 1.0.5 =
+* Fixed an issue where B2B checkout redirected to an "empty cart" page instead of order confirmation.
+* Prevented unnecessary Briqpay session initialization on the success page.
 
 = 1.0.4 =
 * We have added more robust handling of redirect url for b2b checkout

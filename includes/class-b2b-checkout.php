@@ -344,6 +344,12 @@ class B2b_Checkout
             return '';
         }
 
+        // If we are on the order received page, we should let the standard
+        // WooCommerce checkout handle the view (which renders the thank you page).
+        if (is_order_received_page()) {
+            return do_shortcode('[woocommerce_checkout]');
+        }
+
         if (WC()->cart->is_empty()) {
             return '<p>' . esc_html__('Your cart is empty.', 'briqpay-for-woocommerce') . '</p>';
         }
