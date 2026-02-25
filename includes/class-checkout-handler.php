@@ -33,7 +33,7 @@ class Checkout_Handler
         add_action('wp_ajax_briqpay_make_decision', array($this, 'ajax_make_decision'));
         add_action('wp_ajax_nopriv_briqpay_make_decision', array($this, 'ajax_make_decision'));
 
-        add_action('template_redirect', array($this, 'handle_briqpay_return'));
+        add_action('template_redirect', array($this, 'handle_briqpay_return'), 5);
         add_filter('body_class', array($this, 'add_body_class'));
         add_action('wp_head', array($this, 'output_critical_css'));
         add_filter('woocommerce_order_get_created_via', array($this, 'force_briqpay_origin'), 10, 2);
@@ -320,53 +320,6 @@ class Checkout_Handler
 
         $order->save();
 
-        // B2B specific cleanup - Must happen BEFORE early exit to ensure data reset
-        $is_b2b = (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) || (isset($_COOKIE['briqpay_b2b_active']) && $_COOKIE['briqpay_b2b_active'] === '1');
-        if ($is_b2b) {
-            $this->log('B2B Checkout detected. Resetting customer session and fail-safe cookies.');
-
-            // Clear all flags and cookies
-            if (null !== WC() && null !== WC()->session) {
-                WC()->session->set('briqpay_b2b_active', false);
-                WC()->session->set('briqpay_customer_type', null);
-                WC()->session->set('briqpay_prev_b2b_active', null);
-            }
-            Session_Manager::set_session_id(null); // This clears both session and cookie
-
-            setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
-
-            // Reset customer address data to prevent persistence for next business user
-            if (null !== WC() && null !== WC()->customer) {
-                $this->log('Clearing customer address data for B2B cleanup.');
-                WC()->customer->set_billing_first_name('');
-                WC()->customer->set_billing_last_name('');
-                WC()->customer->set_billing_company('');
-                WC()->customer->set_billing_address_1('');
-                WC()->customer->set_billing_address_2('');
-                WC()->customer->set_billing_city('');
-                WC()->customer->set_billing_state('');
-                WC()->customer->set_billing_postcode('');
-                WC()->customer->set_billing_country('');
-                WC()->customer->set_billing_email('');
-                WC()->customer->set_billing_phone('');
-
-                WC()->customer->set_shipping_first_name('');
-                WC()->customer->set_shipping_last_name('');
-                WC()->customer->set_shipping_company('');
-                WC()->customer->set_shipping_address_1('');
-                WC()->customer->set_shipping_address_2('');
-                WC()->customer->set_shipping_city('');
-                WC()->customer->set_shipping_state('');
-                WC()->customer->set_shipping_postcode('');
-                WC()->customer->set_shipping_country('');
-                WC()->customer->save();
-            }
-
-            if (null !== WC() && null !== WC()->session) {
-                WC()->session->save_data();
-            }
-        }
-
         // If already upgraded to pending, just redirect now after updating title
         if ($order->has_status(array('pending', 'processing', 'completed'))) {
             $this->log('Order already processed. Redirecting to order received page.');
@@ -399,6 +352,19 @@ class Checkout_Handler
          * @param array    $session Briqpay session from API.
          */
         do_action('briqpay_payment_complete', $order, $session);
+
+        // B2B specific cleanup - Move here to only run on success
+        $is_b2b = (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) || (isset($_COOKIE['briqpay_b2b_active']) && $_COOKIE['briqpay_b2b_active'] === '1');
+        if ($is_b2b) {
+            $this->log('B2B Checkout Success. Performing cleanup...');
+            if (null !== WC() && null !== WC()->session) {
+                WC()->session->set('briqpay_b2b_active', false);
+                WC()->session->set('briqpay_customer_type', null);
+                WC()->session->set('briqpay_prev_b2b_active', null);
+            }
+            Session_Manager::set_session_id(null);
+            setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
+        }
 
         // Clear cart
         WC()->cart->empty_cart();
@@ -806,7 +772,8 @@ class Checkout_Handler
             wp_send_json_success(array(
                 'message' => 'Decision processed',
                 'session_id' => $session_id,
-                'order_id' => $order->get_id()
+                'order_id' => $order->get_id(),
+                'redirect_url' => add_query_arg('briqpay_return', '1', $this->get_current_url())
             ));
         } catch (\Exception $e) {
             $this->log('Error creating order: ' . $e->getMessage());
@@ -1150,5 +1117,16 @@ class Checkout_Handler
     public function render_briqpay_iframe()
     {
         return '<div id="briqpay-iframe-container"></div>';
+    }
+
+    /**
+     * Get Current URL helper
+     */
+    private function get_current_url()
+    {
+        if (wp_doing_ajax()) {
+            return wp_get_raw_referer();
+        }
+        return (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
     }
 }

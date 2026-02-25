@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.3
+Stable tag: 1.0.4
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -31,6 +31,10 @@ Briqpay for WooCommerce allows you to integrate the Briqpay V3 payment platform 
 3. Configure your Briqpay settings in WooCommerce > Settings > Payments > Briqpay.
 
 == Changelog ==
+
+= 1.0.4 =
+* We have added more robust handling of redirect url for b2b checkout
+* added update support
 
 = 1.0.3 =
 * Added address synchronization for B2B checkout (zip/postcode update).

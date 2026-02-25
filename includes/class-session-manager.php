@@ -302,7 +302,7 @@ class Session_Manager
                 $this->log('Setting URLs...');
                 $data['urls'] = array(
                     'terms' => get_permalink(wc_get_page_id('terms')) ?: get_home_url(),
-                    'redirect' => add_query_arg('briqpay_return', '1', wc_get_checkout_url()),
+                    'redirect' => $this->get_redirect_url(),
                 );
 
                 $this->log('Setting hooks...');
@@ -739,5 +739,38 @@ class Session_Manager
                 'url' => $url,
             ),
         );
+    }
+
+    /**
+     * Get Redirect URL
+     * 
+     * Dynamically determines the return URL. If we are on a B2B shortcode page,
+     * we should return to that same page to ensure the handler is triggered 
+     * in the correct context.
+     */
+    private function get_redirect_url()
+    {
+        $url = wc_get_checkout_url();
+
+        // 1. Check if we are currently on a page (B2B shortcode might be on a custom slug)
+        // We use the referer if it's an AJAX call, or the current REQUEST_URI if it's a page load.
+        $current_url = '';
+        if (wp_doing_ajax()) {
+            $current_url = wp_get_raw_referer();
+        } else {
+            $current_url = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
+        }
+
+        if (!empty($current_url)) {
+            // If the current URL contains 'b2b', it's highly likely our custom checkout page.
+            // Standard WC checkout URL usually ends in /checkout/
+            if (strpos($current_url, 'b2b') !== false) {
+                $url = $current_url;
+            }
+        }
+
+        // Standardize: Remove existing query args and add our return flag
+        $url = strtok($url, '?');
+        return add_query_arg('briqpay_return', '1', $url);
     }
 }

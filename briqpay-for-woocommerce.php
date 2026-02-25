@@ -3,9 +3,10 @@
  * Plugin Name: Briqpay for WooCommerce
  * Plugin URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Description: A professional payment gateway for Briqpay V3 in WooCommerce.
- * Version: 1.0.3
+ * Version: 1.0.4
  * Author: Briqpay
  * Author URI: https://briqpay.com
+ * Update URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Text Domain: briqpay-for-woocommerce
  * Domain Path: /languages
  * Requires at least: 5.8
@@ -21,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('BRIQPAY_WC_VERSION', '1.0.3');
+define('BRIQPAY_WC_VERSION', '1.0.4');
 define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
 define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
 define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
@@ -29,162 +30,167 @@ define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
 /**
  * Main Briqpay Class
  */
-class Briqpay_WooCommerce
-{
-
+if (!class_exists('Briqpay_WooCommerce')) {
     /**
-     * @var Briqpay_WooCommerce
+     * Main Briqpay Class
      */
-    private static $instance;
-
-    /**
-     * Get Instance
-     */
-    public static function get_instance()
-    {
-        if (null === self::$instance) {
-            self::$instance = new self();
-        }
-        return self::$instance;
-    }
-
-    /**
-     * Constructor
-     */
-    private function __construct()
-    {
-        $this->init();
-    }
-
-    /**
-     * Initialize the plugin
-     */
-    private function init()
-    {
-        // Autoloader for PSR-4
-        spl_autoload_register(array($this, 'autoload'));
-
-        // Declare HPOS compatibility
-        add_action('before_woocommerce_init', array($this, 'declare_hpos_compatibility'));
-
-        // Hooks
-        add_action('plugins_loaded', array($this, 'on_plugins_loaded'));
-        add_filter('woocommerce_payment_gateways', array($this, 'add_gateway'), 20);
-        add_filter('woocommerce_available_payment_gateways', array($this, 'check_available_gateways'), 999);
-
-        if (did_action('woocommerce_blocks_loaded')) {
-            $this->register_blocks_integration();
-        } else {
-            add_action('woocommerce_blocks_loaded', array($this, 'register_blocks_integration'));
-        }
-
-        // Classic Checkout detection
-        add_action('woocommerce_checkout_billing', function () {
-            // Keep this for future diagnostics if needed, but hushed for now
-        });
-
-        // Blocks Checkout detection (REST API)
-        add_action('woocommerce_blocks_checkout_get_checkout_data', function () {
-            // Keep this for future diagnostics if needed, but hushed for now
-        });
-    }
-
-    /**
-     * Register Blocks Integration
-     */
-    public function register_blocks_integration()
+    class Briqpay_WooCommerce
     {
 
-        add_action('woocommerce_blocks_payment_method_type_registration', function ($payment_method_registry) {
-            try {
-                $integration = new \Briqpay\WooCommerce\Blocks_Integration();
-                $payment_method_registry->register($integration);
-            } catch (\Exception $e) {
-                $this->log('ERROR registering blocks integration: ' . $e->getMessage());
+        /**
+         * @var Briqpay_WooCommerce
+         */
+        private static $instance;
+
+        /**
+         * Get Instance
+         */
+        public static function get_instance()
+        {
+            if (null === self::$instance) {
+                self::$instance = new self();
             }
-        });
-    }
-
-
-    /**
-     * Check available gateways for diagnostics
-     */
-    public function check_available_gateways($gateways)
-    {
-        return $gateways;
-    }
-
-    /**
-     * PSR-4 Autoloader
-     */
-    public function autoload($class)
-    {
-        $prefix = 'Briqpay\\WooCommerce\\';
-        $base_dir = BRIQPAY_WC_PATH . 'includes/';
-
-        $len = strlen($prefix);
-        if (strncmp($prefix, $class, $len) !== 0) {
-            return;
+            return self::$instance;
         }
 
-        $relative_class = substr($class, $len);
-        $file = $base_dir . 'class-' . str_replace('_', '-', strtolower(str_replace('\\', '/', $relative_class))) . '.php';
-
-        if (file_exists($file)) {
-            require $file;
-        }
-    }
-
-    /**
-     * Declare HPOS compatibility
-     */
-    public function declare_hpos_compatibility()
-    {
-        if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
-            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
-        }
-    }
-
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
-
-    /**
-     * On plugins loaded
-     */
-    public function on_plugins_loaded()
-    {
-        if (!class_exists('WC_Payment_Gateway')) {
-            return;
+        /**
+         * Constructor
+         */
+        private function __construct()
+        {
+            $this->init();
         }
 
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            $this->log('Initializing Briqpay components...');
+        /**
+         * Initialize the plugin
+         */
+        private function init()
+        {
+            // Autoloader for PSR-4
+            spl_autoload_register(array($this, 'autoload'));
+
+            // Declare HPOS compatibility
+            add_action('before_woocommerce_init', array($this, 'declare_hpos_compatibility'));
+
+            // Hooks
+            add_action('plugins_loaded', array($this, 'on_plugins_loaded'));
+            add_filter('woocommerce_payment_gateways', array($this, 'add_gateway'), 20);
+            add_filter('woocommerce_available_payment_gateways', array($this, 'check_available_gateways'), 999);
+
+            if (did_action('woocommerce_blocks_loaded')) {
+                $this->register_blocks_integration();
+            } else {
+                add_action('woocommerce_blocks_loaded', array($this, 'register_blocks_integration'));
+            }
+
+            // Classic Checkout detection
+            add_action('woocommerce_checkout_billing', function () {
+                // Keep this for future diagnostics if needed, but hushed for now
+            });
+
+            // Blocks Checkout detection (REST API)
+            add_action('woocommerce_blocks_checkout_get_checkout_data', function () {
+                // Keep this for future diagnostics if needed, but hushed for now
+            });
         }
 
-        // Initialize components
-        (new \Briqpay\WooCommerce\Order_Status_Manager())->init();
-        (new \Briqpay\WooCommerce\Checkout_Handler())->init();
-        (new \Briqpay\WooCommerce\B2b_Checkout())->init();
-        (new \Briqpay\WooCommerce\Webhooks())->init();
-        (new \Briqpay\WooCommerce\Order_Management())->init();
-        (new \Briqpay\WooCommerce\Admin_Order_Meta_Box())->init();
-    }
+        /**
+         * Register Blocks Integration
+         */
+        public function register_blocks_integration()
+        {
 
-    /**
-     * Add the gateway to WooCommerce
-     */
-    public function add_gateway($gateways)
-    {
-        $gateways[] = 'Briqpay\\WooCommerce\\Gateway';
-        return $gateways;
+            add_action('woocommerce_blocks_payment_method_type_registration', function ($payment_method_registry) {
+                try {
+                    $integration = new \Briqpay\WooCommerce\Blocks_Integration();
+                    $payment_method_registry->register($integration);
+                } catch (\Exception $e) {
+                    $this->log('ERROR registering blocks integration: ' . $e->getMessage());
+                }
+            });
+        }
+
+
+        /**
+         * Check available gateways for diagnostics
+         */
+        public function check_available_gateways($gateways)
+        {
+            return $gateways;
+        }
+
+        /**
+         * PSR-4 Autoloader
+         */
+        public function autoload($class)
+        {
+            $prefix = 'Briqpay\\WooCommerce\\';
+            $base_dir = BRIQPAY_WC_PATH . 'includes/';
+
+            $len = strlen($prefix);
+            if (strncmp($prefix, $class, $len) !== 0) {
+                return;
+            }
+
+            $relative_class = substr($class, $len);
+            $file = $base_dir . 'class-' . str_replace('_', '-', strtolower(str_replace('\\', '/', $relative_class))) . '.php';
+
+            if (file_exists($file)) {
+                require $file;
+            }
+        }
+
+        /**
+         * Declare HPOS compatibility
+         */
+        public function declare_hpos_compatibility()
+        {
+            if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
+                \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+            }
+        }
+
+        /**
+         * Log message
+         */
+        private function log($message)
+        {
+            if (defined('WC_LOG_DIR')) {
+                $logger = wc_get_logger();
+                $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
+            }
+        }
+
+        /**
+         * On plugins loaded
+         */
+        public function on_plugins_loaded()
+        {
+            if (!class_exists('WC_Payment_Gateway')) {
+                return;
+            }
+
+            if (defined('WP_DEBUG') && WP_DEBUG) {
+                $this->log('Initializing Briqpay components...');
+            }
+
+            // Initialize components
+            (new \Briqpay\WooCommerce\Order_Status_Manager())->init();
+            (new \Briqpay\WooCommerce\Checkout_Handler())->init();
+            (new \Briqpay\WooCommerce\B2b_Checkout())->init();
+            (new \Briqpay\WooCommerce\Webhooks())->init();
+            (new \Briqpay\WooCommerce\Order_Management())->init();
+            (new \Briqpay\WooCommerce\Admin_Order_Meta_Box())->init();
+        }
+
+        /**
+         * Add the gateway to WooCommerce
+         */
+        public function add_gateway($gateways)
+        {
+            $gateways[] = 'Briqpay\\WooCommerce\\Gateway';
+            return $gateways;
+        }
     }
 }
 
