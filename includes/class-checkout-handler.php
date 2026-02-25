@@ -591,6 +591,20 @@ class Checkout_Handler
 
         $this->log('Recalculated WC Total: ' . $total_after . ' (Shipping: ' . WC()->cart->get_shipping_total() . ')');
 
+        // Auto-detect B2B context from the shortcode's hidden field.
+        // The [briqpay_b2b_checkout] shortcode renders <input name="briqpay_b2b" value="1">
+        // which checkout.js serializes into checkout_data. If present, establish B2B session
+        // flags so the session manager creates a 'business' session with the correct modules.
+        // Nonce was already verified at the top of this method via check_ajax_referer().
+        if (isset($checkout_data) && !empty($checkout_data['briqpay_b2b'])) {
+            if (null !== WC()->session && !WC()->session->get('briqpay_b2b_active')) {
+                $this->log('B2B auto-detect: briqpay_b2b=1 found in checkout_data. Setting B2B session flags.');
+                WC()->session->set('briqpay_b2b_active', true);
+                WC()->session->set('chosen_payment_method', 'briqpay');
+                WC()->session->set('briqpay_customer_type', 'business');
+            }
+        }
+
         $session_manager = new Session_Manager();
         $session = $session_manager->get_or_create_session();
 

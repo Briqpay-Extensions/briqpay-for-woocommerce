@@ -37,6 +37,66 @@
             } else {
                 console.warn('Briqpay B2B: briqpayCheckout global not found.');
             }
+
+            // --- B2B Address Update Handling ---
+            // Listen for address changes in the iframe and sync to WooCommerce
+            var addressUpdateRetryCount = 0;
+            var attachAddressUpdateListener = function () {
+                var sdk = window._briqpay;
+                var v3 = sdk ? sdk.v3 : null;
+
+                if (!v3) {
+                    addressUpdateRetryCount++;
+                    if (addressUpdateRetryCount < 50) {
+                        setTimeout(attachAddressUpdateListener, 200);
+                    }
+                    return;
+                }
+
+                var subscribe = null;
+                if (typeof v3.on === 'function') subscribe = v3.on.bind(v3);
+                else if (typeof v3.subscribe === 'function') subscribe = v3.subscribe.bind(v3);
+                else if (typeof sdk.subscribe === 'function') subscribe = sdk.subscribe.bind(sdk);
+
+                if (!subscribe) {
+                    addressUpdateRetryCount++;
+                    if (addressUpdateRetryCount < 50) {
+                        setTimeout(attachAddressUpdateListener, 200);
+                    }
+                    return;
+                }
+
+                console.log('Briqpay B2B: Subscribing to addressupdate...');
+                subscribe('addressupdate', function (data) {
+                    console.log('Briqpay B2B: Address Update Event Received', data);
+
+                    var billing = data.billingaddress;
+                    var shipping = data.shippingaddress;
+                    var changed = false;
+
+                    if (billing) {
+                        if (billing.zip && $('#billing_postcode').val() !== billing.zip) {
+                            $('#billing_postcode').val(billing.zip);
+                            changed = true;
+                        }
+                    }
+
+                    if (shipping) {
+                        if (shipping.zip && $('#shipping_postcode').val() !== shipping.zip) {
+                            $('#shipping_postcode').val(shipping.zip);
+                            changed = true;
+                        }
+                    }
+
+                    if (changed) {
+                        console.log('Briqpay B2B: Address changed, triggering update_checkout');
+                        // Trigger WooCommerce checkout update to recalculate shipping
+                        $(document.body).trigger('update_checkout');
+                    }
+                });
+            };
+
+            attachAddressUpdateListener();
         }
     };
 

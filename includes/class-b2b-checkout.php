@@ -29,6 +29,10 @@ class B2b_Checkout
         // 1. Establish context as early as possible (before AJAX handlers)
         add_action('init', array($this, 'harden_b2b_context'), 5);
 
+        // 2. Auto-detect B2B shortcode on page and establish session flags
+        //    (template_redirect runs after wp so is_singular()/has_shortcode() are available)
+        add_action('template_redirect', array($this, 'establish_b2b_page_context'), 5);
+
         add_shortcode('briqpay_b2b_checkout', array($this, 'render'));
         add_filter('briqpay_session_data', array($this, 'filter_b2b_session_data'), 10, 2);
 
@@ -64,6 +68,49 @@ class B2b_Checkout
             if (!isset($_COOKIE['briqpay_b2b_active'])) {
                 setcookie('briqpay_b2b_active', '1', time() + HOUR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN);
             }
+        }
+    }
+
+    /**
+     * Establish B2B Page Context
+     *
+     * Runs on template_redirect (after WordPress knows which page is being viewed)
+     * to auto-detect the [briqpay_b2b_checkout] shortcode and set session flags.
+     * This eliminates the need for external code snippets or filters.
+     */
+    public function establish_b2b_page_context()
+    {
+        // Only run on front-end page views (not AJAX, not admin)
+        if (is_admin() || wp_doing_ajax()) {
+            return;
+        }
+
+        // Check if the current page contains the B2B checkout shortcode
+        if (!is_singular() || !has_shortcode(get_post()->post_content, 'briqpay_b2b_checkout')) {
+            return;
+        }
+
+        // At this point we KNOW we are on a B2B shortcode page.
+        // Establish all session flags so downstream filters and the session manager
+        // see this as a B2B context — no external snippet needed.
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        if (!WC()->session->get('briqpay_b2b_active')) {
+            $this->log('establish_b2b_page_context: Setting B2B session flags on shortcode page.');
+            WC()->session->set('briqpay_b2b_active', true);
+            WC()->session->set('chosen_payment_method', 'briqpay');
+            WC()->session->set('briqpay_customer_type', 'business');
+
+            // Persist immediately so AJAX calls (which are separate HTTP requests)
+            // can read these flags before the page-load request finishes.
+            WC()->session->save_data();
+        }
+
+        // Sync cookie for volatile/hosted sessions
+        if (!isset($_COOKIE['briqpay_b2b_active'])) {
+            setcookie('briqpay_b2b_active', '1', time() + HOUR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN);
         }
     }
 
@@ -143,10 +190,21 @@ class B2b_Checkout
             }
 
             // Check checkout_data if present (serialized form)
-            if (isset($_POST['checkout_data']) && isset($_POST['security']) && wp_verify_nonce(sanitize_key(wp_unslash($_POST['security'])), 'update-order-review')) {
-                parse_str(wp_unslash($_POST['checkout_data']), $checkout_data); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-                if (isset($checkout_data['briqpay_b2b']) || (isset($checkout_data['_wp_http_referer']) && strpos($checkout_data['_wp_http_referer'], 'b2b-checkout') !== false)) {
-                    return true;
+            // Accept both 'update-order-review' nonce (wc-checkout.js) and
+            // 'briqpay_nonce' (our ajax_get_session) for validation.
+            if (isset($_POST['checkout_data'])) { // phpcs:ignore WordPress.Security.NonceVerification.Missing
+                $is_checkout_data_valid = false;
+                if (isset($_POST['security']) && wp_verify_nonce(sanitize_key(wp_unslash($_POST['security'])), 'update-order-review')) {
+                    $is_checkout_data_valid = true;
+                } elseif (isset($_POST['nonce']) && wp_verify_nonce(sanitize_key(wp_unslash($_POST['nonce'])), 'briqpay_nonce')) {
+                    $is_checkout_data_valid = true;
+                }
+
+                if ($is_checkout_data_valid) {
+                    parse_str(wp_unslash($_POST['checkout_data']), $checkout_data); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+                    if (isset($checkout_data['briqpay_b2b'])) {
+                        return true;
+                    }
                 }
             }
 
