@@ -58,7 +58,7 @@ class B2b_Checkout
             return;
         }
 
-        if ($this->is_b2b_active() && null !== WC() && null !== WC()->session) {
+        if ($this->is_b2b_active() && null !== WC() && null !== WC()->session && !is_order_received_page()) {
             // Re-establish session if lost but cookie or referer exists
             if (!WC()->session->get('briqpay_b2b_active')) {
                 WC()->session->set('briqpay_b2b_active', true);
@@ -81,7 +81,8 @@ class B2b_Checkout
     public function establish_b2b_page_context()
     {
         // Only run on front-end page views (not AJAX, not admin)
-        if (is_admin() || wp_doing_ajax()) {
+        // AND not on the order success page (to prevent re-activation).
+        if (is_admin() || wp_doing_ajax() || is_order_received_page()) {
             return;
         }
 
@@ -171,6 +172,12 @@ class B2b_Checkout
      */
     private function is_b2b_active()
     {
+        // 0. Absolute blocking: Never active on the success/thank-you page.
+        // This prevents the shortcode on that page from re-triggering logic after cleanup.
+        if (is_order_received_page()) {
+            return false;
+        }
+
         // 1. Primary: Session flag
         if (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) {
             return true;
@@ -185,7 +192,7 @@ class B2b_Checkout
         if (wp_doing_ajax()) {
             // Check Referer
             $referer = wp_get_raw_referer();
-            if ($referer && strpos($referer, 'b2b-checkout') !== false) {
+            if ($referer && strpos($referer, 'b2b-checkout') !== false && strpos($referer, 'order-received') === false) {
                 return true;
             }
 

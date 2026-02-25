@@ -34,6 +34,7 @@ class Checkout_Handler
         add_action('wp_ajax_nopriv_briqpay_make_decision', array($this, 'ajax_make_decision'));
 
         add_action('template_redirect', array($this, 'handle_briqpay_return'), 5);
+        add_action('woocommerce_thankyou', array($this, 'clear_customer_data_after_purchase'), 10, 1);
         add_filter('body_class', array($this, 'add_body_class'));
         add_action('wp_head', array($this, 'output_critical_css'));
         add_filter('woocommerce_order_get_created_via', array($this, 'force_briqpay_origin'), 10, 2);
@@ -361,6 +362,33 @@ class Checkout_Handler
                 WC()->session->set('briqpay_b2b_active', false);
                 WC()->session->set('briqpay_customer_type', null);
                 WC()->session->set('briqpay_prev_b2b_active', null);
+
+                // Clear address so guests don't have their info remembered for next purchase
+                if (null !== WC()->customer) {
+                    $this->log('Clearing customer address data.');
+                    WC()->customer->set_billing_first_name('');
+                    WC()->customer->set_billing_last_name('');
+                    WC()->customer->set_billing_company('');
+                    WC()->customer->set_billing_address_1('');
+                    WC()->customer->set_billing_address_2('');
+                    WC()->customer->set_billing_city('');
+                    WC()->customer->set_billing_postcode('');
+                    WC()->customer->set_billing_country('');
+                    WC()->customer->set_billing_state('');
+                    WC()->customer->set_billing_email('');
+                    WC()->customer->set_billing_phone('');
+
+                    WC()->customer->set_shipping_first_name('');
+                    WC()->customer->set_shipping_last_name('');
+                    WC()->customer->set_shipping_company('');
+                    WC()->customer->set_shipping_address_1('');
+                    WC()->customer->set_shipping_address_2('');
+                    WC()->customer->set_shipping_city('');
+                    WC()->customer->set_shipping_postcode('');
+                    WC()->customer->set_shipping_country('');
+                    WC()->customer->set_shipping_state('');
+                    WC()->customer->save();
+                }
             }
             Session_Manager::set_session_id(null);
             setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
@@ -368,10 +396,76 @@ class Checkout_Handler
 
         // Clear cart
         WC()->cart->empty_cart();
+        WC()->session->save_data();
 
         // Redirect to order received page
         wp_safe_redirect($order->get_checkout_order_received_url());
         exit;
+    }
+
+    /**
+     * Aggressively clear customer data after purchase
+     * 
+     * This is triggered on the 'woocommerce_thankyou' hook to ensure
+     * that even if WooCommerce re-populated customer data from the order,
+     * we wipe it before they continue browsing.
+     */
+    public function clear_customer_data_after_purchase($order_id)
+    {
+        if (!$order_id) {
+            return;
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order || 'briqpay' !== $order->get_payment_method()) {
+            return;
+        }
+
+        if (null === WC() || null === WC()->customer) {
+            return;
+        }
+
+        $this->log('clear_customer_data_after_purchase triggered for order: ' . $order_id);
+
+        // B2B Cleanup
+        if (null !== WC()->session) {
+            $this->log('Performing final aggressive B2B cleanup.');
+            WC()->session->set('briqpay_b2b_active', false);
+            WC()->session->set('briqpay_customer_type', null);
+            WC()->session->set('briqpay_prev_b2b_active', null);
+        }
+        setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
+
+        // Clear all address fields
+        $this->log('Performing final aggressive address clearing.');
+        WC()->customer->set_billing_first_name('');
+        WC()->customer->set_billing_last_name('');
+        WC()->customer->set_billing_company('');
+        WC()->customer->set_billing_address_1('');
+        WC()->customer->set_billing_address_2('');
+        WC()->customer->set_billing_city('');
+        WC()->customer->set_billing_postcode('');
+        WC()->customer->set_billing_country('');
+        WC()->customer->set_billing_state('');
+        WC()->customer->set_billing_email('');
+        WC()->customer->set_billing_phone('');
+
+        WC()->customer->set_shipping_first_name('');
+        WC()->customer->set_shipping_last_name('');
+        WC()->customer->set_shipping_company('');
+        WC()->customer->set_shipping_address_1('');
+        WC()->customer->set_shipping_address_2('');
+        WC()->customer->set_shipping_city('');
+        WC()->customer->set_shipping_postcode('');
+        WC()->customer->set_shipping_country('');
+        WC()->customer->set_shipping_state('');
+        WC()->customer->save();
+
+        if (null !== WC()->session) {
+            WC()->session->save_data();
+        }
+
+        $this->log('Customer address data cleared successfully on success page.');
     }
 
     /**
