@@ -1,0 +1,62 @@
+.briqpay-admin-meta-box p {
+    margin-bottom: 12px;
+}
+
+.briqpay-admin-meta-box strong {
+    color: #333;
+}
+
+.briqpay-admin-meta-box a {
+    text-decoration: none;
+}
+
+.briqpay-admin-meta-box .dashicons {
+    font-size: 14px;
+    vertical-align: middle;
+    margin-top: -2px;
+}
+
+.briqpay-captures-section h4 {
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+    margin-top: 15px;
+}
+
+.briqpay-capture-item {
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 8px;
+    border-left: 2px solid #ccc;
+    padding-left: 5px;
+}
+
+.briqpay-capture-form-toggle {
+    margin-top: 10px;
+    display: block;
+    text-align: center;
+}
+
+.briqpay-capture-form {
+    display: none;
+    background: #f9f9f9;
+    padding: 10px;
+    margin-top: 10px;
+    border: 1px solid #ddd;
+}
+
+.briqpay-capture-form table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 10px;
+}
+
+.briqpay-capture-form th,
+.briqpay-capture-form td {
+    text-align: left;
+    font-size: 11px;
+    padding: 4px 0;
+}
+
+.briqpay-capture-form input[type="number"] {
+    width: 45px;
+}

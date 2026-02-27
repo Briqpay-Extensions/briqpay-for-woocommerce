@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.6
+Stable tag: 1.0.7
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -17,6 +17,25 @@ Briqpay for WooCommerce allows you to integrate the Briqpay V3 payment platform 
 
 **Important Note:** This plugin connects to an external service (Briqpay API) to process payments. 
 *   **Service:** Briqpay (https://briqpay.com)
+
+== External services ==
+
+This plugin connects to Briqpay to process payments. Briqpay is a payment service provider that streamlines multiple payment methods into a single integration. 
+
+The plugin communicates with the following external endpoints to initialize and verify payment sessions:
+* https://api.briqpay.com (Production API)
+* https://playground-api.briqpay.com (Test/Staging API)
+
+When you use this plugin, order and customer data is sent to Briqpay. This includes:
+* **Order Details:** Product names, SKU, quantities, prices, and taxes.
+* **Customer Information:** Name, billing/shipping address, email, and phone number.
+* **Transaction Data:** Currency, order ID, and total amount.
+
+This data is sent when a customer accesses the checkout page, updates their checkout information (e.g., shipping methods), or when a merchant processes captures/refunds via the WooCommerce admin.
+
+The use of this service is governed by Briqpay's legal documentation:
+* **Privacy Policy:** https://briqpay.com/privacy-policy
+* **Data Processing Agreement (DPA):https://briqpay.com/dpa
 
 = Features =
 *   **Briqpay V3 Integration:** Full support for the latest Briqpay API.
@@ -31,6 +50,17 @@ Briqpay for WooCommerce allows you to integrate the Briqpay V3 payment platform 
 3. Configure your Briqpay settings in WooCommerce > Settings > Payments > Briqpay.
 
 == Changelog ==
+
+= 1.0.7 =
+* Added dependency "Requires Plugins: woocommerce" to plugin header.
+* Added "External services" section to readme.txt for Briqpay transparency.
+* Refactored script/style enqueuing to use standard WordPress functions.
+* Added email validation check at decision point for B2C checkouts.
+* Added automatic Briqpay session reset on user login to prevent buyer context issues.
+* Improved order creation logic to preserve product variations and 3rd-party metadata (e.g. Extra Product Options).
+* Fixed B2B context leaking after purchase, causing cart/mini-cart buttons to disappear.
+* Fixed duplication of shipping, fees, and coupons during order creation when reusing draft orders.
+* Fixed shipping address pre-filling for logged-in users in B2B checkout.
 
 = 1.0.6 =
 * Robustly disabled B2B context persistence after order completion to prevent Cart page interference and mini-cart issues.

@@ -30,6 +30,7 @@ class Admin_Order_Meta_Box
         }
 
         wp_enqueue_script('briqpay-admin', BRIQPAY_WC_URL . 'assets/js/admin.js', array('jquery'), BRIQPAY_WC_VERSION, true);
+        wp_enqueue_style('briqpay-admin', BRIQPAY_WC_URL . 'assets/css/admin.css', array(), BRIQPAY_WC_VERSION);
         wp_localize_script('briqpay-admin', 'briqpayAdmin', array(
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('briqpay_admin_nonce'),
@@ -109,70 +110,6 @@ class Admin_Order_Meta_Box
                 <?php $this->render_capture_form($order); ?>
             </div>
         </div>
-        <style>
-            .briqpay-admin-meta-box p {
-                margin-bottom: 12px;
-            }
-
-            .briqpay-admin-meta-box strong {
-                color: #333;
-            }
-
-            .briqpay-admin-meta-box a {
-                text-decoration: none;
-            }
-
-            .briqpay-admin-meta-box .dashicons {
-                font-size: 14px;
-                vertical-align: middle;
-                margin-top: -2px;
-            }
-
-            .briqpay-captures-section h4 {
-                border-bottom: 1px solid #eee;
-                padding-bottom: 5px;
-                margin-top: 15px;
-            }
-
-            .briqpay-capture-item {
-                font-size: 11px;
-                color: #666;
-                margin-bottom: 8px;
-                border-left: 2px solid #ccc;
-                padding-left: 5px;
-            }
-
-            .briqpay-capture-form-toggle {
-                margin-top: 10px;
-                display: block;
-                text-align: center;
-            }
-
-            .briqpay-capture-form {
-                display: none;
-                background: #f9f9f9;
-                padding: 10px;
-                margin-top: 10px;
-                border: 1px solid #ddd;
-            }
-
-            .briqpay-capture-form table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-bottom: 10px;
-            }
-
-            .briqpay-capture-form th,
-            .briqpay-capture-form td {
-                text-align: left;
-                font-size: 11px;
-                padding: 4px 0;
-            }
-
-            .briqpay-capture-form input[type="number"] {
-                width: 45px;
-            }
-        </style>
         <?php
     }
 
@@ -389,8 +326,7 @@ class Admin_Order_Meta_Box
         }
 
         $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- items contain numeric capture data validated by Order_Management
-        $items = isset($_POST['items']) ? wp_unslash($_POST['items']) : array();
+        $items = isset($_POST['items']) ? map_deep(wp_unslash($_POST['items']), 'sanitize_text_field') : array();
 
         if (!$order_id || empty($items)) {
             wp_send_json_error(array('message' => __('Invalid request.', 'briqpay-for-woocommerce')));

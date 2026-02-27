@@ -58,16 +58,39 @@ class B2b_Checkout
             return;
         }
 
-        if ($this->is_b2b_active() && null !== WC() && null !== WC()->session && !is_order_received_page()) {
-            // Re-establish session if lost but cookie or referer exists
-            if (!WC()->session->get('briqpay_b2b_active')) {
-                WC()->session->set('briqpay_b2b_active', true);
-            }
+        // Never harden on the order-received (thank you) page
+        if (is_order_received_page()) {
+            return;
+        }
 
-            // Re-establish cookie if lost but session exists
-            if (!isset($_COOKIE['briqpay_b2b_active'])) {
-                setcookie('briqpay_b2b_active', '1', time() + HOUR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN);
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        // Only harden when we are on a page that ACTUALLY contains the B2B shortcode,
+        // OR during AJAX where the referer is a B2B page.
+        $is_on_b2b_page = false;
+        if (wp_doing_ajax()) {
+            $referer = wp_get_raw_referer();
+            if ($referer && strpos($referer, 'b2b') !== false && strpos($referer, 'order-received') === false) {
+                $is_on_b2b_page = true;
             }
+        } elseif (is_singular() && has_shortcode(get_post()->post_content ?? '', 'briqpay_b2b_checkout')) {
+            $is_on_b2b_page = true;
+        }
+
+        if (!$is_on_b2b_page) {
+            return;
+        }
+
+        // Re-establish session if lost but we know we're on the B2B page
+        if (!WC()->session->get('briqpay_b2b_active')) {
+            WC()->session->set('briqpay_b2b_active', true);
+        }
+
+        // Re-establish cookie if lost but session exists
+        if (!isset($_COOKIE['briqpay_b2b_active'])) {
+            setcookie('briqpay_b2b_active', '1', time() + HOUR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN);
         }
     }
 
@@ -129,12 +152,32 @@ class B2b_Checkout
 
     /**
      * Force is_checkout to be true on B2B page
+     *
+     * IMPORTANT: Only return true when the current page actually contains the
+     * [briqpay_b2b_checkout] shortcode. Returning true based on session/cookie
+     * alone would make every page (cart, shop, etc.) act as a checkout page,
+     * causing the "Nuclear" CSS to hide buttons site-wide.
      */
     public function force_is_checkout($is_checkout)
     {
-        if (!$is_checkout && $this->is_b2b_active()) {
+        if ($is_checkout) {
+            return $is_checkout;
+        }
+
+        // During AJAX, check the referer to see if it's a B2B page
+        if (wp_doing_ajax()) {
+            $referer = wp_get_raw_referer();
+            if ($referer && strpos($referer, 'b2b') !== false && strpos($referer, 'order-received') === false) {
+                return true;
+            }
+            return $is_checkout;
+        }
+
+        // On regular page loads, only force if the page has the B2B shortcode
+        if (is_singular() && has_shortcode(get_post()->post_content ?? '', 'briqpay_b2b_checkout')) {
             return true;
         }
+
         return $is_checkout;
     }
 
@@ -146,8 +189,7 @@ class B2b_Checkout
         if ($this->is_b2b_active()) {
             // Explicitly sync chosen shipping methods if sent via AJAX
             if (isset($_POST['security']) && wp_verify_nonce(sanitize_key(wp_unslash($_POST['security'])), 'update-order-review') && isset($_POST['shipping_method']) && is_array($_POST['shipping_method'])) {
-                $raw_shipping_methods = wp_unslash($_POST['shipping_method']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-                $shipping_methods = array_map('wc_clean', $raw_shipping_methods);
+                $shipping_methods = array_map('sanitize_text_field', (array) wp_unslash($_POST['shipping_method']));
                 WC()->session->set('chosen_shipping_methods', $shipping_methods);
             }
 
@@ -208,8 +250,10 @@ class B2b_Checkout
                 }
 
                 if ($is_checkout_data_valid) {
-                    parse_str(wp_unslash($_POST['checkout_data']), $checkout_data); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-                    if (isset($checkout_data['briqpay_b2b'])) {
+                    $checkout_data = array();
+                    $raw_checkout_data = sanitize_text_field(wp_unslash($_POST['checkout_data']));
+                    parse_str($raw_checkout_data, $checkout_data);
+                    if (is_array($checkout_data) && isset($checkout_data['briqpay_b2b'])) {
                         return true;
                     }
                 }
@@ -413,7 +457,24 @@ class B2b_Checkout
                 <input type="hidden" id="shipping_address_1" name="shipping_address_1"
                     value="<?php echo esc_attr(WC()->customer->get_shipping_address_1()); ?>" />
 
-                <input type="hidden" name="ship_to_different_address" value="0" />
+                <?php
+                $ship_to_different_address = 0;
+                if (null !== WC()->customer) {
+                    $customer = WC()->customer;
+                    if (
+                        $customer->get_billing_address_1() !== $customer->get_shipping_address_1() ||
+                        $customer->get_billing_address_2() !== $customer->get_shipping_address_2() ||
+                        $customer->get_billing_city() !== $customer->get_shipping_city() ||
+                        $customer->get_billing_postcode() !== $customer->get_shipping_postcode() ||
+                        $customer->get_billing_country() !== $customer->get_shipping_country() ||
+                        $customer->get_billing_state() !== $customer->get_shipping_state()
+                    ) {
+                        $ship_to_different_address = 1;
+                    }
+                }
+                ?>
+                <input type="hidden" name="ship_to_different_address"
+                    value="<?php echo esc_attr($ship_to_different_address); ?>" />
 
                 <div class="briqpay-b2b-checkout-wrapper">
                     <div class="briqpay-b2b-summary-column">

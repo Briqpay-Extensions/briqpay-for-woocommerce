@@ -25,18 +25,39 @@ class Webhooks
      */
     public function handle_webhook()
     {
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Comparison only, no output.
+        $request_method = isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : '';
+        if ('POST' !== $request_method) {
+            wp_die('Invalid request method', 'Briqpay Webhook', array('response' => 405));
+        }
+
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Reading raw POST body for webhook; no WP alternative exists.
         $payload = file_get_contents('php://input');
+        if (empty($payload)) {
+            $this->log('Empty webhook payload received.');
+            wp_die('Empty payload', 'Briqpay Webhook', array('response' => 400));
+        }
 
-        // Log receipt for debugging, but don't fail on signature since it's not mandatory for this project
-        $briq_sig = isset($_SERVER['HTTP_X_BRIQ_SIGNATURE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_BRIQ_SIGNATURE'])) : '';
-        $briqpay_sig = isset($_SERVER['HTTP_X_BRIQPAY_SIGNATURE']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_X_BRIQPAY_SIGNATURE'])) : '';
-        $header_signature = $briq_sig ?: $briqpay_sig;
-        $this->log('Webhook received. Signature Header: ' . ($header_signature ?: 'none'));
+        // Log receipt of webhook but avoid logging signatures or broad headers unless debugging is active and necessary
+        $this->log('Webhook received. Processing payload.');
 
+        // Decode and validate structure; individual fields are sanitized via sanitize_key() below.
         $data = json_decode($payload, true);
-        if (!$data || empty($data['sessionId'])) {
-            $this->log('Invalid payload received (missing sessionId).');
+        if (!is_array($data) || empty($data['sessionId'])) {
+            $this->log('Invalid payload received (missing or invalid sessionId).');
             wp_die('Invalid payload', 'Briqpay Webhook', array('response' => 400));
+        }
+
+        // Sanitize identifiers
+        $data['sessionId'] = sanitize_key($data['sessionId']);
+        if (isset($data['action'])) {
+            $data['action'] = sanitize_key($data['action']);
+        }
+        if (isset($data['event'])) {
+            $data['event'] = sanitize_key($data['event']);
+        }
+        if (isset($data['status'])) {
+            $data['status'] = sanitize_key($data['status']);
         }
 
         $this->log('Webhook received for session: ' . $data['sessionId'] . '. Enqueuing background task for API verification.');

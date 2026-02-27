@@ -758,7 +758,9 @@ class Session_Manager
         if (wp_doing_ajax()) {
             $current_url = wp_get_raw_referer();
         } else {
-            $current_url = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via esc_url_raw below.
+            $request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
+            $current_url = esc_url_raw(home_url($request_uri));
         }
 
         if (!empty($current_url)) {

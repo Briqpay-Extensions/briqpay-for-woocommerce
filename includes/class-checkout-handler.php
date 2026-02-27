@@ -36,7 +36,7 @@ class Checkout_Handler
         add_action('template_redirect', array($this, 'handle_briqpay_return'), 5);
         add_action('woocommerce_thankyou', array($this, 'clear_customer_data_after_purchase'), 10, 1);
         add_filter('body_class', array($this, 'add_body_class'));
-        add_action('wp_head', array($this, 'output_critical_css'));
+        add_action('wp_enqueue_scripts', array($this, 'enqueue_critical_assets'), 20);
         add_filter('woocommerce_order_get_created_via', array($this, 'force_briqpay_origin'), 10, 2);
         add_filter('wc_order_attribution_origin_label', array($this, 'filter_attribution_origin_label'), 10, 3);
         add_shortcode('briqpay_iframe', array($this, 'render_briqpay_iframe'));
@@ -57,11 +57,18 @@ class Checkout_Handler
     }
 
     /**
-     * Output critical CSS to hide Place Order button instantly
+     * Enqueue critical CSS and JS to hide Place Order button instantly
      */
-    public function output_critical_css()
+    public function enqueue_critical_assets()
     {
         if (!is_checkout() || is_order_received_page()) {
+            return;
+        }
+
+        // Never fire on the cart page — is_checkout() can return true due to
+        // the B2B shortcode's force_is_checkout filter, but the Nuclear CSS
+        // must only target actual checkout pages.
+        if (function_exists('is_cart') && is_cart()) {
             return;
         }
 
@@ -71,8 +78,7 @@ class Checkout_Handler
         }
 
         // 1. Nuclear CSS: Target the primary button, any button in the action area, and the area itself.
-        // We use maximum specificity and secondary properties like opacity and pointer-events as fallbacks.
-        echo '<style id="briqpay-critical-css">
+        $critical_css = '
             /* Standard Checkout */
             #place_order,
             .form-row.place-order,
@@ -108,17 +114,15 @@ class Checkout_Handler
                 border: none !important;
                 padding: 0 !important;
                 margin: 0 !important;
-            }
-        </style>';
+            }';
+
+        wp_add_inline_style('briqpay-checkout-style', $critical_css);
 
         // 2. Nuclear JS Sentinel: MutationObserver PLUS high-frequency setInterval (10ms)
-        // This catches React hydration before the browser can even paint the next frame.
-        echo '<script id="briqpay-critical-js">
+        $critical_js = '
             (function() {
                 var checkAndKill = function() {
-                    // Only run if Briqpay is supposedly active (body class added by PHP)
                     if (document.body && !document.body.classList.contains("briqpay-selected")) {
-                        // If we already marked it as explicitly NOT selected via JS, stop.
                         if (document.body.classList.contains("briqpay-not-selected")) return;
                     }
                     
@@ -145,19 +149,16 @@ class Checkout_Handler
                     });
                 };
 
-                // Run immediately
                 checkAndKill();
-
-                // High-frequency sentinel for the first 5 seconds (React hydration window)
                 var sentinel = setInterval(checkAndKill, 50);
                 setTimeout(function() { clearInterval(sentinel); }, 15000);
 
-                // Safety net: MutationObserver
                 var observer = new MutationObserver(checkAndKill);
-                observer.observe(document.documentElement, { childList: true, subtree: true });
+                observer.observe(document.documentElement, { child_list: true, subtree: true });
                 setTimeout(function() { observer.disconnect(); }, 20000);
-            })();
-        </script>';
+            })();';
+
+        wp_add_inline_script('briqpay-checkout', $critical_js, 'before');
     }
 
     /**
@@ -488,17 +489,16 @@ class Checkout_Handler
     {
         check_ajax_referer('briqpay_nonce', 'nonce');
         $this->log('ajax_get_session() triggered.');
-        $this->log('POST data: ' . json_encode($_POST));
 
         // Capture total BEFORE processing to detect changes
         $total_before = WC()->cart->get_total('edit');
 
         // Handle Blocks Data
         if (isset($_POST['blocks_data'])) {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JSON decoded and each field sanitized individually below
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JSON decoded, then each field is sanitized individually below.
             $blocks_data = json_decode(wp_unslash($_POST['blocks_data']), true);
-            if ($blocks_data) {
-                $this->log('Updating WC Customer from blocks data: ' . json_encode($blocks_data));
+            if (is_array($blocks_data)) {
+                $this->log('Updating WC Customer from blocks data.');
                 // Update Billing
                 if (isset($blocks_data['billing_address'])) {
                     $b = $blocks_data['billing_address'];
@@ -545,7 +545,7 @@ class Checkout_Handler
                     foreach ($blocks_data['shipping_rates'] as $package_index => $rate_id) {
                         $chosen_methods[$package_index] = $rate_id;
                     }
-                    $this->log('Setting chosen shipping methods from BLOCKS: ' . json_encode($chosen_methods));
+                    $this->log('Setting chosen shipping methods from BLOCKS, count: ' . count($chosen_methods));
                     WC()->session->set('chosen_shipping_methods', $chosen_methods);
                 }
 
@@ -559,9 +559,10 @@ class Checkout_Handler
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- data is sanitized per-field below
             parse_str(wp_unslash($_POST['checkout_data']), $checkout_data);
 
-            if (!empty($checkout_data)) {
-                $this->log('Updating WC Customer from checkout data.');
-                $this->log('Raw checkout_data: ' . json_encode($checkout_data));
+            if (is_array($checkout_data)) {
+                // Recursively sanitize checkout_data
+                $checkout_data = $this->sanitize_recursive($checkout_data);
+                $this->log('Updating WC Customer from sanitized checkout data.');
             } else {
                 $this->log('checkout_data found but is empty.');
             }
@@ -599,7 +600,7 @@ class Checkout_Handler
 
                 if (isset($checkout_data['shipping_method'])) {
                     $methods = is_array($checkout_data['shipping_method']) ? $checkout_data['shipping_method'] : array($checkout_data['shipping_method']);
-                    $this->log('Setting chosen shipping methods: ' . json_encode($methods));
+                    $this->log('Setting chosen shipping methods, count: ' . count($methods));
                     WC()->session->set('chosen_shipping_methods', $methods);
                 }
 
@@ -670,7 +671,7 @@ class Checkout_Handler
 
         if (is_wp_error($session)) {
             $this->log('AJAX Error: ' . $session->get_error_message());
-            wp_send_json_error(array('message' => $session->get_error_message()));
+            wp_send_json_error(array('message' => 'An error occurred while creating the session.'));
         }
 
         $this->log('AJAX Success.');
@@ -685,7 +686,7 @@ class Checkout_Handler
     {
         check_ajax_referer('briqpay_nonce', 'nonce');
 
-        $session_id = isset($_POST['sessionId']) ? sanitize_text_field(wp_unslash($_POST['sessionId'])) : '';
+        $session_id = isset($_POST['sessionId']) ? sanitize_key(wp_unslash($_POST['sessionId'])) : '';
         if (!$session_id) {
             wp_send_json_error(array('message' => 'Missing session ID'));
         }
@@ -814,7 +815,8 @@ class Checkout_Handler
                 $has_user_error = false;
                 $whitelist = array(
                     __('Please select a shipping method.', 'briqpay-for-woocommerce'),
-                    __('No shipping methods are available for your address.', 'briqpay-for-woocommerce')
+                    __('No shipping methods are available for your address.', 'briqpay-for-woocommerce'),
+                    __('Please fill in your email.', 'briqpay-for-woocommerce')
                 );
 
                 foreach ($validation['errors'] as $err) {
@@ -902,95 +904,182 @@ class Checkout_Handler
             $order_id = WC()->session->get('store_api_draft_order', 0); // Blocks specific
         }
 
+        $needs_items = false; // Track whether we need to add cart items
+
         if ($order_id) {
             $order = wc_get_order($order_id);
             if ($order && $order->has_status(array('pending', 'on-hold', 'checkout-draft', 'draft', 'auto-draft'))) {
                 $this->log('Reusing existing WC order from session: ' . $order_id . ' (Status: ' . $order->get_status() . ')');
                 $order->update_meta_data('_briqpay_session_id', $session_id);
+
+                // Check if the order already has line items (e.g. Blocks draft orders from Store API)
+                $existing_items = $order->get_items();
+                if (!empty($existing_items)) {
+                    $this->log('Order already has ' . count($existing_items) . ' item(s). Keeping existing items.');
+                    $needs_items = false;
+                } else {
+                    $this->log('Order has no items. Will add from cart.');
+                    $needs_items = true;
+                }
+
                 $order->save();
-                return $order;
+            } else {
+                $order = null;
             }
         }
 
         // 2b. Fallback: Search for any draft order with same customer/session if not in WC session
-        $this->log('No order in WC session, searching database for recent drafts.');
-        $recent_orders = wc_get_orders(array(
-            'customer' => get_current_user_id() ?: 0,
-            'status' => array('checkout-draft', 'draft', 'auto-draft'),
-            'limit' => 5,
-            'orderby' => 'date',
-            'order' => 'DESC',
-        ));
+        if (!$order) {
+            $this->log('No order in WC session, searching database for recent drafts.');
+            $recent_orders = wc_get_orders(array(
+                'customer' => get_current_user_id() ?: 0,
+                'status' => array('checkout-draft', 'draft', 'auto-draft'),
+                'limit' => 5,
+                'orderby' => 'date',
+                'order' => 'DESC',
+            ));
 
-        foreach ($recent_orders as $ro) {
-            // If it's very recent (e.g. 10 mins) and has no Briqpay session or same session
-            if (time() - $ro->get_date_created()->getTimestamp() < 600) {
-                $ro_session = $ro->get_meta('_briqpay_session_id');
-                if (!$ro_session || $ro_session === $session_id) {
-                    $this->log('Found recent draft in DB to reuse: ' . $ro->get_id());
-                    $ro->set_created_via('Briqpay');
-                    $ro->update_meta_data('_created_via', 'Briqpay');
-                    $ro->update_meta_data('_order_origin', 'Briqpay');
-                    // WC Order Attribution
-                    $ro->update_meta_data('_wc_order_attribution_source_type', 'utm');
-                    $ro->update_meta_data('_wc_order_attribution_utm_source', 'Briqpay');
-                    $ro->update_meta_data('_briqpay_session_id', $session_id);
-                    $ro->save();
-                    return $ro;
+            foreach ($recent_orders as $ro) {
+                // If it's very recent (e.g. 10 mins) and has no Briqpay session or same session
+                if (time() - $ro->get_date_created()->getTimestamp() < 600) {
+                    $ro_session = $ro->get_meta('_briqpay_session_id');
+                    if (!$ro_session || $ro_session === $session_id) {
+                        $this->log('Found recent draft in DB to reuse: ' . $ro->get_id());
+                        $order = $ro;
+                        $order->update_meta_data('_briqpay_session_id', $session_id);
+
+                        $existing_items = $order->get_items();
+                        $needs_items = empty($existing_items);
+                        break;
+                    }
                 }
             }
         }
 
         // 3. Create new order if none found
-        $this->log('Creating new manual order at decision point.');
-        $order = wc_create_order(array(
-            'customer_id' => get_current_user_id() ?: 0,
-            'status' => 'pending',
-            'created_via' => 'Briqpay',
-        ));
+        if (!$order) {
+            $this->log('Creating new manual order at decision point.');
+            $order = wc_create_order(array(
+                'customer_id' => get_current_user_id() ?: 0,
+                'status' => 'pending',
+                'created_via' => 'Briqpay',
+            ));
+
+            if (is_wp_error($order)) {
+                throw new \Exception('Could not create order');
+            }
+
+            $needs_items = true; // New order always needs items
+        }
+
+        // Update generic metadata
+        $order->set_created_via('Briqpay');
+        $order->update_meta_data('_created_via', 'Briqpay');
+        $order->update_meta_data('_order_origin', 'Briqpay');
         $order->update_meta_data('_wc_order_attribution_source_type', 'utm');
         $order->update_meta_data('_wc_order_attribution_utm_source', 'Briqpay');
         $order->save();
 
-        if (is_wp_error($order)) {
-            throw new \Exception('Could not create order');
-        }
-
         // Set this order as the one awaiting payment in session to prevent WC from creating another
         WC()->session->set('order_awaiting_payment', $order->get_id());
 
-        // Copy cart items
-        foreach (WC()->cart->get_cart() as $cart_item_key => $values) {
-            $item_id = $order->add_product($values['data'], $values['quantity'], array(
-                'variation' => $values['variation'],
-                'totals' => array(
-                    'subtotal' => $values['line_subtotal'],
-                    'subtotal_tax' => $values['line_subtotal_tax'],
-                    'total' => $values['line_total'],
-                    'tax' => $values['line_tax'],
-                    'tax_data' => $values['line_tax_data'],
-                ),
-            ));
-        }
+        // Copy cart items with full metadata support (only if the order doesn't already have them)
+        if ($needs_items) {
+            $this->log('Adding cart items to order.');
+            foreach (WC()->cart->get_cart() as $cart_item_key => $values) {
+                /** @var \WC_Product $product */
+                $product = $values['data'];
 
-        // Set shipping
-        $chosen_methods = WC()->session->get('chosen_shipping_methods');
-        if (!empty($chosen_methods)) {
-            $shipping_packages = WC()->shipping()->get_packages();
-            foreach ($shipping_packages as $i => $package) {
-                if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
-                    $rate = $package['rates'][$chosen_methods[$i]];
-                    $item = new \WC_Order_Item_Shipping();
-                    $item->set_props(array(
-                        'method_title' => $rate->label,
-                        'method_id' => $rate->method_id,
-                        'instance_id' => $rate->instance_id,
-                        'total' => wc_format_decimal($rate->cost),
-                        'taxes' => array('total' => $rate->taxes),
-                    ));
-                    $order->add_item($item);
+                $item = new \WC_Order_Item_Product();
+                $item->set_name($product->get_name());
+
+                // Correctly set parent product ID and variation ID
+                if ($product->get_type() === 'variation') {
+                    $item->set_product_id($product->get_parent_id());
+                    $item->set_variation_id($product->get_id());
+                } else {
+                    $item->set_product_id($product->get_id());
+                    $item->set_variation_id(0);
+                }
+
+                $item->set_quantity($values['quantity']);
+                $item->set_subtotal($values['line_subtotal']);
+                $item->set_total($values['line_total']);
+                $item->set_subtotal_tax($values['line_subtotal_tax']);
+                $item->set_total_tax($values['line_tax']);
+                $item->set_taxes($values['line_tax_data']);
+                $item->set_backorder_meta();
+
+                // Add variation attributes as item meta (e.g. "Color: Blue")
+                if (!empty($values['variation'])) {
+                    foreach ($values['variation'] as $attr_key => $attr_value) {
+                        $item->add_meta_data($attr_key, $attr_value);
+                    }
+                }
+
+                // Fire the standard hook that plugins like "Extra Product Options" use
+                // to attach their custom metadata to the order line item.
+                do_action('woocommerce_checkout_create_order_line_item', $item, $cart_item_key, $values, $order);
+
+                $order->add_item($item);
+            }
+
+            // Set shipping
+            $chosen_methods = WC()->session->get('chosen_shipping_methods');
+            if (!empty($chosen_methods)) {
+                $shipping_packages = WC()->shipping()->get_packages();
+                foreach ($shipping_packages as $i => $package) {
+                    if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
+                        $rate = $package['rates'][$chosen_methods[$i]];
+                        $item = new \WC_Order_Item_Shipping();
+                        $item->set_props(array(
+                            'method_title' => $rate->label,
+                            'method_id' => $rate->method_id,
+                            'instance_id' => $rate->instance_id,
+                            'total' => wc_format_decimal($rate->cost),
+                            'taxes' => array('total' => $rate->taxes),
+                        ));
+
+                        // Allow plugins to modify shipping item
+                        do_action('woocommerce_checkout_create_order_shipping_item', $item, $i, $package, $order);
+
+                        $order->add_item($item);
+                    }
                 }
             }
+
+            // Add Fees manually since we are not using the standard checkout flow
+            foreach (WC()->cart->get_fees() as $fee) {
+                $item = new \WC_Order_Item_Fee();
+                $item->set_name($fee->name);
+                $item->set_tax_class($fee->tax_class);
+                $item->set_tax_status($fee->taxable ? 'taxable' : 'none');
+                $item->set_total($fee->total);
+                $item->set_total_tax($fee->tax);
+                $item->set_taxes(array('total' => $fee->tax_data));
+
+                do_action('woocommerce_checkout_create_order_fee_item', $item, $fee->id, $fee, $order);
+
+                $order->add_item($item);
+            }
+
+            // Add Coupons
+            foreach (WC()->cart->get_coupons() as $code => $coupon) {
+                $item = new \WC_Order_Item_Coupon();
+                $item->set_code($code);
+                $item->set_discount(WC()->cart->get_coupon_discount_amount($code));
+                $item->set_discount_tax(WC()->cart->get_coupon_discount_tax_amount($code));
+
+                do_action('woocommerce_checkout_create_order_coupon_item', $item, $code, $coupon, $order);
+
+                $order->add_item($item);
+            }
+
+            // Important: Recalculate totals after adding items manually
+            $order->calculate_totals(true);
+            $order->save();
+        } else {
+            $this->log('Skipping item creation — order already has items from Store API.');
         }
 
         // Get PSP display name from session data using robust lookup
@@ -1091,13 +1180,23 @@ class Checkout_Handler
     {
         $errors = array();
 
+        // Email Validation (Non-B2B only)
+        // Ensure email is present in B2C flow since some blocks/external checkouts might bypass frontend checks.
+        $is_b2b = (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) || (isset($_COOKIE['briqpay_b2b_active']) && $_COOKIE['briqpay_b2b_active'] === '1');
+        if (!$is_b2b) {
+            $email = $session['data']['billing']['email'] ?? '';
+            if (empty($email)) {
+                $errors[] = __('Please fill in your email.', 'briqpay-for-woocommerce');
+            }
+        }
+
         // Use Session_Manager to calculate expected payload
         $session_manager = new Session_Manager();
         $wc_data = $session_manager->get_session_data(true); // Get update payload
 
         $this->log('Validating Session Integrity...');
-        $this->log('BP Data: ' . json_encode($session['data']['order'] ?? array()));
-        $this->log('WC Data: ' . json_encode($wc_data['data']['order'] ?? array()));
+        $this->log('BP Data: ' . wp_json_encode($session['data']['order'] ?? array()));
+        $this->log('WC Data: ' . wp_json_encode($wc_data['data']['order'] ?? array()));
 
         // Validate Totals
         // Briqpay uses integers (minor units) or floats. Session data usually has ints for amounts if strictly typed on backend?
@@ -1203,6 +1302,21 @@ class Checkout_Handler
         // Remove whitespace, lowercase
         return strtolower(preg_replace('/\s+/', '', trim($val)));
     }
+
+    /**
+     * Recursive Sanitization for Arrays
+     */
+    private function sanitize_recursive($data)
+    {
+        if (is_array($data)) {
+            foreach ($data as $key => $value) {
+                $data[$key] = $this->sanitize_recursive($value);
+            }
+        } else {
+            $data = sanitize_text_field($data);
+        }
+        return $data;
+    }
     /**
      * Render Briqpay Iframe Shortcode
      * 
@@ -1221,6 +1335,8 @@ class Checkout_Handler
         if (wp_doing_ajax()) {
             return wp_get_raw_referer();
         }
-        return (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]$_SERVER[REQUEST_URI]";
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via esc_url_raw below.
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
+        return esc_url_raw(home_url($request_uri));
     }
 }
