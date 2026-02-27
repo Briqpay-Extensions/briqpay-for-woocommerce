@@ -5,6 +5,9 @@ window.briqpayCheckout = {
     retryCount: 0,
     _updateDebounceTimer: null,
     _lastPayloadHash: '',
+    _isUpdating: false,
+    _isSuspended: false,
+    _pendingDecision: null,
 
     init: function () {
         const $ = jQuery;
@@ -97,6 +100,7 @@ window.briqpayCheckout = {
         // Debounce: collapse multiple rapid 'updated_checkout' events into one call.
         clearTimeout(self._updateDebounceTimer);
         self._updateDebounceTimer = setTimeout(function () {
+            self._updateDebounceTimer = null;
 
             var isBriqpaySelected = $('#payment_method_briqpay').is(':checked');
             var isBriqpayValue = $('input[name="payment_method"]:checked').val() === 'briqpay';
@@ -126,6 +130,7 @@ window.briqpayCheckout = {
             return;
         }
         clearTimeout(this._updateDebounceTimer);
+        this._updateDebounceTimer = null;
         this.initOrUpdate();
     },
 
@@ -191,6 +196,8 @@ window.briqpayCheckout = {
         var payloadHash = formData + '||' + blocksJson;
 
         if (payloadHash === this._lastPayloadHash) {
+            this.resume();
+            this._processPendingDecision();
             return;
         }
 
@@ -209,6 +216,8 @@ window.briqpayCheckout = {
             requestData.blocks_data = blocksJson;
         }
 
+        this._isUpdating = true;
+
         $.ajax({
             url: briqpayParams.ajax_url,
             type: 'POST',
@@ -225,19 +234,80 @@ window.briqpayCheckout = {
                         if (response.data.htmlSnippet) {
                             $('#briqpay-iframe-container').html(response.data.htmlSnippet);
                             window.briqpayCheckout.listenersAttached = false;
+
+                            // Re-attach listeners and WAIT before resuming to ensure SDK is ready
                             window.briqpayCheckout.attachListeners();
+                            setTimeout(function () {
+                                window.briqpayCheckout.resume();
+                                window.briqpayCheckout._isUpdating = false;
+                                window.briqpayCheckout._processPendingDecision();
+                            }, 1000);
+                            return; // Exit early, setTimeout handles the rest
                         }
                     }
 
-                    window.briqpayCheckout.resume();
+                    // Standard update (PATCH): also wait 1000ms before resume to ensure backend sync
+                    setTimeout(function () {
+                        window.briqpayCheckout.resume();
+                        window.briqpayCheckout._isUpdating = false;
+                        window.briqpayCheckout._processPendingDecision();
+                    }, 1000);
                 } else {
                     console.error('Briqpay: Session sync failed', response);
                     window.briqpayCheckout.resume();
+                    window.briqpayCheckout._isUpdating = false;
+                    window.briqpayCheckout._processPendingDecision();
                 }
             },
             error: function (xhr, status, error) {
                 console.error('Briqpay: AJAX error in updateSession', error);
                 window.briqpayCheckout.resume();
+                window.briqpayCheckout._isUpdating = false;
+                window.briqpayCheckout._processPendingDecision();
+            }
+        });
+    },
+
+    _processPendingDecision: function () {
+        if (this._pendingDecision) {
+            console.log('Briqpay: Processing deferred decision...');
+            var event = this._pendingDecision;
+            this._pendingDecision = null;
+            this.makeDecision(event);
+        }
+    },
+
+    makeDecision: function (event) {
+        const $ = jQuery;
+        var self = this;
+
+        // If an update is scheduled (debounce) or in-flight (AJAX), defer the decision.
+        if (this._updateDebounceTimer || this._isUpdating) {
+            console.log('Briqpay: Deferring decision until session sync complete.');
+            this._pendingDecision = event;
+            return;
+        }
+
+        $.ajax({
+            url: briqpayParams.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'briqpay_make_decision',
+                nonce: briqpayParams.nonce,
+                sessionId: event.sessionId
+            },
+            success: function (response) {
+                var v3 = window._briqpay ? window._briqpay.v3 : null;
+                if (response.success) {
+                    self.redirectUrl = response.data.redirect_url;
+                    if (v3 && typeof v3.resumeDecision === 'function') v3.resumeDecision();
+                } else {
+                    if (v3 && typeof v3.resumeDecision === 'function') v3.resumeDecision();
+                }
+            },
+            error: function () {
+                var v3 = window._briqpay ? window._briqpay.v3 : null;
+                if (v3 && typeof v3.resumeDecision === 'function') v3.resumeDecision();
             }
         });
     },
@@ -277,23 +347,7 @@ window.briqpayCheckout = {
 
         try {
             subscribe('make_decision', function (event) {
-                $.ajax({
-                    url: briqpayParams.ajax_url,
-                    type: 'POST',
-                    data: {
-                        action: 'briqpay_make_decision',
-                        nonce: briqpayParams.nonce,
-                        sessionId: event.sessionId
-                    },
-                    success: function (response) {
-                        if (response.success) {
-                            window.briqpayCheckout.redirectUrl = response.data.redirect_url;
-                            if (typeof v3.resumeDecision === 'function') v3.resumeDecision();
-                        } else {
-                            if (typeof v3.resumeDecision === 'function') v3.resumeDecision();
-                        }
-                    }
-                });
+                window.briqpayCheckout.makeDecision(event);
             });
 
             var onCompleted = function (event) {
@@ -338,14 +392,18 @@ window.briqpayCheckout = {
     },
 
     suspend: function () {
+        if (this._isSuspended) return;
         if (window._briqpay && window._briqpay.v3 && typeof window._briqpay.v3.suspend === 'function') {
             window._briqpay.v3.suspend();
+            this._isSuspended = true;
         }
     },
 
     resume: function () {
+        if (!this._isSuspended) return;
         if (window._briqpay && window._briqpay.v3 && typeof window._briqpay.v3.resume === 'function') {
             window._briqpay.v3.resume();
+            this._isSuspended = false;
         }
     },
 

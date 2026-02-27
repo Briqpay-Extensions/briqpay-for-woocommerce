@@ -154,7 +154,7 @@ class Checkout_Handler
                 setTimeout(function() { clearInterval(sentinel); }, 15000);
 
                 var observer = new MutationObserver(checkAndKill);
-                observer.observe(document.documentElement, { child_list: true, subtree: true });
+                observer.observe(document.documentElement, { childList: true, subtree: true });
                 setTimeout(function() { observer.disconnect(); }, 20000);
             })();';
 
@@ -400,6 +400,11 @@ class Checkout_Handler
         WC()->session->save_data();
 
         // Redirect to order received page
+        // Clear session data after successful placement to ensure second purchase starts fresh
+        Session_Manager::clear_session_id();
+        WC()->session->set('order_awaiting_payment', null);
+        WC()->session->set('briqpay_customer_type', null);
+
         wp_safe_redirect($order->get_checkout_order_received_url());
         exit;
     }
@@ -739,6 +744,9 @@ class Checkout_Handler
             WC()->customer->set_shipping_country($s['country'] ?? '');
         }
         WC()->customer->save();
+
+        // Robust re-calculation: Force shipping before totals to ensure sync.
+        WC()->cart->calculate_shipping();
         WC()->cart->calculate_totals();
 
         // 2. Create order at decision point
@@ -802,6 +810,34 @@ class Checkout_Handler
 
             // Validate data integrity before approving
             $validation = $this->validate_data_integrity($session);
+
+            // Optimization: If there is an amount mismatch, try ONE synchronous sync to Briqpay
+            // to reconcile race conditions (e.g. shipping fee just added) before giving up.
+            $has_amount_mismatch = false;
+            foreach ($validation['errors'] as $err) {
+                if (strpos($err, 'Amount mismatch') !== false) {
+                    $has_amount_mismatch = true;
+                    break;
+                }
+            }
+
+            if ($has_amount_mismatch) {
+                $this->log(sprintf('Amount mismatch detected for session %s. Attempting emergency synchronization...', $session_id));
+                $session_manager = new Session_Manager();
+                $session = $session_manager->update_session($session_id);
+
+                if (!is_wp_error($session)) {
+                    // Extract amounts for logging to verify the PATCH actually updated Briqpay
+                    $synced_bp_amount = $session['data']['order']['amountIncVat'] ?? 0;
+                    $current_wc_amount = $this->get_cart_total_inc_vat();
+                    $this->log(sprintf('Emergency sync complete. New BP: %s, Current WC: %s. Re-validating...', $synced_bp_amount, $current_wc_amount));
+
+                    $validation = $this->validate_data_integrity($session);
+                } else {
+                    $this->log('Emergency sync failed: ' . $session->get_error_message());
+                }
+            }
+
             $initial_decision = 'allow';
 
             if (!$validation['valid']) {
@@ -1274,6 +1310,16 @@ class Checkout_Handler
             'valid' => empty($errors),
             'errors' => $errors
         );
+    }
+
+    /**
+     * Get current cart total inc VAT in integer cents (or equivalent)
+     */
+    private function get_cart_total_inc_vat()
+    {
+        $session_manager = new Session_Manager();
+        $data = $session_manager->get_session_data();
+        return $data['data']['order']['amountIncVat'] ?? 0;
     }
 
     /**

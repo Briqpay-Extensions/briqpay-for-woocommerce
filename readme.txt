@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.7
+Stable tag: 1.0.8
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -51,6 +51,14 @@ The use of this service is governed by Briqpay's legal documentation:
 
 == Changelog ==
 
+= 1.0.8 =
+* Fixed B2B session synchronization race condition.
+* Improved payment decision reliability with deferred processing during session updates.
+* Added mandatory 1000ms delay before session resume to ensure backend/frontend alignment.
+* Fixed JavaScript error in MutationObserver configuration.
+* Enhanced backend data integrity with forced shipping recalculation at decision point.
+* Implemented automatic session cleanup after successful order completion.
+
 = 1.0.7 =
 * Added dependency "Requires Plugins: woocommerce" to plugin header.
 * Added "External services" section to readme.txt for Briqpay transparency.
@@ -60,6 +68,7 @@ The use of this service is governed by Briqpay's legal documentation:
 * Improved order creation logic to preserve product variations and 3rd-party metadata (e.g. Extra Product Options).
 * Fixed B2B context leaking after purchase, causing cart/mini-cart buttons to disappear.
 * Fixed duplication of shipping, fees, and coupons during order creation when reusing draft orders.
+* Added "Emergency Sync" to resolve amount mismatches caused by race conditions during the purchase process.
 * Fixed shipping address pre-filling for logged-in users in B2B checkout.
 
 = 1.0.6 =

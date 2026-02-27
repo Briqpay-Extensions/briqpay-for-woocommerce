@@ -90,8 +90,17 @@
 
                     if (changed) {
                         console.log('Briqpay B2B: Address changed, triggering update_checkout');
+                        // Suspend before triggering to lock the iframe
+                        if (window.briqpayCheckout && typeof window.briqpayCheckout.suspend === 'function') {
+                            window.briqpayCheckout.suspend();
+                        }
                         // Trigger WooCommerce checkout update to recalculate shipping
                         $(document.body).trigger('update_checkout');
+                    } else {
+                        // If no change, ensure we are resumed (in case someone called suspend earlier)
+                        if (window.briqpayCheckout && typeof window.briqpayCheckout.resume === 'function') {
+                            window.briqpayCheckout.resume();
+                        }
                     }
                 });
             };

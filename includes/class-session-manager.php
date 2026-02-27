@@ -775,4 +775,17 @@ class Session_Manager
         $url = strtok($url, '?');
         return add_query_arg('briqpay_return', '1', $url);
     }
+    /**
+     * Clear Session ID
+     */
+    public static function clear_session_id()
+    {
+        if (null !== WC() && null !== WC()->session) {
+            WC()->session->set('briqpay_session_id', null);
+        }
+
+        if (isset($_COOKIE['briqpay_session_id'])) {
+            setcookie('briqpay_session_id', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
+        }
+    }
 }
