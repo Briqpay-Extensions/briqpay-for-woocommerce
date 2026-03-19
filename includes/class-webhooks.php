@@ -25,6 +25,9 @@ class Webhooks
      */
     public function handle_webhook()
     {
+        // Webhooks are server-to-server POST requests from Briqpay with no user session.
+        // Nonce verification is not applicable here. Instead, we verify payload authenticity
+        // by fetching the session from the Briqpay API in process_webhook_callback().
         // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Comparison only, no output.
         $request_method = isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : '';
         if ('POST' !== $request_method) {
@@ -48,7 +51,8 @@ class Webhooks
             wp_die('Invalid payload', 'Briqpay Webhook', array('response' => 400));
         }
 
-        // Sanitize identifiers
+        // Sanitize all string values recursively, then apply stricter sanitization to identifiers.
+        $data = map_deep($data, 'sanitize_text_field');
         $data['sessionId'] = sanitize_key($data['sessionId']);
         if (isset($data['action'])) {
             $data['action'] = sanitize_key($data['action']);

@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.8
+Stable tag: 1.0.9
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -50,6 +50,12 @@ The use of this service is governed by Briqpay's legal documentation:
 3. Configure your Briqpay settings in WooCommerce > Settings > Payments > Briqpay.
 
 == Changelog ==
+
+= 1.0.9 =
+* Security hardening: Added proper sanitization for all `$_SERVER['REQUEST_URI']` usages.
+* Security hardening: Added recursive sanitization for JSON-decoded `blocks_data` input.
+* Security hardening: Added `map_deep()` sanitization on webhook payloads after `json_decode()`.
+* Improved inline documentation for webhook authentication model.
 
 = 1.0.8 =
 * Fixed B2B session synchronization race condition.

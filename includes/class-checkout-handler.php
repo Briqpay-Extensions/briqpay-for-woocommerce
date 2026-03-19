@@ -500,9 +500,10 @@ class Checkout_Handler
 
         // Handle Blocks Data
         if (isset($_POST['blocks_data'])) {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JSON decoded, then each field is sanitized individually below.
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- JSON must be decoded first; sanitized recursively below via sanitize_recursive().
             $blocks_data = json_decode(wp_unslash($_POST['blocks_data']), true);
             if (is_array($blocks_data)) {
+                $blocks_data = $this->sanitize_recursive($blocks_data);
                 $this->log('Updating WC Customer from blocks data.');
                 // Update Billing
                 if (isset($blocks_data['billing_address'])) {
@@ -1381,8 +1382,7 @@ class Checkout_Handler
         if (wp_doing_ajax()) {
             return wp_get_raw_referer();
         }
-        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via esc_url_raw below.
-        $request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
         return esc_url_raw(home_url($request_uri));
     }
 }

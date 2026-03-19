@@ -419,7 +419,7 @@ class B2b_Checkout
 
                 <input type="hidden" name="briqpay_b2b" value="1" />
                 <input type="hidden" name="_wp_http_referer"
-                    value="<?php echo esc_attr(sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'] ?? ''))); ?>" />
+                    value="<?php echo esc_attr(esc_url(wp_unslash($_SERVER['REQUEST_URI'] ?? ''))); ?>" />
 
                 <?php // Standard WooCommerce Nonces ?>
                 <?php wp_nonce_field('woocommerce-process_checkout', 'woocommerce-process-checkout-nonce'); ?>

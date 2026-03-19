@@ -758,8 +758,7 @@ class Session_Manager
         if (wp_doing_ajax()) {
             $current_url = wp_get_raw_referer();
         } else {
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Sanitized via esc_url_raw below.
-            $request_uri = isset($_SERVER['REQUEST_URI']) ? wp_unslash($_SERVER['REQUEST_URI']) : '/';
+            $request_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
             $current_url = esc_url_raw(home_url($request_uri));
         }
 
