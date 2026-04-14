@@ -11,22 +11,81 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Prepare build directory
+      - name: Install SVN
         run: |
-          mkdir -p build
-          # Copy only the files needed for the plugin
-          cp -r assets build/
-          cp -r includes build/
-          cp -r languages build/
-          cp briqpay-for-woocommerce.php build/
-          cp readme.txt build/
-          cp LICENSE build/
+          sudo apt-get update -y
+          sudo apt-get install -y subversion
 
-      - name: WordPress Plugin Deploy
-        uses: 10up/action-wordpress-plugin-deploy@stable
+      - name: Deploy to WordPress.org
         env:
-          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SLUG: briqpay-for-woocommerce
-          BUILD_DIR: build
-          ASSETS_DIR: none
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          VERSION="${VERSION#v}"
+          echo "ℹ︎ Deploying version $VERSION of $SLUG"
+
+          SVN_URL="https://plugins.svn.wordpress.org/${SLUG}/"
+          SVN_DIR="${HOME}/svn-${SLUG}"
+
+          # Checkout SVN repo
+          echo "➤ Checking out SVN repository..."
+          svn checkout --depth immediates "$SVN_URL" "$SVN_DIR"
+          cd "$SVN_DIR"
+          svn update --set-depth infinity trunk
+          svn update --set-depth immediates tags
+
+          # Bail if version already exists
+          if [[ -d "tags/$VERSION" ]]; then
+            echo "ℹ︎ Version $VERSION already published. Exiting."
+            exit 0
+          fi
+
+          # KEY FIX: Force-remove the vendor directory from the SVN working copy
+          # This removes both the files AND the .svn metadata, preventing the
+          # "not a working copy" errors caused by locked directories.
+          if [[ -d "trunk/vendor" ]]; then
+            echo "➤ Removing old vendor directory from SVN working copy..."
+            svn rm trunk/vendor --force
+          fi
+
+          # Copy plugin files into trunk
+          echo "➤ Syncing plugin files to trunk..."
+          rsync -rc --delete --delete-excluded \
+            --exclude=".svn" \
+            "$GITHUB_WORKSPACE/assets/" trunk/assets/
+          rsync -rc --delete --delete-excluded \
+            --exclude=".svn" \
+            "$GITHUB_WORKSPACE/includes/" trunk/includes/
+          rsync -rc --delete --delete-excluded \
+            --exclude=".svn" \
+            "$GITHUB_WORKSPACE/languages/" trunk/languages/
+          cp "$GITHUB_WORKSPACE/briqpay-for-woocommerce.php" trunk/
+          cp "$GITHUB_WORKSPACE/readme.txt" trunk/
+          cp "$GITHUB_WORKSPACE/LICENSE" trunk/
+
+          # Stage all changes
+          echo "➤ Preparing files..."
+          svn add . --force > /dev/null
+
+          # Remove files that were deleted from trunk
+          svn status | grep '^\!' | sed 's/! *//' | xargs -I% svn rm %@ > /dev/null
+
+          # Create the new tag
+          echo "➤ Creating tag $VERSION..."
+          svn cp "trunk" "tags/$VERSION"
+
+          # Update to avoid out-of-date errors
+          svn update
+
+          echo "➤ SVN status:"
+          svn status
+
+          # Commit
+          echo "➤ Committing to WordPress.org..."
+          svn commit -m "Update to version $VERSION from GitHub" \
+            --no-auth-cache --non-interactive \
+            --username "$SVN_USERNAME" --password "$SVN_PASSWORD"
+
+          echo "✓ Plugin $SLUG version $VERSION deployed!"
