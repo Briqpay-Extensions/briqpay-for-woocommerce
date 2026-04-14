@@ -5,51 +5,75 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.9
+Stable tag: 1.0.10
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
-A professional, high-performance payment gateway for Briqpay V3 in WooCommerce.
+Connect multiple payment providers through one integration to increase conversion, reduce costs, and simplify your checkout.
 
 == Description ==
 
-Briqpay for WooCommerce allows you to integrate the Briqpay V3 payment platform seamlessly into your shop.
+Simplify your payments with Briqpay. 
 
-**Important Note:** This plugin connects to an external service (Briqpay API) to process payments. 
-*   **Service:** Briqpay (https://briqpay.com)
+Briqpay connects multiple payment providers like Adyen, Stripe, PayPal, and Klarna in one integration, removing the need for multiple plugins and reducing technical complexity. Merchants can choose the best provider per market to lower fees, increase flexibility, and improve conversion.
+
+**About Briqpay**
+Briqpay is the payment optimization platform that allows merchants to connect multiple payment providers through a single integration. Instead of building and maintaining separate integrations to each provider, Briqpay gives merchants a unified payment layer to combine providers, add new payment methods, and optimize the checkout experience per market.
+
+With built-in routing, analytics, and a unified payment flow, Briqpay helps commerce teams improve conversion, reduce payment costs, and scale globally with full control over their payment setup.
+
+Briqpay supports payment setups for all your customer types: B2C, D2C, and B2B.
+
+= Main features =
+* **One integration instead of many:** Connect to PayPal, Adyen, Stripe, Klarna and others through one integration.
+* **Built for international commerce:** Supports all countries, currencies, payment methods, B2C and B2B.
+* **Easy to add or switch payment providers:** Add new payment methods or change payment provider without rebuilding your checkout.
+* **Full control over costs and routing:** Control which provider to use per market, currency, or order value.
+* **All payment methods work together:** Cards, BNPL, wallets and local payment methods work in the same checkout without conflicts.
+* **Always up to date:** Payment methods are updated in one place, so you don’t need to maintain multiple plugins.
+* **Built-in analytics and insights:** Analyze conversion, payment method performance, and customer payment behavior across markets in one interface.
+* **Consistent payment flow:** Capture, refund, and order handling works the same for every payment method.
+* **Blocks Support:** Full support for the newer WooCommerce Checkout Block and classic shortcodes.
 
 == External services ==
 
 This plugin connects to Briqpay to process payments. Briqpay is a payment service provider that streamlines multiple payment methods into a single integration. 
 
 The plugin communicates with the following external endpoints to initialize and verify payment sessions:
+
 * https://api.briqpay.com (Production API)
 * https://playground-api.briqpay.com (Test/Staging API)
 
-When you use this plugin, order and customer data is sent to Briqpay. This includes:
+When you use this plugin, order and customer data is sent to Briqpay to enable the payment flow. This includes:
+
 * **Order Details:** Product names, SKU, quantities, prices, and taxes.
 * **Customer Information:** Name, billing/shipping address, email, and phone number.
 * **Transaction Data:** Currency, order ID, and total amount.
 
-This data is sent when a customer accesses the checkout page, updates their checkout information (e.g., shipping methods), or when a merchant processes captures/refunds via the WooCommerce admin.
+Data is transmitted when a customer accesses the checkout page, updates their checkout information (e.g., shipping methods), or when a merchant processes captures/refunds via the WooCommerce admin.
 
 The use of this service is governed by Briqpay's legal documentation:
-* **Privacy Policy:** https://briqpay.com/privacy-policy
-* **Data Processing Agreement (DPA):https://briqpay.com/dpa
 
-= Features =
-*   **Briqpay V3 Integration:** Full support for the latest Briqpay API.
-*   **Classic & Blocks Support:** Works with both classic WooCommerce shortcodes and the newer Checkout Block.
-*   **Embedded iFrame:** Smooth checkout experience within your shop.
-*   **Order Management:** Automated captures and refunds directly from the WooCommerce Admin.
+* **Terms of Service:** https://briqpay.com/terms
+* **Privacy Policy:** https://briqpay.com/privacy-policy
+* **Data Processing Agreement (DPA):** https://briqpay.com/dpa
 
 == Installation ==
 
-1. Upload the plugin folder to the `/wp-content/plugins/` directory.
-2. Activate the plugin through the 'Plugins' menu in WordPress.
-3. Configure your Briqpay settings in WooCommerce > Settings > Payments > Briqpay.
+1. Install and activate the Briqpay plugin in WooCommerce.
+2. Sign up for a Briqpay account at https://briqpay.com.
+3. Retrieve your API credentials from the Briqpay dashboard.
+4. Add your credentials in WooCommerce > Settings > Payments > Briqpay.
+5. Configure your payment providers and methods in Briqpay.
+6. Test your checkout using the playground environment.
+7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.0.10 =
+* Removed incorrect order origin override — WooCommerce attribution tracking is now preserved.
+* Added automatic B2B detection: when the company name field is required in standard WooCommerce checkout, customer type is forced to "business".
+* UX improvements for B2B checkout.
 
 = 1.0.9 =
 * Security hardening: Added proper sanitization for all `$_SERVER['REQUEST_URI']` usages.

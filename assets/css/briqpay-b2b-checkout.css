@@ -23,7 +23,7 @@ form.woocommerce-checkout {
 .briqpay-b2b-checkout-wrapper {
     display: flex;
     flex-direction: row;
-    gap: 60px;
+    gap: 4rem;
     align-items: flex-start;
     justify-content: center;
     margin: 60px auto;
@@ -31,6 +31,7 @@ form.woocommerce-checkout {
 
 /* Order Summary Column */
 .briqpay-b2b-summary-column {
+    margin-top: 1.7rem;
     flex: 0 0 450px;
     order: 2;
     /* Summary on the right by default */

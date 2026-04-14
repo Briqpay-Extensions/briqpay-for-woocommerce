@@ -281,8 +281,7 @@ class Session_Manager
             if ($this->get_customer_type() === 'business' && !$is_b2b_shortcode) {
                 $company_name = (null !== WC()->customer) ? WC()->customer->get_billing_company() : '';
                 $data['data']['company'] = array(
-                    'name' => $company_name,
-                    'cin' => '1111111111', // Placeholder CIN as per user request
+                    'name' => $company_name
                 );
             }
 
@@ -641,13 +640,49 @@ class Session_Manager
     private function get_customer_type()
     {
         $customer_type = 'consumer';
-        if (null !== WC() && null !== WC()->customer) {
+
+        // Check if the company name field is required in WooCommerce checkout settings.
+        // This covers the standard [woocommerce_checkout] and blocks checkout when the
+        // merchant enables "business" (company name required). In that case, force
+        // customerType to 'business' even if the field hasn't been filled yet.
+        if ($this->is_company_field_required()) {
+            $customer_type = 'business';
+        } elseif (null !== WC() && null !== WC()->customer) {
             $billing_company = WC()->customer->get_billing_company();
             $customer_type = !empty($billing_company) ? 'business' : 'consumer';
         }
 
         return apply_filters('briqpay_customer_type', $customer_type);
     }
+
+    /**
+     * Check if the WooCommerce billing company field is required.
+     *
+     * Inspects the WooCommerce checkout field configuration to determine
+     * whether the company name field is set as required. Also checks a
+     * session flag that can be set by the frontend JS when it detects
+     * the company field is required in the DOM.
+     *
+     * @return bool
+     */
+    private function is_company_field_required()
+    {
+        // 1. Check session flag set by frontend JS
+        if (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_company_required')) {
+            return true;
+        }
+
+        // 2. Check WooCommerce checkout field settings
+        if (function_exists('WC') && null !== WC()->checkout()) {
+            $fields = WC()->checkout()->get_checkout_fields('billing');
+            if (isset($fields['billing_company']['required']) && $fields['billing_company']['required']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 
     /**
      * Check if customer type has changed

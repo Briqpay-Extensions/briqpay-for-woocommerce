@@ -110,11 +110,27 @@ const BriqpayContent = (props) => {
 
                 lastSyncRef.current = currentState;
 
+                // Detect if company name field is required in the blocks checkout DOM.
+                // WooCommerce Blocks renders the company field with a required attribute
+                // when the merchant enables it as required.
+                var companyRequired = false;
+                var companyInput = document.querySelector('#billing-company, input[id*="billing-company"], .wc-block-components-text-input #billing-company');
+                if (companyInput) {
+                    companyRequired = companyInput.required || companyInput.getAttribute('aria-required') === 'true';
+                    if (!companyRequired) {
+                        var label = companyInput.closest('.wc-block-components-text-input');
+                        if (label && label.querySelector('.wc-block-components-text-input__label .required')) {
+                            companyRequired = true;
+                        }
+                    }
+                }
+
                 window.briqpayCheckout.initOrUpdate({
                     billing_address: billingAddress,
                     shipping_address: shippingAddress,
                     shipping_rates: selectedShippingMethods,
-                    cart_totals: cartTotals || cartData || cart
+                    cart_totals: cartTotals || cartData || cart,
+                    company_required: companyRequired
                 });
             } else {
                 setTimeout(triggerSync, 200);

@@ -242,12 +242,6 @@ class Webhooks
             }
 
             $order->set_payment_method_title($method_name);
-            $order->set_created_via('Briqpay');
-            $order->update_meta_data('_created_via', 'Briqpay');
-            $order->update_meta_data('_order_origin', 'Briqpay');
-            // WC Order Attribution
-            $order->update_meta_data('_wc_order_attribution_source_type', 'utm');
-            $order->update_meta_data('_wc_order_attribution_utm_source', 'Briqpay');
 
             // Extended metadata for Admin Box
             if (!empty($session['clientToken'])) {

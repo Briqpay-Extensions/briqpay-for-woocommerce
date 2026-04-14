@@ -90,6 +90,23 @@ window.briqpayCheckout = {
                 $(this).removeAttr('disabled');
             });
         }
+
+        // Detect if the company name field is present and required on the checkout page.
+        // WooCommerce marks required fields with a parent that has 'validate-required' class.
+        // If required, inject a hidden flag so the backend forces customerType to 'business'.
+        var $companyField = $('#billing_company');
+        if ($companyField.length > 0) {
+            var $wrapper = $companyField.closest('.form-row');
+            if ($wrapper.hasClass('validate-required')) {
+                // Inject hidden field into all checkout forms so it's serialized with checkout_data
+                $('form.checkout, form#order_review, form.woocommerce-checkout').each(function () {
+                    if (!$(this).find('input[name="briqpay_company_required"]').length) {
+                        $(this).append('<input type="hidden" name="briqpay_company_required" value="1" />');
+                    }
+                });
+            }
+        }
+
         this.onUpdatedCheckout();
     },
 

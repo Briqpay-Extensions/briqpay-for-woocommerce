@@ -37,8 +37,6 @@ class Checkout_Handler
         add_action('woocommerce_thankyou', array($this, 'clear_customer_data_after_purchase'), 10, 1);
         add_filter('body_class', array($this, 'add_body_class'));
         add_action('wp_enqueue_scripts', array($this, 'enqueue_critical_assets'), 20);
-        add_filter('woocommerce_order_get_created_via', array($this, 'force_briqpay_origin'), 10, 2);
-        add_filter('wc_order_attribution_origin_label', array($this, 'filter_attribution_origin_label'), 10, 3);
         add_shortcode('briqpay_iframe', array($this, 'render_briqpay_iframe'));
     }
 
@@ -175,29 +173,6 @@ class Checkout_Handler
         return $classes;
     }
 
-    /**
-     * Filter attribution origin label
-     */
-    public function filter_attribution_origin_label($label, $source_type, $source)
-    {
-        if ($source === 'Briqpay') {
-            return 'Briqpay';
-        }
-        return $label;
-    }
-
-    /**
-     * Force Briqpay as Origin if missing
-     */
-    public function force_briqpay_origin($created_via, $order)
-    {
-        if ($order->get_payment_method() === 'briqpay') {
-            if (empty($created_via) || 'checkout' === $created_via || 'unknown' === strtolower($created_via)) {
-                return 'Briqpay';
-            }
-        }
-        return $created_via;
-    }
 
     /**
      * Handle WC Checkout Order Processed
@@ -212,12 +187,6 @@ class Checkout_Handler
         $session_id = Session_Manager::get_session_id();
         if ($session_id) {
             $order->update_meta_data('_briqpay_session_id', $session_id);
-            $order->set_created_via('Briqpay');
-            $order->update_meta_data('_created_via', 'Briqpay');
-            $order->update_meta_data('_order_origin', 'Briqpay');
-            // WC Order Attribution
-            $order->update_meta_data('_wc_order_attribution_source_type', 'utm');
-            $order->update_meta_data('_wc_order_attribution_utm_source', 'Briqpay');
             $order->set_status('pending', __('Order created via native checkout. Awaiting Briqpay decision.', 'briqpay-for-woocommerce'));
             $order->save();
         }
@@ -293,14 +262,8 @@ class Checkout_Handler
 
         $this->log('Resolved PSP Name: ' . $psp_name);
 
-        // Update order with PSP name, Origin and Extended Metadata
+        // Update order with PSP name and Extended Metadata
         $order->set_payment_method_title($psp_name);
-        $order->set_created_via('Briqpay');
-        $order->update_meta_data('_created_via', 'Briqpay');
-        $order->update_meta_data('_order_origin', 'Briqpay');
-        // WC Order Attribution
-        $order->update_meta_data('_wc_order_attribution_source_type', 'utm');
-        $order->update_meta_data('_wc_order_attribution_utm_source', 'Briqpay');
         $order->update_meta_data('_briqpay_psp_name', $psp_name);
 
         // Extended metadata for Admin Box
@@ -658,6 +621,19 @@ class Checkout_Handler
 
         $this->log('Recalculated WC Total: ' . $total_after . ' (Shipping: ' . WC()->cart->get_shipping_total() . ')');
 
+        // Detect if the frontend signals that company name is required
+        // (standard WooCommerce checkout with "business" option enabled).
+        // Nonce was already verified at the top of this method via check_ajax_referer().
+        $company_required = false;
+        if (isset($blocks_data) && !empty($blocks_data['company_required'])) {
+            $company_required = true;
+        } elseif (isset($checkout_data) && !empty($checkout_data['briqpay_company_required'])) {
+            $company_required = true;
+        }
+        if (null !== WC()->session) {
+            WC()->session->set('briqpay_company_required', $company_required);
+        }
+
         // Auto-detect B2B context from the shortcode's hidden field.
         // The [briqpay_b2b_checkout] shortcode renders <input name="briqpay_b2b" value="1">
         // which checkout.js serializes into checkout_data. If present, establish B2B session
@@ -1009,12 +985,7 @@ class Checkout_Handler
             $needs_items = true; // New order always needs items
         }
 
-        // Update generic metadata
-        $order->set_created_via('Briqpay');
-        $order->update_meta_data('_created_via', 'Briqpay');
-        $order->update_meta_data('_order_origin', 'Briqpay');
-        $order->update_meta_data('_wc_order_attribution_source_type', 'utm');
-        $order->update_meta_data('_wc_order_attribution_utm_source', 'Briqpay');
+
         $order->save();
 
         // Set this order as the one awaiting payment in session to prevent WC from creating another
