@@ -13,25 +13,19 @@ jobs:
 
       - name: Install Composer dependencies
         run: |
-          composer install --no-dev --optimize-autoloader
+          mkdir ../temp_vendor
+          composer install --no-dev --optimize-autoloader --working-dir=.
           
-          rm -rf vendor/phpunit
-          rm -rf vendor/sebastian
-          rm -rf vendor/phar-io
-          rm -rf vendor/theseer
-          rm -rf vendor/nikic
-          rm -rf vendor/myclabs
-          rm -rf vendor/mockery
-          rm -rf vendor/hamcrest
-          rm -rf vendor/doctrine
-          rm -rf vendor/antecedent
-          rm -rf vendor/10up
+          rm -rf vendor/phpunit vendor/sebastian vendor/phar-io vendor/theseer vendor/nikic vendor/myclabs vendor/mockery vendor/hamcrest vendor/doctrine vendor/antecedent vendor/10up
           
           find vendor -type l -delete
           find vendor -type d -name ".git" -exec rm -rf {} +
+          find vendor -type d -name ".svn" -exec rm -rf {} +
 
       - name: WordPress Plugin Deploy
         uses: 10up/action-wordpress-plugin-deploy@stable
+        with:
+          generate-zip: true
         env:
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}

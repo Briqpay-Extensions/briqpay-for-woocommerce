@@ -5,15 +5,3 @@
 /phpunit.xml.dist
 /tests/
 /bin/
-/vendor/bin/
-/vendor/phpunit/
-/vendor/sebastian/
-/vendor/phar-io/
-/vendor/theseer/
-/vendor/myclabs/
-/vendor/nikic/
-/vendor/mockery/
-/vendor/hamcrest/
-/vendor/doctrine/
-/vendor/antecedent/
-/vendor/10up/
