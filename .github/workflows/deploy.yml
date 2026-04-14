@@ -13,7 +13,20 @@ jobs:
 
       - name: Install Composer dependencies
         run: |
-          composer install --no-dev --optimize-autoloader        
+          composer install --no-dev --optimize-autoloader
+          
+          rm -rf vendor/phpunit
+          rm -rf vendor/sebastian
+          rm -rf vendor/phar-io
+          rm -rf vendor/theseer
+          rm -rf vendor/nikic
+          rm -rf vendor/myclabs
+          rm -rf vendor/mockery
+          rm -rf vendor/hamcrest
+          rm -rf vendor/doctrine
+          rm -rf vendor/antecedent
+          rm -rf vendor/10up
+          
           find vendor -type l -delete
           find vendor -type d -name ".git" -exec rm -rf {} +
 
