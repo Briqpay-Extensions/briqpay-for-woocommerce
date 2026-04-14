@@ -1,19 +1,23 @@
+# Version control
 .git
 .github
 .gitignore
+.gitattributes
+
+# Build/config files
 .distignore
+.DS_Store
+.phpunit.result.cache
 phpunit.xml.dist
+composer.json
+composer.lock
+DEVELOPER-GUIDE.txt
+README.md
+
+# Dev directories
 tests
 bin
-vendor/bin
-vendor/phpunit
-vendor/sebastian
-vendor/phar-io
-vendor/theseer
-vendor/myclabs
-vendor/nikic
-vendor/mockery
-vendor/hamcrest
-vendor/doctrine
-vendor/antecedent
-vendor/10up
+node_modules
+
+# No production dependencies — exclude entire vendor
+vendor
