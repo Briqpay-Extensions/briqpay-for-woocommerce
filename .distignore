@@ -4,5 +4,11 @@
 .distignore
 phpunit.xml.dist
 tests
-composer.json
-composer.lock
+bin
+vendor/bin
+vendor/phpunit
+vendor/sebastian
+vendor/phar-io
+vendor/theseer
+vendor/myclabs
+vendor/nikic
