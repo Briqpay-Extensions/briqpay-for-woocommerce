@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.10
+Stable tag: 1.0.11
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,11 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.0.11 =
+* Fixed B2B checkout shipping not updating correctly when address is populated from the Briqpay iframe.
+* Extended `addressupdate` event handler to sync country, city and state fields — not just postcode — so WooCommerce shipping zones resolve correctly.
+* `update_checkout` is now always triggered on every `addressupdate` event (not only when field values differ) to handle cases where the hidden fields already contain correct values but WooCommerce has not yet recalculated shipping.
 
 = 1.0.10 =
 * Removed incorrect order origin override — WooCommerce attribution tracking is now preserved.

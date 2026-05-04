@@ -70,38 +70,52 @@
                 subscribe('addressupdate', function (data) {
                     console.log('Briqpay B2B: Address Update Event Received', data);
 
-                    var billing = data.billingaddress;
+                    var billing  = data.billingaddress;
                     var shipping = data.shippingaddress;
+
+                    // Helper: set a field value and return true if it actually changed.
+                    function syncField(selector, value) {
+                        if (value !== undefined && value !== null && $(selector).val() !== value) {
+                            $(selector).val(value);
+                            return true;
+                        }
+                        return false;
+                    }
+
                     var changed = false;
 
+                    // Sync all billing address fields that WooCommerce uses for
+                    // shipping-zone resolution (country is the most critical one).
                     if (billing) {
-                        if (billing.zip && $('#billing_postcode').val() !== billing.zip) {
-                            $('#billing_postcode').val(billing.zip);
-                            changed = true;
-                        }
+                        changed = syncField('#billing_country',  billing.country)   || changed;
+                        changed = syncField('#billing_postcode', billing.zip)        || changed;
+                        changed = syncField('#billing_city',     billing.city)       || changed;
+                        changed = syncField('#billing_state',    billing.state)      || changed;
                     }
 
+                    // Sync all shipping address fields.
                     if (shipping) {
-                        if (shipping.zip && $('#shipping_postcode').val() !== shipping.zip) {
-                            $('#shipping_postcode').val(shipping.zip);
-                            changed = true;
-                        }
+                        changed = syncField('#shipping_country',  shipping.country)  || changed;
+                        changed = syncField('#shipping_postcode', shipping.zip)       || changed;
+                        changed = syncField('#shipping_city',     shipping.city)      || changed;
+                        changed = syncField('#shipping_state',    shipping.state)     || changed;
                     }
 
-                    if (changed) {
-                        console.log('Briqpay B2B: Address changed, triggering update_checkout');
-                        // Suspend before triggering to lock the iframe
-                        if (window.briqpayCheckout && typeof window.briqpayCheckout.suspend === 'function') {
-                            window.briqpayCheckout.suspend();
-                        }
-                        // Trigger WooCommerce checkout update to recalculate shipping
-                        $(document.body).trigger('update_checkout');
-                    } else {
-                        // If no change, ensure we are resumed (in case someone called suspend earlier)
-                        if (window.briqpayCheckout && typeof window.briqpayCheckout.resume === 'function') {
-                            window.briqpayCheckout.resume();
-                        }
+                    // Always trigger update_checkout when Briqpay fires this event.
+                    // Even if the hidden-field values were already correct, WooCommerce
+                    // may not have recalculated shipping yet (e.g. on first load or after
+                    // a session reset).  This mirrors the manual fix:
+                    //   jQuery('#billing_country,#shipping_country').val('SE');
+                    //   jQuery('#billing_postcode,#shipping_postcode').val('12345');
+                    //   jQuery(document.body).trigger('update_checkout');
+                    console.log('Briqpay B2B: Triggering update_checkout (changed=' + changed + ')');
+
+                    // Suspend the iframe while WooCommerce recalculates.
+                    if (window.briqpayCheckout && typeof window.briqpayCheckout.suspend === 'function') {
+                        window.briqpayCheckout.suspend();
                     }
+
+                    $(document.body).trigger('update_checkout');
                 });
             };
 

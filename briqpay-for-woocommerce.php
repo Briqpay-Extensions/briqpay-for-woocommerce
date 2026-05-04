@@ -3,7 +3,7 @@
  * Plugin Name: Briqpay for WooCommerce
  * Plugin URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Description: A professional payment gateway for Briqpay V3 in WooCommerce.
- * Version: 1.0.10
+ * Version: 1.0.11
  * Author: Briqpay
  * Author URI: https://briqpay.com
  * Text Domain: briqpay-for-woocommerce
@@ -12,7 +12,7 @@
  * Requires PHP: 7.4
  * Requires Plugins: woocommerce
  * WC requires at least: 5.5
- * WC tested up to: 10.6
+ * WC tested up to: 8.5
  * License: GPLv2 or later
  * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  */
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('BRIQPAY_WC_VERSION', '1.0.10');
+define('BRIQPAY_WC_VERSION', '1.0.11');
 define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
 define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
 define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
