@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.11
+Stable tag: 1.0.12
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,12 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.0.12 =
+* Added native B2B company metadata: company name and CIN (corporate identification number) are now automatically saved from the Briqpay session to order meta (`_briqpay_company_name`, `_briqpay_company_cin`) — no external filter snippet required.
+* Company name and CIN are now displayed in the WooCommerce admin order view, below the billing address, for all B2B orders.
+* Company name (`billing_company`) is now correctly set on the WooCommerce order and customer at the decision point and on return, ensuring it appears on the thank-you page and in order confirmation emails.
+* Company name is also set on `shipping_company` so it appears correctly on shipping labels and in shipping address details.
 
 = 1.0.11 =
 * Fixed B2B checkout shipping not updating correctly when address is populated from the Briqpay iframe.

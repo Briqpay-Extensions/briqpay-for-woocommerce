@@ -709,6 +709,13 @@ class Checkout_Handler
             WC()->customer->set_billing_phone($b['phoneNumber'] ?? '');
         }
 
+        // Sync company name to WC customer (B2B: used for thank-you page and order details).
+        $company_name = $session['data']['company']['name'] ?? '';
+        if ($company_name) {
+            WC()->customer->set_billing_company(sanitize_text_field($company_name));
+            WC()->customer->set_shipping_company(sanitize_text_field($company_name));
+        }
+
         if (isset($session['data']['shipping'])) {
             $s = $session['data']['shipping'];
             WC()->customer->set_shipping_first_name($s['firstName'] ?? '');
@@ -747,6 +754,13 @@ class Checkout_Handler
                 $order->set_billing_state($b['region'] ?? '');
                 $order->set_billing_country($b['country'] ?? '');
                 $order->set_billing_phone($b['phoneNumber'] ?? '');
+            }
+
+            // Set company name on order (B2B: visible in order details and thank-you page).
+            $company_name = $session['data']['company']['name'] ?? '';
+            if ($company_name) {
+                $order->set_billing_company(sanitize_text_field($company_name));
+                $order->set_shipping_company(sanitize_text_field($company_name));
             }
 
             if (isset($session['data']['shipping']) && !empty($session['data']['shipping'])) {
@@ -1140,6 +1154,13 @@ class Checkout_Handler
             $order->set_billing_state($b['region'] ?? '');
             $order->set_billing_country($b['country'] ?? '');
             $order->set_billing_phone($b['phoneNumber'] ?? '');
+        }
+
+        // Set company name on order (B2B: visible in order details and thank-you page).
+        $company_name = $session['data']['company']['name'] ?? '';
+        if ($company_name) {
+            $order->set_billing_company(sanitize_text_field($company_name));
+            $order->set_shipping_company(sanitize_text_field($company_name));
         }
 
         $s = $session['data']['shipping'] ?? array();

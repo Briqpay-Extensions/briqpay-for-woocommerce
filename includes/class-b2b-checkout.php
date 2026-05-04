@@ -45,6 +45,10 @@ class B2b_Checkout
         add_filter('woocommerce_update_order_review_fragments', array($this, 'add_b2b_fragments'));
         add_filter('woocommerce_is_checkout', array($this, 'force_is_checkout'));
         add_filter('body_class', array($this, 'add_body_class'));
+
+        // B2B Company metadata: save from session, display in admin.
+        add_filter('briqpay_order_metadata', array($this, 'save_company_metadata'), 10, 3);
+        add_action('woocommerce_admin_order_data_after_billing_address', array($this, 'display_company_in_admin'), 10, 1);
     }
 
     /**
@@ -585,6 +589,67 @@ class B2b_Checkout
                 <?php do_action('woocommerce_review_order_after_order_total'); ?>
             </tfoot>
         </table>
+        <?php
+    }
+
+    /**
+     * Save Company Metadata from Briqpay Session
+     *
+     * Hooked to `briqpay_order_metadata`. Extracts company name and CIN
+     * (corporate identification number) from the Briqpay session and stores
+     * them as order meta so they survive independently of the billing_company
+     * field (which WooCommerce may overwrite).
+     *
+     * @param array    $metadata Existing extra metadata array.
+     * @param \WC_Order $order   The WooCommerce order.
+     * @param array    $session  Full Briqpay session data.
+     * @return array
+     */
+    public function save_company_metadata(array $metadata, $order, array $session)
+    {
+        if (!$this->is_b2b_active()) {
+            return $metadata;
+        }
+
+        $company = $session['data']['company'] ?? array();
+
+        if (!empty($company['name'])) {
+            $metadata['_briqpay_company_name'] = sanitize_text_field($company['name']);
+        }
+
+        if (!empty($company['cin'])) {
+            $metadata['_briqpay_company_cin'] = sanitize_text_field($company['cin']);
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * Display Company Info in WooCommerce Admin Order View
+     *
+     * Hooked to `woocommerce_admin_order_data_after_billing_address`.
+     * Only shown when company name or CIN is present (i.e. B2B orders).
+     *
+     * @param \WC_Order $order The WooCommerce order.
+     */
+    public function display_company_in_admin($order)
+    {
+        $company_name = $order->get_meta('_briqpay_company_name');
+        $company_cin  = $order->get_meta('_briqpay_company_cin');
+
+        if (empty($company_name) && empty($company_cin)) {
+            return;
+        }
+        ?>
+        <div class="briqpay-company-info" style="margin-top:12px;padding:10px 12px;background:#f8f8f8;border-left:3px solid #2271b1;border-radius:2px;">
+            <strong><?php esc_html_e('Company', 'briqpay-for-woocommerce'); ?></strong><br>
+            <?php if ($company_name) : ?>
+                <?php esc_html_e('Name:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_name); ?><br>
+            <?php endif; ?>
+            <?php if ($company_cin) : ?>
+                <?php esc_html_e('CIN:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_cin); ?>
+            <?php endif; ?>
+        </div>
         <?php
     }
 
