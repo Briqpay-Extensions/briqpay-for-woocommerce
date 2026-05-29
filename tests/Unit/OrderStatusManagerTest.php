@@ -26,6 +26,10 @@ class OrderStatusManagerTest extends TestCase
         parent::tearDown();
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function testJanitorCleanupTask()
     {
         $osm = new Order_Status_Manager();
@@ -55,6 +59,10 @@ class OrderStatusManagerTest extends TestCase
         $osm->janitor_cleanup_task();
     }
 
+    /**
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function testJanitorCleanupTaskRecovery()
     {
         $osm = new Order_Status_Manager();
