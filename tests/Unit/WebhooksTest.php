@@ -90,6 +90,9 @@ class WebhooksTest extends TestCase
 
     /**
      * Test that completed sessions call payment_complete() for WooCommerce Analytics integration.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
      */
     public function testCompletedSessionCallsPaymentComplete()
     {

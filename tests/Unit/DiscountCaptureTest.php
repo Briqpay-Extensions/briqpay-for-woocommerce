@@ -44,6 +44,7 @@ class DiscountCaptureTest extends TestCase
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 25.00)));
 
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
+        $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
 
         // Mock Coupon
         $coupon = Mockery::mock('WC_Order_Item_Coupon');
@@ -52,6 +53,7 @@ class DiscountCaptureTest extends TestCase
         $coupon->shouldReceive('get_discount_tax')->andReturn(2.50);
 
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array($coupon));
+        $order->shouldReceive('get_coupons')->andReturn(array($coupon));
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());
         $order->shouldReceive('get_shipping_total')->andReturn(0.00);
         $order->shouldReceive('get_fees')->andReturn(array());

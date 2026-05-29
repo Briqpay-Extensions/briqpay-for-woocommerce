@@ -42,6 +42,7 @@ class FeeCaptureTest extends TestCase
         $order->shouldReceive('get_fees')->andReturn(array($fee));
         $order->shouldReceive('get_items')->with()->andReturn(array());
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
+        $order->shouldReceive('get_coupons')->andReturn(array());
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());
         $order->shouldReceive('get_shipping_total')->andReturn(0.00);
 
