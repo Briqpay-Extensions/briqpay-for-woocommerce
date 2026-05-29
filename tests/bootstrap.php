@@ -8,6 +8,14 @@ if (!defined('BRIQPAY_WC_PATH')) {
     define('BRIQPAY_WC_PATH', __DIR__ . '/../');
 }
 
+if (!defined('BRIQPAY_WC_URL')) {
+    define('BRIQPAY_WC_URL', 'https://example.com/wp-content/plugins/briqpay-for-woocommerce/');
+}
+
+if (!defined('BRIQPAY_WC_VERSION')) {
+    define('BRIQPAY_WC_VERSION', '1.0.12');
+}
+
 // WordPress Constants
 if (!defined('MINUTE_IN_SECONDS'))
     define('MINUTE_IN_SECONDS', 60);

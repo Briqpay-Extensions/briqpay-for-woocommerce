@@ -14,7 +14,7 @@ class Order_Management
     /**
      * Log message
      */
-    private function log($message)
+    protected function log($message)
     {
         if (defined('WC_LOG_DIR')) {
             $logger = wc_get_logger();
@@ -79,25 +79,18 @@ class Order_Management
         $is_us = 'US' === $order->get_billing_country();
         $total_tax_to_capture = 0;
 
+        $consolidated_detailed = array();
         foreach ($items_to_capture as $item) {
             $qty = (int) $item['quantity'];
             $unit_price_inc = (int) $item['unitPriceIncVat'];
             $tax_rate = (int) $item['taxRate'];
 
             // Precision fix: derive unit price ex VAT from unit price inc VAT
-            if ($unit_price_inc < 0) {
-                // For discounts, we must be careful with precision
-                $unit_price_ex = (int) round($unit_price_inc / (1 + ($tax_rate / 10000)));
-            } else {
-                $unit_price_ex = (int) round($unit_price_inc / (1 + ($tax_rate / 10000)));
-            }
+            $unit_price_ex = (int) round($unit_price_inc / (1 + ($tax_rate / 10000)));
 
             if ($is_us) {
-                // For USA, we need to extract the tax portion from the 'inclusive' price sent from UI
-                // so we can add it to the sales_tax item.
                 $item_tax = ($unit_price_inc - $unit_price_ex) * $qty;
-                $total_tax_to_capture += ($item_tax / 100); // UI sends minor units (*100), convert back to float for accumulation
-
+                $total_tax_to_capture += ($item_tax / 100);
                 $unit_price_inc = $unit_price_ex;
                 $tax_rate = 0;
             }
@@ -105,19 +98,27 @@ class Order_Management
             $total_amount = $unit_price_inc * $qty;
             $total_vat = $is_us ? 0 : ($total_amount - ($unit_price_ex * $qty));
 
-            $detailed_items[] = array(
-                'productType' => $item['productType'] ?? 'physical',
-                'reference' => sanitize_text_field($item['reference']),
-                'name' => sanitize_text_field($item['name']),
-                'quantity' => $qty,
-                'quantityUnit' => 'pc',
-                'unitPrice' => $unit_price_ex,
-                'unitPriceIncVat' => $unit_price_inc,
-                'taxRate' => $tax_rate,
-                'totalAmount' => $total_amount,
-                'totalVatAmount' => (int) $total_vat,
-            );
+            $ref = sanitize_text_field($item['reference']);
+            if (isset($consolidated_detailed[$ref])) {
+                $consolidated_detailed[$ref]['quantity'] += $qty;
+                $consolidated_detailed[$ref]['totalAmount'] += $total_amount;
+                $consolidated_detailed[$ref]['totalVatAmount'] += (int) $total_vat;
+            } else {
+                $consolidated_detailed[$ref] = array(
+                    'productType' => $item['productType'] ?? 'physical',
+                    'reference' => $ref,
+                    'name' => sanitize_text_field($item['name']),
+                    'quantity' => $qty,
+                    'quantityUnit' => 'pc',
+                    'unitPrice' => $unit_price_ex,
+                    'unitPriceIncVat' => $unit_price_inc,
+                    'taxRate' => $tax_rate,
+                    'totalAmount' => $total_amount,
+                    'totalVatAmount' => (int) $total_vat,
+                );
+            }
         }
+        $detailed_items = array_values($consolidated_detailed);
 
         // Add USA Sales Tax Item
         if ($is_us && $total_tax_to_capture > 0) {
@@ -138,6 +139,12 @@ class Order_Management
      */
     private function execute_capture($order, $session_id, $items)
     {
+        // 1. Sync with session first to get canonical data and ensure history is up to date
+        $session = $this->sync_with_briqpay_session($order);
+        if (is_wp_error($session)) {
+            return $session;
+        }
+
         $api = $this->get_api();
         $billing_country = strtoupper(trim($order->get_billing_country()));
         $is_us = 'US' === $billing_country;
@@ -146,9 +153,49 @@ class Order_Management
         $amount_ex_vat = 0;
         $cart_for_api = array();
 
+        // Consolidate capture items by reference
+        $consolidated_items = array();
         foreach ($items as $item) {
+            $ref = $item['reference'];
+            if (isset($consolidated_items[$ref])) {
+                $consolidated_items[$ref]['quantity'] += $item['quantity'];
+                if (isset($item['totalAmount'])) {
+                    $consolidated_items[$ref]['totalAmount'] += $item['totalAmount'];
+                }
+                if (isset($item['totalVatAmount'])) {
+                    $consolidated_items[$ref]['totalVatAmount'] += $item['totalVatAmount'];
+                }
+            } else {
+                $consolidated_items[$ref] = $item;
+            }
+        }
+
+        foreach ($consolidated_items as $item) {
             $api_item = $item;
             $is_sales_tax = ('sales_tax' === ($item['productType'] ?? ''));
+
+            // Try to find canonical item in session to fix rounding
+            if (!$is_sales_tax) {
+                $canonical = $this->get_canonical_session_item($session, $item['reference']);
+                if ($canonical) {
+                    $qty = $item['quantity'] ?? 1;
+                    $session_unit_inc = (int) $canonical['unitPriceIncVat'];
+                    $local_unit_inc = (int) $item['unitPriceIncVat'];
+
+                    // Sanity check: If prices differ by more than 1%, it's likely a gross/net mismatch (legacy order).
+                    // In that case, we skip the canonical sync to avoid capturing the wrong amount.
+                    $diff = abs($session_unit_inc - $local_unit_inc);
+                    if ($local_unit_inc > 0 && ($diff / $local_unit_inc) > 0.01) {
+                        $this->log(sprintf('Canonical sync skipped for %s: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
+                    } else {
+                        $api_item['unitPrice'] = $canonical['unitPrice'];
+                        $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
+                        $api_item['taxRate'] = $canonical['taxRate'];
+                        $api_item['totalAmount'] = (int) round($canonical['unitPriceIncVat'] * $qty);
+                        $api_item['totalVatAmount'] = (int) round(($canonical['unitPriceIncVat'] - $canonical['unitPrice']) * $qty);
+                    }
+                }
+            }
 
             if ($is_us && !$is_sales_tax) {
                 // Safety net: Force zero tax for US items
@@ -233,8 +280,26 @@ class Order_Management
         }
 
         // Get items from the latest refund object
-        $refund_items = $this->get_refund_items($order);
-        $this->log(sprintf('Detected %d refund items.', count($refund_items)));
+        $refund_items_raw = $this->get_refund_items($order);
+        $this->log(sprintf('Detected %d raw refund items.', count($refund_items_raw)));
+
+        // Consolidate items by reference to prevent duplicate lines in the same refund request
+        $consolidated_refund_items = array();
+        foreach ($refund_items_raw as $ri) {
+            $ref = $ri['reference'];
+            if (isset($consolidated_refund_items[$ref])) {
+                $consolidated_refund_items[$ref]['quantity'] += $ri['quantity'];
+                if (isset($ri['totalAmount'])) {
+                    $consolidated_refund_items[$ref]['totalAmount'] += $ri['totalAmount'];
+                }
+                if (isset($ri['totalVatAmount'])) {
+                    $consolidated_refund_items[$ref]['totalVatAmount'] += $ri['totalVatAmount'];
+                }
+            } else {
+                $consolidated_refund_items[$ref] = $ri;
+            }
+        }
+        $refund_items = array_values($consolidated_refund_items);
 
         // If no specific items (full amount refund without item selection), 
         // we map it to the latest capture by default for simplicity, 
@@ -248,23 +313,9 @@ class Order_Management
         // Calculate unrefunded quantities per capture
         $net_captures = $this->get_unrefunded_balances($capture_history, $refund_history);
 
-        // Separate coupon/discount items from regular items.
-        // Coupon items have negative prices and should not go through the
-        // quantity-based capture mapping — they are appended directly to
-        // whichever capture(s) the regular items map to.
-        $regular_items = array();
-        $coupon_items = array();
-        foreach ($refund_items as $ri) {
-            if (strpos($ri['reference'], 'discount_') === 0) {
-                $coupon_items[] = $ri;
-            } else {
-                $regular_items[] = $ri;
-            }
-        }
-
-        // Map regular refund items to captures
+        // Map refund items to captures
         $refunds_to_execute = array();
-        foreach ($regular_items as $ri) {
+        foreach ($refund_items as $ri) {
             $ref = $ri['reference'];
             $qty_to_refund = $ri['quantity'];
 
@@ -303,93 +354,15 @@ class Order_Management
             }
         }
 
-        // Inject coupon/discount items from the CAPTURE HISTORY, scaled
-        // proportionally to this refund's share of the capture's non-coupon total.
-        // This prevents the refund total from going negative when only some
-        // items are refunded but the full coupon discount would exceed them.
-        if (!empty($refunds_to_execute)) {
-            foreach ($refunds_to_execute as $capture_id => &$cap_items) {
-                // Find this capture in history
-                foreach ($capture_history as $ch) {
-                    if ($ch['captureId'] !== $capture_id) {
-                        continue;
-                    }
-
-                    // Calculate the capture's non-coupon total and collect coupon items
-                    $capture_non_coupon_total = 0;
-                    $capture_coupon_items = array();
-                    foreach ($ch['items'] as $cap_item) {
-                        if (strpos($cap_item['reference'], 'discount_') === 0) {
-                            $capture_coupon_items[] = $cap_item;
-                        } else {
-                            $capture_non_coupon_total += abs($cap_item['totalAmount'] ?? 0);
-                        }
-                    }
-
-                    if (empty($capture_coupon_items) || $capture_non_coupon_total <= 0) {
-                        break;
-                    }
-
-                    // Calculate this refund's non-coupon total
-                    $refund_non_coupon_total = 0;
-                    foreach ($cap_items as $ri) {
-                        if (strpos($ri['reference'], 'discount_') !== 0) {
-                            $refund_non_coupon_total += abs($ri['totalAmount'] ?? 0);
-                        }
-                    }
-
-                    // Ratio: what fraction of the capture are we refunding?
-                    $ratio = $refund_non_coupon_total / $capture_non_coupon_total;
-                    $ratio = min($ratio, 1.0); // Safety: never exceed 100%
-
-                    $this->log(sprintf('Coupon scaling ratio: %.4f (refund: %d / capture: %d)', $ratio, $refund_non_coupon_total, $capture_non_coupon_total));
-
-                    foreach ($capture_coupon_items as $coupon) {
-                        // Scale all amount fields proportionally
-                        $scaled_total = (int) round(($coupon['totalAmount'] ?? 0) * $ratio);
-                        $scaled_vat = (int) round(($coupon['totalVatAmount'] ?? 0) * $ratio);
-                        $scaled_unit_ex = (int) round(($coupon['unitPrice'] ?? 0) * $ratio);
-                        $scaled_unit_inc = (int) round(($coupon['unitPriceIncVat'] ?? 0) * $ratio);
-
-                        // Safety: ensure refund total doesn't go negative
-                        if (($refund_non_coupon_total + $scaled_total) < 0) {
-                            $scaled_total = -$refund_non_coupon_total;
-                            $scaled_vat = (int) round($scaled_total - ($scaled_total / 1.25));
-                            $scaled_unit_ex = $scaled_total - $scaled_vat;
-                            $scaled_unit_inc = $scaled_total;
-                            $this->log(sprintf('Capped coupon to prevent negative refund total: %d', $scaled_total));
-                        }
-
-                        $cap_items[] = array(
-                            'productType' => $coupon['productType'] ?? 'physical',
-                            'reference' => $coupon['reference'],
-                            'name' => $coupon['name'],
-                            'quantity' => 1,
-                            'quantityUnit' => $coupon['quantityUnit'] ?? 'pc',
-                            'unitPrice' => $scaled_unit_ex,
-                            'unitPriceIncVat' => $scaled_unit_inc,
-                            'taxRate' => $coupon['taxRate'] ?? 0,
-                            'totalAmount' => $scaled_total,
-                            'totalVatAmount' => $scaled_vat,
-                        );
-
-                        $this->log(sprintf('Injected scaled coupon: %s (original: %d, scaled: %d, ratio: %.4f)', $coupon['reference'], $coupon['totalAmount'], $scaled_total, $ratio));
-                    }
-                    break;
-                }
-            }
-            unset($cap_items);
-        }
-
         // Execute API calls
-        $success = true;
         foreach ($refunds_to_execute as $capture_id => $items) {
             $res = $this->execute_single_refund($order, $session_id, $capture_id, $items);
-            if (!$res)
-                $success = false;
+            if (is_wp_error($res)) {
+                return $res;
+            }
         }
 
-        return $success;
+        return true;
     }
 
     /**
@@ -401,7 +374,8 @@ class Order_Management
         foreach ($capture_history as $c) {
             $cap_items = array();
             foreach ($c['items'] as $it) {
-                $cap_items[$it['reference']] = $it['quantity'];
+                $ref = $it['reference'];
+                $cap_items[$ref] = ($cap_items[$ref] ?? 0) + $it['quantity'];
             }
             $balances[] = array(
                 'captureId' => $c['captureId'],
@@ -423,6 +397,7 @@ class Order_Management
             }
         }
 
+        $this->log('Calculated unrefunded balances: ' . print_r($balances, true));
         return $balances;
     }
 
@@ -431,6 +406,12 @@ class Order_Management
      */
     private function execute_single_refund($order, $session_id, $capture_id, $items, $override_amount = null)
     {
+        // 1. Sync with session first
+        $session = $this->sync_with_briqpay_session($order);
+        if (is_wp_error($session)) {
+            return false;
+        }
+
         $api = $this->get_api();
         $billing_country = strtoupper(trim($order->get_billing_country()));
         $is_us = 'US' === $billing_country;
@@ -461,9 +442,49 @@ class Order_Management
             );
         }
 
+        // Consolidate items by reference before processing
+        $consolidated_items = array();
+        foreach ($items as $item) {
+            $ref = $item['reference'];
+            if (isset($consolidated_items[$ref])) {
+                $consolidated_items[$ref]['quantity'] += $item['quantity'];
+                if (isset($item['totalAmount'])) {
+                    $consolidated_items[$ref]['totalAmount'] += $item['totalAmount'];
+                }
+                if (isset($item['totalVatAmount'])) {
+                    $consolidated_items[$ref]['totalVatAmount'] += $item['totalVatAmount'];
+                }
+            } else {
+                $consolidated_items[$ref] = $item;
+            }
+        }
+        $items = array_values($consolidated_items);
+
         foreach ($items as $item) {
             $api_item = $item;
             $is_sales_tax = ('sales_tax' === ($item['productType'] ?? ''));
+
+            // Try to find canonical item in session to fix rounding
+            if (!$is_sales_tax && $item['reference'] !== 'refund') {
+                $canonical = $this->get_canonical_session_item($session, $item['reference']);
+                if ($canonical) {
+                    $qty = $item['quantity'] ?? 1;
+                    $session_unit_inc = (int) $canonical['unitPriceIncVat'];
+                    $local_unit_inc = (int) $item['unitPriceIncVat'];
+
+                    // Sanity check: If prices differ by more than 1%, it's likely a gross/net mismatch.
+                    $diff = abs($session_unit_inc - $local_unit_inc);
+                    if ($local_unit_inc > 0 && ($diff / $local_unit_inc) > 0.01) {
+                        $this->log(sprintf('Canonical sync skipped for %s refund: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
+                    } else {
+                        $api_item['unitPrice'] = $canonical['unitPrice'];
+                        $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
+                        $api_item['taxRate'] = $canonical['taxRate'];
+                        $api_item['totalAmount'] = (int) round($canonical['unitPriceIncVat'] * $qty);
+                        $api_item['totalVatAmount'] = (int) round(($canonical['unitPriceIncVat'] - $canonical['unitPrice']) * $qty);
+                    }
+                }
+            }
 
             if ($is_us && !$is_sales_tax) {
                 // Safety net: Force zero tax for US items
@@ -516,8 +537,9 @@ class Order_Management
             return true;
         }
 
-        $this->log('Refund API failure: ' . $response->get_error_message());
-        return false;
+        $error_message = $response->get_error_message();
+        $this->log('Refund API failure: ' . $error_message);
+        return $response;
     }
 
     /**
@@ -532,25 +554,32 @@ class Order_Management
 
         $latest_refund = reset($refunds);
         $items = array();
+        $is_us = 'US' === $order->get_billing_country();
+        $total_tax_to_refund = 0;
 
         foreach ($latest_refund->get_items() as $item) {
             $product = $item->get_product();
             $qty = abs($item->get_quantity());
-            $item_total = abs((float) $item->get_total());
             $item_tax = abs((float) $item->get_total_tax());
 
-            // Match back to parent item to get original subtotal price
             $parent_unit_inc = 0;
             $parent_unit_ex = 0;
             $parent_tax_rate = $this->get_item_tax_rate($item);
+            $ref = '';
+            if ($product) {
+                $sku = $product->get_sku();
+                $id = $product->get_id();
+                $ref = !empty($sku) ? $sku . '-' . $id : (string) $id;
+            }
 
             foreach ($order->get_items() as $parent_item) {
                 if ($parent_item->get_product_id() === $item->get_product_id() && $parent_item->get_variation_id() === $item->get_variation_id()) {
                     $p_qty = $parent_item->get_quantity();
-                    $p_subtotal = (float) $parent_item->get_subtotal();
-                    $p_subtotal_tax = (float) $parent_item->get_subtotal_tax();
-                    $parent_unit_ex = $p_subtotal / $p_qty;
-                    $parent_unit_inc = ($p_subtotal + $p_subtotal_tax) / $p_qty;
+                    $p_amount = (float) $parent_item->get_subtotal();
+                    $p_tax = (float) $parent_item->get_subtotal_tax();
+
+                    $parent_unit_ex = $p_amount / $p_qty;
+                    $parent_unit_inc = ($p_amount + $p_tax) / $p_qty;
                     $parent_tax_rate = $this->get_item_tax_rate($parent_item);
                     break;
                 }
@@ -558,33 +587,26 @@ class Order_Management
 
             // Fallback to current item logic if parent not found (shouldn't happen)
             if ($parent_unit_inc <= 0) {
+                $item_total = abs((float) $item->get_subtotal());
                 $parent_unit_ex = ($item_total / ($qty ?: 1));
                 $parent_unit_inc = ($item_total + $item_tax) / ($qty ?: 1);
             }
 
-            if ($qty > 0 || $item_total > 0) {
-                $is_us = 'US' === $order->get_billing_country();
-                $items[] = array(
-                    'productType' => 'physical',
-                    'reference' => (string) ($product ? ($product->get_sku() ?: $product->get_id()) : ''),
-                    'name' => $item->get_name(),
-                    'quantity' => $qty ?: 1,
-                    'quantityUnit' => 'pc',
-                    'unitPrice' => (int) round($parent_unit_ex * 100),
-                    'unitPriceIncVat' => $is_us ? (int) round($parent_unit_ex * 100) : (int) round($parent_unit_inc * 100),
-                    'taxRate' => $is_us ? 0 : $parent_tax_rate,
-                    'totalAmount' => $is_us ? (int) round($parent_unit_ex * ($qty ?: 1) * 100) : (int) round($parent_unit_inc * ($qty ?: 1) * 100),
-                    'totalVatAmount' => $is_us ? 0 : (int) round(($parent_unit_inc - $parent_unit_ex) * ($qty ?: 1) * 100),
-                );
-            }
-        }
+            $items[] = array(
+                'productType' => 'physical',
+                'reference' => $ref,
+                'name' => $item->get_name(),
+                'quantity' => abs($qty),
+                'quantityUnit' => 'pc',
+                'unitPrice' => (int) round($parent_unit_ex * 100),
+                'unitPriceIncVat' => $is_us ? (int) round($parent_unit_ex * 100) : (int) round($parent_unit_inc * 100),
+                'taxRate' => $is_us ? 0 : $parent_tax_rate,
+                'totalAmount' => $is_us ? (int) round($parent_unit_ex * abs($qty) * 100) : (int) round($parent_unit_inc * abs($qty) * 100),
+                'totalVatAmount' => $is_us ? 0 : (int) round(($parent_unit_inc - $parent_unit_ex) * abs($qty) * 100),
+            );
 
-        $is_us = 'US' === $order->get_billing_country();
-        $total_tax_to_refund = 0;
-        // Recalculate tax collected from refund items if US
-        if ($is_us) {
-            foreach ($latest_refund->get_items() as $item) {
-                $total_tax_to_refund += abs((float) $item->get_total_tax());
+            if ($is_us) {
+                $total_tax_to_refund += abs($item_tax);
             }
         }
 
@@ -644,61 +666,6 @@ class Order_Management
                     'totalAmount' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
                     'totalVatAmount' => $is_us ? 0 : (int) round($vat_amount_val * 100),
                 );
-            }
-        } else {
-            // WooCommerce refund objects do NOT include coupon items by default.
-            // We must include them from the parent order, proportionally scaled to
-            // the refund ratio, so the line item total matches the captured amount.
-            $order_coupon_items = $order->get_items('coupon');
-            if (!empty($order_coupon_items)) {
-                // Calculate refund ratio based on product subtotals (pre-discount)
-                $refund_product_total = 0;
-                foreach ($latest_refund->get_items() as $ri) {
-                    $refund_product_total += abs((float) $ri->get_subtotal()) + abs((float) $ri->get_subtotal_tax());
-                }
-
-                $order_product_total = 0;
-                foreach ($order->get_items() as $oi) {
-                    $order_product_total += (float) $oi->get_subtotal() + (float) $oi->get_subtotal_tax();
-                }
-
-                $ratio = ($order_product_total > 0) ? ($refund_product_total / $order_product_total) : 1;
-
-                foreach ($order_coupon_items as $coupon_item) {
-                    $code = $coupon_item->get_code();
-                    $discount_amount = (float) $coupon_item->get_discount();
-                    $discount_tax = (float) $coupon_item->get_discount_tax();
-
-                    // Scale discount proportionally to the refund ratio
-                    $scaled_discount = $discount_amount * $ratio;
-                    $scaled_tax = $discount_tax * $ratio;
-
-                    if ($is_us) {
-                        $total_tax_to_refund -= $scaled_tax;
-                    }
-
-                    $ref = 'discount_' . $code;
-
-                    $amount_enc_vat_val = ($scaled_discount + $scaled_tax) * -1;
-                    $amount_ex_vat_val = $scaled_discount * -1;
-                    $vat_amount_val = $scaled_tax * -1;
-
-                    $items[] = array(
-                        'productType' => 'physical',
-                        'reference' => $ref,
-                        // translators: %s: coupon code
-                        'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
-                        'quantity' => 1,
-                        'quantityUnit' => 'pc',
-                        'unitPrice' => (int) round($amount_ex_vat_val * 100),
-                        'unitPriceIncVat' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                        'taxRate' => $is_us ? 0 : $this->get_coupon_tax_rate($order),
-                        'totalAmount' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                        'totalVatAmount' => $is_us ? 0 : (int) round($vat_amount_val * 100),
-                    );
-
-                    $this->log(sprintf('Including proportional coupon discount for refund: %s (ratio: %.4f, scaled: %.2f)', $code, $ratio, $scaled_discount));
-                }
             }
         }
 
@@ -763,7 +730,7 @@ class Order_Management
     /**
      * Get API Instance
      */
-    private function get_api()
+    protected function get_api()
     {
         $settings = get_option('woocommerce_briqpay_settings');
         return new API($settings['merchant_id'], $settings['shared_secret'], 'yes' === $settings['testmode']);
@@ -772,7 +739,7 @@ class Order_Management
     /**
      * Check if enabled
      */
-    private function is_enabled()
+    protected function is_enabled()
     {
         $settings = get_option('woocommerce_briqpay_settings');
         return 'yes' === ($settings['order_management_enabled'] ?? 'no');
@@ -798,13 +765,14 @@ class Order_Management
         $items_to_capture = array();
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
-            $ref = $product->get_sku() ?: $product->get_id();
+            if (!$product) continue;
+            $sku = $product->get_sku();
+            $id = $product->get_id();
+            $ref = !empty($sku) ? $sku . '-' . $id : (string) $id;
             $total_qty = $item->get_quantity();
             $remaining = $total_qty - ($captured_counts[$ref] ?? 0);
 
             if ($remaining > 0) {
-                // Fix: Use get_subtotal() to get the price BEFORE cart-level discounts.
-                // This matches the price sent to Briqpay during initial session creation.
                 $item_total = (float) $item->get_subtotal();
                 $item_tax = (float) $item->get_subtotal_tax();
                 $tax_rate = $this->get_item_tax_rate($item);
@@ -885,22 +853,15 @@ class Order_Management
                 );
             }
         }
-        // Add coupons if not captured
-        foreach ($order->get_items('coupon') as $item) {
-            $code = $item->get_code();
+
+        // Coupons are now handled as separate lines
+        foreach ($order->get_coupons() as $coupon) {
+            $code = $coupon->get_code();
             $ref = 'discount_' . $code;
             if (!isset($captured_counts[$ref])) {
-                $discount_amount = (float) $item->get_discount();
-                $discount_tax = (float) $item->get_discount_tax();
+                $discount_amount = (float) $coupon->get_discount();
+                $discount_tax = (float) $coupon->get_discount_tax();
                 $tax_rate = $this->get_coupon_tax_rate($order);
-
-                $amount_enc_vat_val = ($discount_amount + $discount_tax) * -1;
-                $amount_ex_vat_val = $discount_amount * -1;
-                $vat_amount_val = $discount_tax * -1;
-
-                if ($is_us) {
-                    $total_tax_to_capture += $discount_tax * -1;
-                }
 
                 $items_to_capture[] = array(
                     'productType' => 'physical',
@@ -909,11 +870,11 @@ class Order_Management
                     'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
                     'quantity' => 1,
                     'quantityUnit' => 'pc',
-                    'unitPrice' => (int) round($amount_ex_vat_val * 100),
-                    'unitPriceIncVat' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
+                    'unitPrice' => (int) round($discount_amount * -100),
+                    'unitPriceIncVat' => $is_us ? (int) round($discount_amount * -100) : (int) round(($discount_amount + $discount_tax) * -100),
                     'taxRate' => $is_us ? 0 : $tax_rate,
-                    'totalAmount' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                    'totalVatAmount' => $is_us ? 0 : (int) round($vat_amount_val * 100),
+                    'totalAmount' => $is_us ? (int) round($discount_amount * -100) : (int) round(($discount_amount + $discount_tax) * -100),
+                    'totalVatAmount' => $is_us ? 0 : (int) round($discount_tax * -100),
                 );
             }
         }
@@ -954,19 +915,42 @@ class Order_Management
 
             if ($is_us) {
                 $total_tax += $item_tax;
+                $unit_inc = $unit_ex;
+                $tax_rate = 0;
             }
 
             $items[] = array(
                 'productType' => 'physical',
-                'reference' => (string) ($product->get_sku() ?: $product->get_id()),
+                'reference' => !empty($product->get_sku()) ? $product->get_sku() . '-' . $product->get_id() : (string) $product->get_id(),
                 'name' => $item->get_name(),
                 'quantity' => $qty,
                 'quantityUnit' => 'pc',
                 'unitPrice' => (int) round($unit_ex * 100),
-                'unitPriceIncVat' => $is_us ? (int) round($unit_ex * 100) : (int) round($unit_inc * 100),
-                'taxRate' => $is_us ? 0 : $tax_rate,
-                'totalAmount' => $is_us ? (int) round($item_total * 100) : (int) round(($item_total + $item_tax) * 100),
+                'unitPriceIncVat' => (int) round($unit_inc * 100),
+                'taxRate' => $tax_rate,
+                'totalAmount' => (int) round($unit_inc * $qty * 100),
                 'totalVatAmount' => $is_us ? 0 : (int) round($item_tax * 100),
+            );
+        }
+
+        foreach ($order->get_coupons() as $coupon) {
+            $code = $coupon->get_code();
+            $discount_amount = (float) $coupon->get_discount();
+            $discount_tax = (float) $coupon->get_discount_tax();
+            $tax_rate = $this->get_coupon_tax_rate($order);
+
+            $items[] = array(
+                'productType' => 'physical',
+                'reference' => 'discount_' . $code,
+                // translators: %s: coupon code
+                'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                'quantity' => 1,
+                'quantityUnit' => 'pc',
+                'unitPrice' => (int) round($discount_amount * -100),
+                'unitPriceIncVat' => (int) round(($discount_amount + $discount_tax) * -100),
+                'taxRate' => $tax_rate,
+                'totalAmount' => (int) round(($discount_amount + $discount_tax) * -100),
+                'totalVatAmount' => (int) round($discount_tax * -100),
             );
         }
 
@@ -1011,36 +995,6 @@ class Order_Management
                 'taxRate' => $is_us ? 0 : $this->get_item_tax_rate($fee),
                 'totalAmount' => $is_us ? (int) round($fee_total * 100) : (int) round(($fee_total + $fee_tax) * 100),
                 'totalVatAmount' => $is_us ? 0 : (int) round($fee_tax * 100),
-            );
-        }
-
-        // Add Coupons
-        foreach ($order->get_items('coupon') as $item) {
-            $code = $item->get_code();
-            $discount_amount = (float) $item->get_discount();
-            $discount_tax = (float) $item->get_discount_tax();
-
-            if ($is_us) {
-                $total_tax -= $discount_tax;
-            }
-
-            $ref = 'discount_' . $code;
-            $amount_enc_vat_val = ($discount_amount + $discount_tax) * -1;
-            $amount_ex_vat_val = $discount_amount * -1;
-            $vat_amount_val = $discount_tax * -1;
-
-            $items[] = array(
-                'productType' => 'physical',
-                'reference' => $ref,
-                // translators: %s: coupon code
-                'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
-                'quantity' => 1,
-                'quantityUnit' => 'pc',
-                'unitPrice' => (int) round($amount_ex_vat_val * 100),
-                'unitPriceIncVat' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                'taxRate' => $is_us ? 0 : $this->get_coupon_tax_rate($order),
-                'totalAmount' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                'totalVatAmount' => $is_us ? 0 : (int) round($vat_amount_val * 100),
             );
         }
 
@@ -1103,5 +1057,133 @@ class Order_Management
             return $this->get_item_tax_rate($item);
         }
         return 0;
+    }
+
+    /**
+     * Get session data from Briqpay
+     *
+     * @param string $session_id
+     * @return array|\WP_Error
+     */
+    private function get_session_data($session_id)
+    {
+        $api = $this->get_api();
+        $session = $api->get_session($session_id);
+
+        if (is_wp_error($session)) {
+            return $session;
+        }
+
+        if (!isset($session['sessionId'])) {
+            return new \WP_Error('invalid_session', __('Failed to retrieve valid session from Briqpay.', 'briqpay-for-woocommerce'));
+        }
+
+        return $session;
+    }
+
+    /**
+     * Fetch session and sync local history with Briqpay record.
+     *
+     * @param \WC_Order $order
+     * @return array|\WP_Error
+     */
+    private function sync_with_briqpay_session($order)
+    {
+        $session_id = $order->get_meta('_briqpay_session_id');
+        if (!$session_id) {
+            return new \WP_Error('no_session', __('No Briqpay session ID found for this order.', 'briqpay-for-woocommerce'));
+        }
+
+        $session = $this->get_session_data($session_id);
+        if (is_wp_error($session)) {
+            return $session;
+        }
+
+        $needs_save = false;
+
+        // 1. Sync Captures
+        $local_capture_history = $order->get_meta('_briqpay_capture_history') ?: array();
+        $local_capture_ids = array_column($local_capture_history, 'captureId');
+        $remote_captures = $session['data']['captures'] ?? array();
+
+        foreach ($remote_captures as $rc) {
+            if ($rc['status'] === 'approved' && !in_array($rc['captureId'], $local_capture_ids)) {
+                $local_capture_history[] = array(
+                    'captureId' => $rc['captureId'],
+                    'date' => $rc['createdAt'],
+                    'items' => $rc['cart'],
+                    'amount' => $rc['amountIncVat']
+                );
+                $needs_save = true;
+            }
+        }
+
+        if ($needs_save) {
+            $order->update_meta_data('_briqpay_capture_history', $local_capture_history);
+            $order->save();
+            $needs_save = false;
+        }
+
+        // 2. Sync Refunds
+        $local_refund_history = $order->get_meta('_briqpay_refund_history') ?: array();
+        // Check for refundId if available, otherwise we use a combination of captureId and amount for matching if needed, 
+        // but Briqpay refunds have unique refundId.
+        $local_refund_ids = array_column($local_refund_history, 'refundId');
+        $remote_refunds = $session['data']['refunds'] ?? array();
+
+        foreach ($remote_refunds as $rr) {
+            $ref_id = $rr['refundId'] ?? null;
+            if ($rr['status'] === 'approved' && $ref_id && !in_array($ref_id, $local_refund_ids)) {
+                $local_refund_history[] = array(
+                    'captureId' => $rr['captureId'],
+                    'refundId' => $ref_id,
+                    'date' => $rr['createdAt'],
+                    'items' => $rr['cart'],
+                    'amount' => $rr['amountIncVat']
+                );
+                $needs_save = true;
+            }
+        }
+
+        if ($needs_save) {
+            $order->update_meta_data('_briqpay_refund_history', $local_refund_history);
+            $order->save();
+        }
+
+        return $session;
+    }
+
+    /**
+     * Find an item in the session cart to get canonical prices.
+     *
+     * @param array  $session
+     * @param string $reference
+     * @return array|null
+     */
+    private function get_canonical_session_item($session, $reference)
+    {
+        // Check the original order cart
+        if (isset($session['data']['order']['cart'])) {
+            foreach ($session['data']['order']['cart'] as $item) {
+                if ($item['reference'] === $reference) {
+                    return $item;
+                }
+            }
+        }
+
+        // Check transactions if not in order cart (e.g. if order was modified)
+        if (isset($session['data']['transactions'])) {
+            foreach ($session['data']['transactions'] as $tx) {
+                if (isset($tx['cart'])) {
+                    foreach ($tx['cart'] as $item) {
+                        if ($item['reference'] === $reference) {
+                            return $item;
+                        }
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 }

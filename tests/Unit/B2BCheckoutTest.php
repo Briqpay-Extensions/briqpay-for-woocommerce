@@ -187,4 +187,69 @@ class B2BCheckoutTest extends TestCase
         $this->assertArrayNotHasKey('locale', $result);
         $this->assertEquals(100, $result['amount']);
     }
+
+    /**
+     * Test that the shortcode renders the hidden fields required for JS address syncing.
+     */
+    public function testRenderShortcodeIncludesHiddenFields()
+    {
+        // Mock WC Cart
+        $cart = Mockery::mock('WC_Cart');
+        $cart->shouldReceive('is_empty')->andReturn(false);
+
+        // Mock WC Customer
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('get_billing_country')->andReturn('SE');
+        $customer->shouldReceive('get_billing_state')->andReturn('Stockholm');
+        $customer->shouldReceive('get_billing_postcode')->andReturn('12345');
+        $customer->shouldReceive('get_billing_city')->andReturn('Stockholm');
+        $customer->shouldReceive('get_billing_address_1')->andReturn('Main St 1');
+        $customer->shouldReceive('get_billing_address_2')->andReturn('');
+        $customer->shouldReceive('get_billing_email')->andReturn('test@example.com');
+        $customer->shouldReceive('get_shipping_country')->andReturn('SE');
+        $customer->shouldReceive('get_shipping_state')->andReturn('Stockholm');
+        $customer->shouldReceive('get_shipping_postcode')->andReturn('12345');
+        $customer->shouldReceive('get_shipping_city')->andReturn('Stockholm');
+        $customer->shouldReceive('get_shipping_address_1')->andReturn('Main St 1');
+        $customer->shouldReceive('get_shipping_address_2')->andReturn('');
+
+        $wc = Mockery::mock('WooCommerce');
+        $wc->cart = $cart;
+        $wc->customer = $customer;
+        $wc->session = Mockery::mock('WC_Session');
+        $wc->session->shouldReceive('get')->andReturn(true);
+        self::$wc_return = $wc;
+
+        // Mock WordPress functions used in render()
+        WP_Mock::userFunction('wc_get_checkout_url', array('return' => 'https://example.com/checkout/'));
+        WP_Mock::userFunction('esc_url', array('return_arg' => 0));
+        WP_Mock::userFunction('esc_attr', array('return_arg' => 0));
+        WP_Mock::userFunction('esc_html__', array('return_arg' => 0));
+        WP_Mock::userFunction('esc_html_e', array('return_arg' => 0));
+        WP_Mock::userFunction('wp_nonce_field', array('return' => ''));
+        WP_Mock::userFunction('wp_create_nonce', array('return' => 'mock_nonce'));
+        WP_Mock::userFunction('sanitize_url', array('return_arg' => 0));
+        WP_Mock::userFunction('wp_unslash', array('return_arg' => 0));
+        WP_Mock::userFunction('woocommerce_order_review', array('return' => ''));
+
+        // We need to mock the B2b_Checkout::enqueue_assets method to avoid actual enqueueing
+        // Since we are testing 'render', and it's a private method call, we can't easily mock it
+        // unless we use a partial mock or just let it fail silently if wp_enqueue_script is mocked.
+        WP_Mock::userFunction('wp_enqueue_script');
+        WP_Mock::userFunction('wp_enqueue_style');
+        WP_Mock::userFunction('wp_localize_script');
+        WP_Mock::userFunction('admin_url', array('return' => 'https://example.com/wp-admin/admin-ajax.php'));
+
+        $output = $this->b2b->render();
+
+        // Verify that the critical hidden fields for address sync are present
+        $this->assertStringContainsString('id="billing_country"', $output);
+        $this->assertStringContainsString('id="billing_state"', $output);
+        $this->assertStringContainsString('id="billing_postcode"', $output);
+        $this->assertStringContainsString('id="billing_city"', $output);
+        $this->assertStringContainsString('id="shipping_country"', $output);
+        $this->assertStringContainsString('id="shipping_state"', $output);
+        $this->assertStringContainsString('id="shipping_postcode"', $output);
+        $this->assertStringContainsString('id="shipping_city"', $output);
+    }
 }

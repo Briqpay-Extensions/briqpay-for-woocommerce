@@ -437,6 +437,8 @@ class Session_Manager
         $total_tax_amount_float = 0;
 
         // Products
+        $consolidated_items = array();
+
         foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
             /** @var \WC_Product $product */
             $product = $cart_item['data'];
@@ -470,31 +472,38 @@ class Session_Manager
             // Get product image URL
             $image_url = wp_get_attachment_image_url($product->get_image_id(), 'medium');
 
-            // Robust reference fallback: SKU -> ID -> Empty string
+            // Robust unique reference: SKU-ID or just ID
             $sku = $product->get_sku();
             $id = $product->get_id();
-            $reference = !empty($sku) ? $sku : (!empty($id) ? (string) $id : "");
+            $reference = !empty($sku) ? $sku . '-' . $id : (string) $id;
 
-            $item = array(
-                'productType' => 'physical',
-                'reference' => $reference,
-                'name' => $product->get_name() ?: __('Product', 'briqpay-for-woocommerce'),
-                'quantity' => $quantity,
-                'quantityUnit' => 'pc',
-                'unitPrice' => $unit_price,
-                'taxRate' => $tax_rate,
-                'unitPriceIncVat' => $unit_price_inc_vat,
-                'totalVatAmount' => $total_vat_amount,
-                'totalAmount' => $total_amount,
-            );
+            if (isset($consolidated_items[$reference])) {
+                $consolidated_items[$reference]['quantity'] += $quantity;
+                $consolidated_items[$reference]['totalVatAmount'] += $total_vat_amount;
+                $consolidated_items[$reference]['totalAmount'] += $total_amount;
+            } else {
+                $item = array(
+                    'productType' => 'physical',
+                    'reference' => $reference,
+                    'name' => $product->get_name() ?: __('Product', 'briqpay-for-woocommerce'),
+                    'quantity' => $quantity,
+                    'quantityUnit' => 'pc',
+                    'unitPrice' => $unit_price,
+                    'taxRate' => $tax_rate,
+                    'unitPriceIncVat' => $unit_price_inc_vat,
+                    'totalVatAmount' => $total_vat_amount,
+                    'totalAmount' => $total_amount,
+                );
 
-            // Only add imageUrl if image exists
-            if ($image_url) {
-                $item['imageUrl'] = $image_url;
+                // Only add imageUrl if image exists
+                if ($image_url) {
+                    $item['imageUrl'] = $image_url;
+                }
+                $consolidated_items[$reference] = $item;
             }
-
-            $items[] = $item;
         }
+
+        $items = array_values($consolidated_items);
 
         // Shipping
         $this->log('Shipping Total: ' . $cart->get_shipping_total());
@@ -541,7 +550,6 @@ class Session_Manager
                 $total_tax_amount_float += $fee->tax;
             }
         }
-
         // Coupons/Discounts
         foreach ($cart->get_applied_coupons() as $coupon_code) {
             $this->log('Processing coupon: ' . $coupon_code);
@@ -579,6 +587,7 @@ class Session_Manager
                 }
             }
         }
+
 
         // Add USA Sales Tax Item
         if ($is_us && $total_tax_amount_float > 0) {

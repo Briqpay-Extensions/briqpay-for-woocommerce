@@ -1,0 +1,16 @@
+{
+  "name": "briqpay-for-woocommerce",
+  "version": "1.0.13",
+  "description": "Briqpay for WooCommerce",
+  "scripts": {
+    "test": "jest"
+  },
+  "jest": {
+    "testEnvironment": "jsdom"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0",
+    "jquery": "^3.7.1"
+  }
+}

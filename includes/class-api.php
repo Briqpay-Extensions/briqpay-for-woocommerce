@@ -91,7 +91,9 @@ class API
         $data = json_decode(wp_remote_retrieve_body($response), true);
 
         if ($code >= 400) {
+            $msg = $data['message'] ?? 'API Error ' . $code;
             $this->log("API Error ($code): " . (is_array($data) ? wp_json_encode($data) : $data));
+            return new \WP_Error($data['code'] ?? 'api_error', $msg, $data);
         }
 
         /**

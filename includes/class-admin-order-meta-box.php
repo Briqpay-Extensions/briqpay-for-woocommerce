@@ -202,28 +202,42 @@ class Admin_Order_Meta_Box
             }
         }
 
-        $remaining = array();
+        $remaining_consolidated = array();
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
-            $ref = $product->get_sku() ?: $product->get_id();
+            if (!$product) continue;
+            $sku = $product->get_sku();
+            $id = $product->get_id();
+            $ref = !empty($sku) ? $sku . '-' . $id : (string) $id;
             $total_qty = $item->get_quantity();
-            $rem = $total_qty - ($captured_counts[$ref] ?? 0);
+            $already_captured = $captured_counts[$ref] ?? 0;
+            $rem = $total_qty - $already_captured;
+
+            // Reduce the global captured count for this reference as we "consume" it across order items
+            $captured_counts[$ref] = max(0, $already_captured - $total_qty);
 
             if ($rem > 0) {
                 $item_total = (float) $item->get_subtotal();
                 $item_tax = (float) $item->get_subtotal_tax();
                 $unit_inc = ($item_total + $item_tax) / $total_qty;
 
-                $remaining[] = array(
-                    'productType' => 'physical',
-                    'reference' => (string) $ref,
-                    'name' => $item->get_name(),
-                    'quantity' => $rem,
-                    'unitPriceIncVat' => (int) round($unit_inc * 100),
-                    'taxRate' => $this->get_item_tax_rate($item),
-                );
+                if (isset($remaining_consolidated[$ref])) {
+                    $remaining_consolidated[$ref]['quantity'] += $rem;
+                    // Note: unit price is assumed to be the same for the same product
+                } else {
+                    $remaining_consolidated[$ref] = array(
+                        'productType' => 'physical',
+                        'reference' => (string) $ref,
+                        'name' => $item->get_name(),
+                        'quantity' => $rem,
+                        'unitPriceIncVat' => (int) round($unit_inc * 100),
+                        'taxRate' => $this->get_item_tax_rate($item),
+                    );
+                }
             }
         }
+
+        $remaining = array_values($remaining_consolidated);
 
         // Fees
         foreach ($order->get_fees() as $fee) {
@@ -258,24 +272,22 @@ class Admin_Order_Meta_Box
             );
         }
 
-        // Coupons / Discounts
-        foreach ($order->get_items('coupon') as $coupon_item) {
-            $code = $coupon_item->get_code();
+        // Coupons
+        foreach ($order->get_coupons() as $coupon) {
+            $code = $coupon->get_code();
             $ref = 'discount_' . $code;
-
             if (!isset($captured_counts[$ref])) {
-                $discount_amount = (float) $coupon_item->get_discount();
-                $discount_tax = (float) $coupon_item->get_discount_tax();
-                $amount_inc_vat = ($discount_amount + $discount_tax) * -1;
+                $discount_amount = (float) $coupon->get_discount();
+                $discount_tax = (float) $coupon->get_discount_tax();
+                $tax_rate = $this->get_coupon_tax_rate($order);
 
                 $remaining[] = array(
                     'productType' => 'physical',
                     'reference' => $ref,
-                    // translators: %s: coupon code
                     'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
                     'quantity' => 1,
-                    'unitPriceIncVat' => (int) round($amount_inc_vat * 100),
-                    'taxRate' => $this->get_coupon_tax_rate($order),
+                    'unitPriceIncVat' => (int) round(($discount_amount + $discount_tax) * -100),
+                    'taxRate' => $tax_rate,
                 );
             }
         }
@@ -327,6 +339,7 @@ class Admin_Order_Meta_Box
 
         $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
         $items = isset($_POST['items']) ? map_deep(wp_unslash($_POST['items']), 'sanitize_text_field') : array();
+
 
         if (!$order_id || empty($items)) {
             wp_send_json_error(array('message' => __('Invalid request.', 'briqpay-for-woocommerce')));
