@@ -24,6 +24,10 @@ use PHPUnit\Framework\TestCase;
 use WP_Mock;
 use Mockery;
 
+/**
+ * @runTestsInSeparateProcess
+ * @preserveGlobalState disabled
+ */
 class SessionSyncTest extends TestCase
 {
     use \Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;
@@ -152,7 +156,6 @@ class SessionSyncTest extends TestCase
 
         $reflection = new \ReflectionClass(Order_Management::class);
         $method = $reflection->getMethod('sync_with_briqpay_session');
-        $method->setAccessible(true);
 
         $session = $method->invoke($order_mgmt, $order);
 
@@ -167,7 +170,6 @@ class SessionSyncTest extends TestCase
 
         $reflection = new \ReflectionClass(Order_Management::class);
         $method = $reflection->getMethod('get_canonical_session_item');
-        $method->setAccessible(true);
 
         // Test finding product 159
         $item = $method->invoke($order_mgmt, $session, '159');
@@ -219,7 +221,6 @@ class SessionSyncTest extends TestCase
         // Call execute_single_refund
         $reflection = new \ReflectionClass(Order_Management::class);
         $method = $reflection->getMethod('execute_single_refund');
-        $method->setAccessible(true);
 
         $result = $method->invoke($order_mgmt, $order, 'sess_123', 'cap_123', array());
 
@@ -247,11 +248,6 @@ class SessionSyncTest extends TestCase
             'code' => 'BAD_REQUEST',
             'message' => 'Something went wrong'
         ))));
-
-        // Mock WC() to return an object with version property for User-Agent header
-        $wc = new \stdClass();
-        $wc->version = '9.0.0';
-        WP_Mock::userFunction('WC', array('return' => $wc));
 
         $result = $api->request('POST', '/test');
         

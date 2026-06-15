@@ -6,6 +6,10 @@ use PHPUnit\Framework\TestCase;
 use WP_Mock;
 use Mockery;
 
+/**
+ * @runTestsInSeparateProcess
+ * @preserveGlobalState disabled
+ */
 class WebhooksTest extends TestCase
 {
     use \Mockery\Adapter\Phpunit\MockeryPHPUnitIntegration;

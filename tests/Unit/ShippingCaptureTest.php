@@ -47,7 +47,6 @@ class ShippingCaptureTest extends TestCase
 
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
-        $order->shouldReceive('get_coupons')->andReturn(array());
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());
 
         // Shipping
