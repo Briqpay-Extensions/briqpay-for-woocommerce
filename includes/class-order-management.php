@@ -11,16 +11,6 @@ if (!defined('ABSPATH')) {
 class Order_Management
 {
 
-    /**
-     * Log message
-     */
-    protected function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
 
     /**
      * Init
@@ -186,7 +176,7 @@ class Order_Management
                     // In that case, we skip the canonical sync to avoid capturing the wrong amount.
                     $diff = abs($session_unit_inc - $local_unit_inc);
                     if ($local_unit_inc > 0 && ($diff / $local_unit_inc) > 0.01) {
-                        $this->log(sprintf('Canonical sync skipped for %s: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
+                        Logger::log(sprintf('Canonical sync skipped for %s: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
                     } else {
                         $api_item['unitPrice'] = $canonical['unitPrice'];
                         $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
@@ -253,6 +243,13 @@ class Order_Management
             $order->update_meta_data('_briqpay_captures', $captures);
 
             $order->save();
+
+            // If the order is currently pending/awaiting payment, mark it as paid since we successfully captured funds
+            if ($order->has_status(array('pending', 'failed', 'on-hold', 'checkout-draft'))) {
+                Logger::log('Order is in unpaid status. Calling payment_complete() via manual capture.');
+                $order->payment_complete($capture_id);
+            }
+
             return $capture_id;
         }
 
@@ -264,7 +261,7 @@ class Order_Management
      */
     public function refund_order($status, $order_id, $amount, $reason)
     {
-        $this->log(sprintf('refund_order() called for order %s. Amount: %s', $order_id, $amount));
+        Logger::log(sprintf('refund_order() called for order %s. Amount: %s', $order_id, $amount));
         if (!$this->is_enabled()) {
             return false;
         }
@@ -275,13 +272,13 @@ class Order_Management
         $refund_history = $order->get_meta('_briqpay_refund_history') ?: array();
 
         if (!$session_id || empty($capture_history)) {
-            $this->log('Refund aborted: No session or no capture history.');
+            Logger::log('Refund aborted: No session or no capture history.');
             return false;
         }
 
         // Get items from the latest refund object
         $refund_items_raw = $this->get_refund_items($order);
-        $this->log(sprintf('Detected %d raw refund items.', count($refund_items_raw)));
+        Logger::log(sprintf('Detected %d raw refund items.', count($refund_items_raw)));
 
         // Consolidate items by reference to prevent duplicate lines in the same refund request
         $consolidated_refund_items = array();
@@ -305,7 +302,7 @@ class Order_Management
         // we map it to the latest capture by default for simplicity, 
         // but it's better to treat it as a partial refund of the latest capture.
         if (empty($refund_items)) {
-            $this->log('Generic amount refund. Mapping to latest capture.');
+            Logger::log('Generic amount refund. Mapping to latest capture.');
             $target_capture = end($capture_history);
             return $this->execute_single_refund($order, $session_id, $target_capture['captureId'], $this->get_order_cart($order), $amount);
         }
@@ -347,7 +344,7 @@ class Order_Management
             }
 
             if ($qty_to_refund > 0) {
-                $this->log(sprintf('Warning: Could not find enough captured quantity for item %s (%d left).', $ref, $qty_to_refund));
+                Logger::log(sprintf('Warning: Could not find enough captured quantity for item %s (%d left).', $ref, $qty_to_refund));
                 // We'll proceed with what we found, or fallback to the latest capture for the remainder
                 $last_cap_id = end($capture_history)['captureId'];
                 $refunds_to_execute[$last_cap_id][] = array_merge($ri, ['quantity' => $qty_to_refund]);
@@ -397,7 +394,7 @@ class Order_Management
             }
         }
 
-        $this->log('Calculated unrefunded balances: ' . print_r($balances, true));
+        Logger::log('Calculated unrefunded balances: ' . print_r($balances, true));
         return $balances;
     }
 
@@ -475,7 +472,7 @@ class Order_Management
                     // Sanity check: If prices differ by more than 1%, it's likely a gross/net mismatch.
                     $diff = abs($session_unit_inc - $local_unit_inc);
                     if ($local_unit_inc > 0 && ($diff / $local_unit_inc) > 0.01) {
-                        $this->log(sprintf('Canonical sync skipped for %s refund: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
+                        Logger::log(sprintf('Canonical sync skipped for %s refund: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
                     } else {
                         $api_item['unitPrice'] = $canonical['unitPrice'];
                         $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
@@ -516,7 +513,7 @@ class Order_Management
             )
         );
 
-        $this->log(sprintf('Executing refund for capture %s. Amount: %d', $capture_id, $amount_inc_vat));
+        Logger::log(sprintf('Executing refund for capture %s. Amount: %d', $capture_id, $amount_inc_vat));
         $response = $api->refund_order($session_id, $data);
 
         if (!is_wp_error($response)) {
@@ -538,7 +535,7 @@ class Order_Management
         }
 
         $error_message = $response->get_error_message();
-        $this->log('Refund API failure: ' . $error_message);
+        Logger::log('Refund API failure: ' . $error_message);
         return $response;
     }
 
@@ -688,7 +685,7 @@ class Order_Management
      */
     public function cancel_order($order_id)
     {
-        $this->log(sprintf('cancel_order() called for order %s.', $order_id));
+        Logger::log(sprintf('cancel_order() called for order %s.', $order_id));
         if (!$this->is_enabled()) {
             return;
         }
@@ -702,12 +699,12 @@ class Order_Management
         $history = $order->get_meta('_briqpay_capture_history') ?: array();
 
         if (!$session_id) {
-            $this->log('Cancel aborted: No session ID found.');
+            Logger::log('Cancel aborted: No session ID found.');
             return;
         }
 
         if (!empty($history)) {
-            $this->log('Cancel aborted: Order has already been partially or fully captured.');
+            Logger::log('Cancel aborted: Order has already been partially or fully captured.');
             $order->add_order_note(__('Briqpay: Cannot cancel order after capture. Please use refund instead.', 'briqpay-for-woocommerce'));
             return;
         }
@@ -716,10 +713,10 @@ class Order_Management
         $response = $api->cancel_order($session_id);
 
         if (!is_wp_error($response)) {
-            $this->log('Cancel request successful.');
+            Logger::log('Cancel request successful.');
             $order->add_order_note(__('Briqpay: Cancel request sent successfully.', 'briqpay-for-woocommerce'));
         } else {
-            $this->log('Cancel API failure: ' . $response->get_error_message());
+            Logger::log('Cancel API failure: ' . $response->get_error_message());
             // translators: %s: error message
             $order->add_order_note(sprintf(__('Briqpay: Cancel request failed: %s', 'briqpay-for-woocommerce'), $response->get_error_message()));
         }
@@ -855,7 +852,7 @@ class Order_Management
         }
 
         // Coupons are now handled as separate lines
-        foreach ($order->get_coupons() as $coupon) {
+        foreach ($order->get_items('coupon') as $coupon) {
             $code = $coupon->get_code();
             $ref = 'discount_' . $code;
             if (!isset($captured_counts[$ref])) {
@@ -933,7 +930,7 @@ class Order_Management
             );
         }
 
-        foreach ($order->get_coupons() as $coupon) {
+        foreach ($order->get_items('coupon') as $coupon) {
             $code = $coupon->get_code();
             $discount_amount = (float) $coupon->get_discount();
             $discount_tax = (float) $coupon->get_discount_tax();

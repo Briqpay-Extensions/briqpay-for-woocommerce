@@ -29,6 +29,26 @@ class Admin_Order_Meta_Box
             return;
         }
 
+        $order_id = 0;
+        if ('post.php' === $hook) {
+            if (isset($_GET['post']) && isset($_GET['action']) && 'edit' === $_GET['action']) {
+                $order_id = (int) $_GET['post'];
+            }
+        } elseif ('woocommerce_page_wc-orders' === $hook) {
+            if (isset($_GET['id'])) {
+                $order_id = (int) $_GET['id'];
+            }
+        }
+
+        if (!$order_id) {
+            return;
+        }
+
+        $order = wc_get_order($order_id);
+        if (!$order || 'briqpay' !== $order->get_payment_method()) {
+            return;
+        }
+
         wp_enqueue_script('briqpay-admin', BRIQPAY_WC_URL . 'assets/js/admin.js', array('jquery'), BRIQPAY_WC_VERSION, true);
         wp_enqueue_style('briqpay-admin', BRIQPAY_WC_URL . 'assets/css/admin.css', array(), BRIQPAY_WC_VERSION);
         wp_localize_script('briqpay-admin', 'briqpayAdmin', array(

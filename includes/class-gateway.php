@@ -31,16 +31,6 @@ class Gateway extends \WC_Payment_Gateway
      */
     public $order_management_enabled;
 
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
 
     /**
      * Constructor
@@ -64,6 +54,7 @@ class Gateway extends \WC_Payment_Gateway
         $this->merchant_id = $this->get_option('merchant_id');
         $this->shared_secret = $this->get_option('shared_secret');
         $this->order_management_enabled = 'yes' === $this->get_option('order_management_enabled');
+        $this->verbose_logging = 'yes' === $this->get_option('verbose_logging');
 
         // Hooks
         add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
@@ -123,6 +114,13 @@ class Gateway extends \WC_Payment_Gateway
                 'description' => __('Log Briqpay events, such as API requests.', 'briqpay-for-woocommerce'),
                 'default' => 'no',
             ),
+            'verbose_logging' => array(
+                'title' => __('Verbose Logging', 'briqpay-for-woocommerce'),
+                'label' => __('Enable verbose debug logs', 'briqpay-for-woocommerce'),
+                'type' => 'checkbox',
+                'description' => __('Include detailed trace messages like availability checks and cart processing.', 'briqpay-for-woocommerce'),
+                'default' => 'no',
+            ),
         );
     }
 
@@ -131,9 +129,9 @@ class Gateway extends \WC_Payment_Gateway
      */
     public function payment_scripts()
     {
-        $this->log('payment_scripts() called.');
+        Logger::log('payment_scripts() called.');
         if ('no' === $this->enabled) {
-            $this->log('payment_scripts() aborted. Gateway disabled.');
+            Logger::log('payment_scripts() aborted. Gateway disabled.');
             return;
         }
 
@@ -145,7 +143,7 @@ class Gateway extends \WC_Payment_Gateway
         $has_iframe_shortcode = has_shortcode($post_content, 'briqpay_iframe');
         $has_b2b_shortcode = has_shortcode($post_content, 'briqpay_b2b_checkout');
 
-        $this->log(sprintf(
+        Logger::log(sprintf(
             'Script Check: is_checkout=%s, is_checkout_page=%s, has_checkout_block=%s, has_iframe_shortcode=%s, has_b2b_shortcode=%s, page_id=%s',
             $is_checkout ? 'yes' : 'no',
             $is_checkout_page ? 'yes' : 'no',
@@ -156,11 +154,11 @@ class Gateway extends \WC_Payment_Gateway
         ));
 
         if (!$is_checkout && !$is_checkout_page && !$has_checkout_block && !$has_iframe_shortcode && !$has_b2b_shortcode) {
-            $this->log('payment_scripts() aborted. Not identified as checkout or iframe page.');
+            Logger::log('payment_scripts() aborted. Not identified as checkout or iframe page.');
             return;
         }
 
-        $this->log('Enqueuing checkout.js');
+        Logger::log('Enqueuing checkout.js');
         wp_enqueue_style('briqpay-checkout-style', BRIQPAY_WC_URL . 'assets/css/briqpay-checkout.css', array(), BRIQPAY_WC_VERSION);
         wp_enqueue_script('briqpay-checkout', BRIQPAY_WC_URL . 'assets/js/checkout.js', array('jquery'), BRIQPAY_WC_VERSION, true);
 
@@ -182,7 +180,7 @@ class Gateway extends \WC_Payment_Gateway
             $order_total = WC()->cart->get_total('edit');
         }
 
-        $this->log(sprintf(
+        Logger::log(sprintf(
             'Availability Check: Enabled=%s, HasCreds=%s, Currency=%s, OrderTotal=%s',
             $enabled ? 'yes' : 'no',
             $has_creds ? 'yes' : 'no',
@@ -212,7 +210,7 @@ class Gateway extends \WC_Payment_Gateway
      */
     public function payment_fields()
     {
-        $this->log('payment_fields() called.');
+        Logger::log('payment_fields() called.');
         echo '<div id="briqpay-iframe-container"></div>';
     }
 

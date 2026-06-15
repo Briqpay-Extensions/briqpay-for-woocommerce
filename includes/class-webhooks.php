@@ -37,17 +37,17 @@ class Webhooks
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Reading raw POST body for webhook; no WP alternative exists.
         $payload = file_get_contents('php://input');
         if (empty($payload)) {
-            $this->log('Empty webhook payload received.');
+            Logger::log('Empty webhook payload received.');
             wp_die('Empty payload', 'Briqpay Webhook', array('response' => 400));
         }
 
         // Log receipt of webhook but avoid logging signatures or broad headers unless debugging is active and necessary
-        $this->log('Webhook received. Processing payload.');
+        Logger::log('Webhook received. Processing payload.');
 
         // Decode and validate structure; individual fields are sanitized via sanitize_key() below.
         $data = json_decode($payload, true);
         if (!is_array($data) || empty($data['sessionId'])) {
-            $this->log('Invalid payload received (missing or invalid sessionId).');
+            Logger::log('Invalid payload received (missing or invalid sessionId).');
             wp_die('Invalid payload', 'Briqpay Webhook', array('response' => 400));
         }
 
@@ -64,14 +64,26 @@ class Webhooks
             $data['status'] = sanitize_key($data['status']);
         }
 
-        $this->log('Webhook received for session: ' . $data['sessionId'] . '. Enqueuing background task for API verification.');
+        Logger::log('Webhook received for session: ' . $data['sessionId'] . '. Checking for duplicates.');
+
+        $session_id = $data['sessionId'] ?? '';
+        $action = $data['action'] ?? ($data['event'] ?? '');
+        $status = $data['status'] ?? '';
+        $dedup_key = 'briqpay_wh_' . md5($session_id . '|' . $action . '|' . $status);
+
+        if (get_transient($dedup_key)) {
+            Logger::log('Webhook duplicate skipped for session: ' . $session_id);
+            wp_send_json_success(array('message' => 'Duplicate webhook ignored'));
+        }
+
+        set_transient($dedup_key, 1, 5 * MINUTE_IN_SECONDS);
 
         // Enqueue async action for background processing
         if (function_exists('as_enqueue_async_action')) {
             as_enqueue_async_action('briqpay_v3_process_webhook_callback', array('payload' => $data), 'briqpay');
         } else {
             // Fallback for older Action Scheduler or if not present
-            $this->log('Action Scheduler not found. Processing immediately.');
+            Logger::log('Action Scheduler not found. Processing immediately.');
             $this->process_webhook_callback($data);
         }
 
@@ -90,42 +102,47 @@ class Webhooks
             return;
         }
 
-        $this->log(sprintf('Background processing starting for session: %s | Action/Event: %s', $session_id, $action));
+        Logger::log(sprintf('Background processing starting for session: %s | Action/Event: %s', $session_id, $action));
 
         $order = $this->get_order_by_session_id($session_id);
         if (!$order) {
-            $this->log('Error: Order not found for session ' . $session_id);
+            Logger::log('Error: Order not found for session ' . $session_id);
             return;
         }
 
-        // Route based on action or event
-        if ('capture' === $action || 'capture_status' === $action) {
-            $this->handle_capture_status($order, $data['status'] ?? '', $data);
-            return;
-        }
-
-        if ('refund' === $action || 'refund_status' === $action) {
-            $this->handle_refund_status($order, $data['status'] ?? '', $data);
-            return;
-        }
-
-        // Standard Session/Order Status Update logic
-        // Validate session via API to ensure data integrity
+        // Fetch session from Briqpay API to ensure webhook legitimacy and retrieve authoritative data
         $settings = get_option('woocommerce_briqpay_settings');
         $api = new API($settings['merchant_id'], $settings['shared_secret'], 'yes' === $settings['testmode']);
         $session = $api->get_session($session_id);
 
         if (is_wp_error($session)) {
-            $this->log('Error retrieving session from API: ' . $session->get_error_message());
+            Logger::log('Error retrieving session from API: ' . $session->get_error_message());
             return;
         }
 
+        // Route based on action or event
+        if ('capture' === $action || 'capture_status' === $action) {
+            $this->handle_capture_status($order, $data['status'] ?? '', $data, $session);
+            return;
+        }
+
+        if ('refund' === $action || 'refund_status' === $action) {
+            $this->handle_refund_status($order, $data['status'] ?? '', $data, $session);
+            return;
+        }
+
+        if ('order_status' === $action) {
+            $this->handle_order_status($order, $data['status'] ?? '', $data);
+            return;
+        }
+
+        // Standard Session/Order Status Update logic
         do_action('briqpay_webhook_received', $data, $session, $order);
 
         $status = $session['status'] ?? '';
         $order_status = $session['order']['status'] ?? '';
 
-        $this->log('Session status: ' . $status . ' | Order status: ' . $order_status);
+        Logger::log('Session status: ' . $status . ' | Order status: ' . $order_status);
 
         $new_wc_status = '';
         $status_note = '';
@@ -133,15 +150,28 @@ class Webhooks
         switch ($status) {
             case 'completed':
                 if ($order->has_status('processing') || $order->has_status('completed')) {
-                    $this->log('Order already processed.');
+                    Logger::log('Order already processed.');
                     return;
                 }
+
+                // Verify amount and currency match between WC order and Briqpay session
+                $bp_amount = $session['data']['order']['amountIncVat'] ?? 0;
+                $order_amount = (float) $order->get_total();
+                $bp_currency = $session['data']['order']['currency'] ?? '';
+                $order_currency = $order->get_currency();
+
+                if (abs(($bp_amount / 100) - $order_amount) > 0.05 || strtolower($bp_currency) !== strtolower($order_currency)) {
+                    Logger::log(sprintf('Security: Amount or currency mismatch on payment completion. BP: %s %s, WC: %s %s. Setting order to on-hold.', $bp_amount, $bp_currency, $order_amount, $order_currency));
+                    $order->update_status('on-hold', sprintf(__('Briqpay: Payment amount/currency mismatch! BP: %s %s, WC: %s %s.', 'briqpay-for-woocommerce'), $bp_amount, $bp_currency, $order_amount, $order_currency));
+                    return;
+                }
+
                 // Use payment_complete() to trigger WooCommerce analytics hooks,
                 // set date_paid, reduce stock, and fire woocommerce_payment_complete.
                 $this->update_payment_method_title($order, $session);
                 $order->add_order_note(__('Briqpay: Payment confirmed via side-channel.', 'briqpay-for-woocommerce'));
                 $order->payment_complete($session_id);
-                $this->log('Order payment_complete() called for order: ' . $order->get_id());
+                Logger::log('Order payment_complete() called for order: ' . $order->get_id());
                 return;
 
             case 'cancelled':
@@ -165,16 +195,7 @@ class Webhooks
         }
     }
 
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
+
 
 
     /**
@@ -183,12 +204,13 @@ class Webhooks
     private function get_order_by_session_id($session_id)
     {
         // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key, WordPress.DB.SlowDBQuery.slow_db_query_meta_value
-        $orders = wc_get_orders(array(
+        $order_ids = wc_get_orders(array(
             'meta_key' => '_briqpay_session_id', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
             'meta_value' => $session_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
             'limit' => 1,
+            'return' => 'ids',
         ));
-        return !empty($orders) ? reset($orders) : null;
+        return !empty($order_ids) ? wc_get_order(reset($order_ids)) : null;
     }
 
     /**
@@ -267,50 +289,104 @@ class Webhooks
     /**
      * Handle Capture Status
      */
-    private function handle_capture_status($order, $status, $data)
+    private function handle_capture_status($order, $status, $data, $session)
     {
-        if ('approved' === $status && !empty($data['captureId'])) {
-            $capture_id = $data['captureId'];
+        $capture_id = $data['captureId'] ?? '';
+        if (empty($capture_id)) {
+            Logger::log('Webhook capture_status missing captureId.');
+            return;
+        }
+
+        // Authoritatively check the capture list or transactions in the verified API session object
+        $authoritative_capture = null;
+        $captures_list = $session['captures'] ?? ($session['data']['captures'] ?? array());
+        foreach ($captures_list as $cap) {
+            if (isset($cap['captureId']) && $cap['captureId'] === $capture_id) {
+                $authoritative_capture = $cap;
+                break;
+            }
+        }
+
+        if (!$authoritative_capture && !empty($session['data']['transactions'])) {
+            foreach ($session['data']['transactions'] as $tx) {
+                if (isset($tx['captureId']) && $tx['captureId'] === $capture_id) {
+                    $authoritative_capture = $tx;
+                    break;
+                }
+            }
+        }
+
+        if (!$authoritative_capture) {
+            Logger::log('Security: Capture ID ' . $capture_id . ' not found in official Briqpay session data.');
+            return;
+        }
+
+        // Use authoritative status from the API response
+        $auth_status = $authoritative_capture['status'] ?? '';
+        if ('approved' === $auth_status || 'successful' === $auth_status) {
             $captures = $order->get_meta('_briqpay_captures') ?: array();
 
-            // Deduplicate: If this captureId is already recorded, skip
-            if (in_array($capture_id, $captures)) {
-                $this->log('Capture ' . $capture_id . ' already recorded. Skipping.');
-                return;
+            // Store capture ID for potential refunds if not already recorded
+            if (!in_array($capture_id, $captures)) {
+                // translators: %s: capture ID
+                $order->add_order_note(sprintf(__('Briqpay: Capture approved. ID: %s', 'briqpay-for-woocommerce'), $capture_id));
+
+                $captures[] = $capture_id;
+                $order->update_meta_data('_briqpay_captures', $captures);
+
+                // Populate history for Admin Box visibility using authoritative API details
+                $history = $order->get_meta('_briqpay_capture_history') ?: array();
+                $history[] = array(
+                    'captureId' => $capture_id,
+                    'date' => current_time('mysql'),
+                    'amount' => $authoritative_capture['amountIncVat'] ?? ($authoritative_capture['amount'] ?? 0),
+                    'items' => $authoritative_capture['cart'] ?? ($authoritative_capture['items'] ?? array()),
+                );
+                $order->update_meta_data('_briqpay_capture_history', $history);
+
+                $order->save();
+            } else {
+                Logger::log('Capture ' . $capture_id . ' already recorded.');
             }
 
-            // translators: %s: capture ID
-            $order->add_order_note(sprintf(__('Briqpay: Capture approved. ID: %s', 'briqpay-for-woocommerce'), $capture_id));
-
-            // Store capture ID for potential refunds
-            $captures[] = $capture_id;
-            $order->update_meta_data('_briqpay_captures', $captures);
-
-            // Populate history for Admin Box visibility
-            $history = $order->get_meta('_briqpay_capture_history') ?: array();
-            $capture_data = $data['capture'] ?? array();
-            $history[] = array(
-                'captureId' => $capture_id,
-                'date' => current_time('mysql'),
-                'amount' => $capture_data['amountIncVat'] ?? ($data['amountIncVat'] ?? 0),
-                'items' => $capture_data['cart'] ?? array(),
-            );
-            $order->update_meta_data('_briqpay_capture_history', $history);
-
-            $order->save();
+            // If the order is currently pending/awaiting payment, mark it as paid since we successfully captured funds
+            if ($order->has_status(array('pending', 'failed', 'on-hold', 'checkout-draft'))) {
+                Logger::log('Order is in unpaid status. Calling payment_complete() via capture webhook.');
+                $order->payment_complete($capture_id);
+            }
         }
     }
 
     /**
      * Handle Refund Status
      */
-    private function handle_refund_status($order, $status, $data)
+    private function handle_refund_status($order, $status, $data, $session)
     {
-        if ('approved' === $status) {
-            $note = __('Briqpay: Refund approved.', 'briqpay-for-woocommerce');
-            if (!empty($data['refundId'])) {
-                $note .= sprintf(' ID: %s', $data['refundId']);
+        $refund_id = $data['refundId'] ?? '';
+        if (empty($refund_id)) {
+            Logger::log('Webhook refund_status missing refundId.');
+            return;
+        }
+
+        // Authoritatively check the refunds list in the verified API session object
+        $authoritative_refund = null;
+        $refunds_list = $session['refunds'] ?? ($session['data']['refunds'] ?? array());
+        foreach ($refunds_list as $ref) {
+            if (isset($ref['refundId']) && $ref['refundId'] === $refund_id) {
+                $authoritative_refund = $ref;
+                break;
             }
+        }
+
+        if (!$authoritative_refund) {
+            Logger::log('Security: Refund ID ' . $refund_id . ' not found in official Briqpay session data.');
+            return;
+        }
+
+        $auth_status = $authoritative_refund['status'] ?? '';
+        if ('approved' === $auth_status || 'successful' === $auth_status) {
+            $note = __('Briqpay: Refund approved.', 'briqpay-for-woocommerce');
+            $note .= sprintf(' ID: %s', $refund_id);
             $order->add_order_note($note);
         }
     }

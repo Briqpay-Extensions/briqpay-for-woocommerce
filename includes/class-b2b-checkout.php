@@ -10,16 +10,6 @@ if (!defined('ABSPATH')) {
  */
 class B2b_Checkout
 {
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
 
     /**
      * Init
@@ -126,7 +116,7 @@ class B2b_Checkout
         }
 
         if (!WC()->session->get('briqpay_b2b_active')) {
-            $this->log('establish_b2b_page_context: Setting B2B session flags on shortcode page.');
+            Logger::log('establish_b2b_page_context: Setting B2B session flags on shortcode page.');
             WC()->session->set('briqpay_b2b_active', true);
             WC()->session->set('chosen_payment_method', 'briqpay');
             WC()->session->set('briqpay_customer_type', 'business');
@@ -197,21 +187,26 @@ class B2b_Checkout
                 WC()->session->set('chosen_shipping_methods', $shipping_methods);
             }
 
-            WC()->cart->calculate_shipping();
-            WC()->cart->calculate_totals();
-
-            ob_start();
-            woocommerce_order_review();
-            $html = ob_get_clean();
-
-            // Standard WC selector for the whole review order
-            $fragments['.woocommerce-checkout-review-order-table'] = $html;
-
-            // Also update the wrapper if it helps wc-checkout.js find targets
-            $fragments['#order_review'] = '<div id="order_review" class="woocommerce-checkout-review-order">' . $html . '</div>';
+            // WooCommerce already provides a .woocommerce-checkout-review-order-table fragment with
+            // fully recalculated shipping and totals for this AJAX request. Calling
+            // woocommerce_order_review() again would duplicate that expensive render.
+            // Instead, reuse the inner HTML WC already produced as the content of the
+            // #order_review wrapper so the B2B page layout stays correct, with a fallback
+            // in case the fragment is not set.
+            if (isset($fragments['.woocommerce-checkout-review-order-table'])) {
+                $inner = $fragments['.woocommerce-checkout-review-order-table'];
+            } else {
+                WC()->cart->calculate_shipping();
+                WC()->cart->calculate_totals();
+                ob_start();
+                woocommerce_order_review();
+                $inner = ob_get_clean();
+            }
+            $fragments['#order_review'] = '<div id="order_review" class="woocommerce-checkout-review-order">' . $inner . '</div>';
         }
         return $fragments;
     }
+
 
     /**
      * Is B2B Checkout Active?
@@ -307,7 +302,7 @@ class B2b_Checkout
         // phpcs:enable
 
         // Log detection variables for debugging
-        $this->log(sprintf(
+        Logger::log(sprintf(
             'B2B Force Logic [Filter Input: %s] - Is AJAX: %s, Has Action: %s, Referer: %s',
             $force ? 'TRUE' : 'FALSE',
             $is_ajax ? 'YES' : 'NO',
@@ -317,18 +312,18 @@ class B2b_Checkout
 
         // DIAGNOSTIC: If we received TRUE but we are in AJAX, find out who sent it.
         if ($force === true && ($is_ajax || $has_action)) {
-            $this->log('DEBUG: force_new_session received TRUE during AJAX. Filter must have been set by another component.');
+            Logger::log('DEBUG: force_new_session received TRUE during AJAX. Filter must have been set by another component.');
         }
 
         // DEFINITIVE BYPASS: If it's AJAX or has an Action, we MUST NOT force a new session for B2B.
         // We return FALSE regardless of the inherited $force value to stabilize the session.
         if ($is_ajax || $has_action) {
-            $this->log('B2B Force Session: returning FALSE (AJAX/Action detected, blocking regeneration)');
+            Logger::log('B2B Force Session: returning FALSE (AJAX/Action detected, blocking regeneration)');
             return false;
         }
 
         // Only force a new session on the initial (non-AJAX) page load of the B2B checkout.
-        $this->log('B2B Force Session: returning TRUE (Initial page load detected)');
+        Logger::log('B2B Force Session: returning TRUE (Initial page load detected)');
         return true;
     }
 
@@ -360,7 +355,7 @@ class B2b_Checkout
             return $data;
         }
 
-        $this->log('filter_b2b_session_data() called. Update: ' . ($update ? 'YES' : 'NO'));
+        Logger::log('filter_b2b_session_data() called. Update: ' . ($update ? 'YES' : 'NO'));
 
         if (!$update) {
             // Only add these during initial creation (POST).
@@ -381,7 +376,7 @@ class B2b_Checkout
             $restricted = array('customerType', 'modules', 'country', 'locale');
             foreach ($restricted as $key) {
                 if (isset($data[$key])) {
-                    $this->log('Purging restricted field from PATCH: ' . $key);
+                    Logger::log('Purging restricted field from PATCH: ' . $key);
                     unset($data[$key]);
                 }
             }
@@ -635,19 +630,20 @@ class B2b_Checkout
     public function display_company_in_admin($order)
     {
         $company_name = $order->get_meta('_briqpay_company_name');
-        $company_cin  = $order->get_meta('_briqpay_company_cin');
+        $company_cin = $order->get_meta('_briqpay_company_cin');
 
         if (empty($company_name) && empty($company_cin)) {
             return;
         }
         ?>
-        <div class="briqpay-company-info" style="margin-top:12px;padding:10px 12px;background:#f8f8f8;border-left:3px solid #2271b1;border-radius:2px;">
-            <strong><?php esc_html_e('Company', 'briqpay-for-woocommerce'); ?></strong><br>
-            <?php if ($company_name) : ?>
-                <?php esc_html_e('Name:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_name); ?><br>
+        <div class="briqpay-company-info"
+            style="margin-top:12px;padding:10px 12px;background:#f8f8f8;border-left:3px solid #2271b1;border-radius:2px;">
+            <strong><?php esc_html_e('Company (Briqpay)', 'briqpay-for-woocommerce'); ?></strong><br>
+            <?php if ($company_name): ?>
+                <?php esc_html_e('Name:', 'briqpay-for-woocommerce'); ?>             <?php echo esc_html($company_name); ?><br>
             <?php endif; ?>
-            <?php if ($company_cin) : ?>
-                <?php esc_html_e('CIN:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_cin); ?>
+            <?php if ($company_cin): ?>
+                <?php esc_html_e('CIN:', 'briqpay-for-woocommerce'); ?>             <?php echo esc_html($company_cin); ?>
             <?php endif; ?>
         </div>
         <?php

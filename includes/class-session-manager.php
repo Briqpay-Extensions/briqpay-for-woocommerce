@@ -11,15 +11,18 @@ if (!defined('ABSPATH')) {
 class Session_Manager
 {
     /**
-     * Log message
+     * Cache for product image URLs.
+     *
+     * @var array
      */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
+    private static $image_cache = array();
+
+    /**
+     * Cache for tax rates.
+     *
+     * @var array
+     */
+    private static $tax_rate_cache = array();
 
 
     /**
@@ -66,21 +69,21 @@ class Session_Manager
      */
     public function get_or_create_session()
     {
-        $this->log('get_or_create_session() entered.');
+        Logger::log('get_or_create_session() entered.');
 
         $force_new_input = false;
         $force_new = apply_filters('briqpay_force_new_session', $force_new_input);
         if ($force_new) {
-            $this->log(sprintf('Forcing new session via filter briqpay_force_new_session: TRUE (Input was: %s)', $force_new_input ? 'TRUE' : 'FALSE'));
+            Logger::log(sprintf('Forcing new session via filter briqpay_force_new_session: TRUE (Input was: %s)', $force_new_input ? 'TRUE' : 'FALSE'));
             self::set_session_id(null);
         } else {
-            $this->log('briqpay_force_new_session filter: FALSE');
+            Logger::log('briqpay_force_new_session filter: FALSE');
         }
 
         $session_id = self::get_session_id();
         $type_changed = $this->has_customer_type_changed();
 
-        $this->log(sprintf(
+        Logger::log(sprintf(
             'Session Stats - ID: %s, Force New: %s, Type Changed: %s',
             $session_id ?: 'NONE',
             $force_new ? 'YES' : 'NO',
@@ -89,28 +92,28 @@ class Session_Manager
 
         if ($force_new || $type_changed || !$session_id) {
             if (!$session_id) {
-                $this->log('No session ID found or forced new, creating new one.');
+                Logger::log('No session ID found or forced new, creating new one.');
             }
             return $this->create_session();
         }
 
-        $this->log('Found existing session: ' . $session_id);
+        Logger::log('Found existing session: ' . $session_id);
         $api = $this->get_api();
 
         // Check if session is still valid/exists
         $session = $api->get_session($session_id);
         if (!is_wp_error($session) && !empty($session['sessionId']) && $session['status'] !== 'completed') {
-            $this->log('Existing session is not completed, updating...');
+            Logger::log('Existing session is not completed, updating...');
             // Update session with latest cart
-            $updated_session = $this->update_session($session_id);
+            $updated_session = $this->update_session($session_id, $session);
             if (is_wp_error($updated_session)) {
-                $this->log('Update failed: ' . $updated_session->get_error_message());
+                Logger::log('Update failed: ' . $updated_session->get_error_message());
                 return $session; // Fallback to old one if update failed
             }
             return $updated_session;
         }
 
-        $this->log('Existing session invalid, expired, or completed. Creating new one.');
+        Logger::log('Existing session invalid, expired, or completed. Creating new one.');
         return $this->create_session();
     }
 
@@ -119,7 +122,7 @@ class Session_Manager
      */
     private function create_session()
     {
-        $this->log('Creating new session...');
+        Logger::log('Creating new session...');
         $api = $this->get_api();
         $data = $this->get_session_data();
 
@@ -140,9 +143,9 @@ class Session_Manager
         $session = $api->create_session($data);
 
         if (is_wp_error($session)) {
-            $this->log('Error creating session: ' . $session->get_error_message());
+            Logger::log('Error creating session: ' . $session->get_error_message());
         } elseif (!empty($session['sessionId'])) {
-            $this->log('Session created: ' . $session['sessionId']);
+            Logger::log('Session created: ' . $session['sessionId']);
             self::set_session_id($session['sessionId']);
 
             /**
@@ -153,7 +156,7 @@ class Session_Manager
              */
             do_action('briqpay_after_create_session', $session, $data);
         } else {
-            $this->log('Session creation returned unexpected data.');
+            Logger::log('Session creation returned unexpected data.');
         }
 
         return $session;
@@ -162,7 +165,7 @@ class Session_Manager
     /**
      * Update Session
      */
-    public function update_session($session_id)
+    public function update_session($session_id, $existing_session = null)
     {
         $api = $this->get_api();
         $data = $this->get_session_data(true); // Partial update data
@@ -175,6 +178,15 @@ class Session_Manager
          */
         $data = apply_filters('briqpay_update_session_data', $data, $session_id);
 
+        // Compute hash
+        $new_hash = md5(wp_json_encode($data));
+        $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_payload_hash') : null;
+
+        if ($stored_hash === $new_hash && $existing_session !== null && !is_wp_error($existing_session)) {
+            Logger::log('Skipping PATCH request: payload hash unchanged.');
+            return $existing_session;
+        }
+
         /**
          * Action before a Briqpay session is updated.
          *
@@ -185,10 +197,18 @@ class Session_Manager
 
         $result = $api->update_session($session_id, $data);
 
-        // If update was successful, fetch the full session to get the latest htmlSnippet
+        // If update was successful, optionally fetch the full session to get the latest htmlSnippet
         if (!is_wp_error($result) && isset($result['sessionId'])) {
-            $this->log('Update successful, fetching full session to ensure latest snippet.');
-            $result = $api->get_session($session_id);
+            if (null !== WC()->session) {
+                WC()->session->set('briqpay_payload_hash', $new_hash);
+            }
+
+            if (empty($result['htmlSnippet'])) {
+                Logger::log('Update successful, fetching full session to ensure latest snippet.');
+                $result = $api->get_session($session_id);
+            } else {
+                Logger::log('Update successful, using snippet from PATCH response.');
+            }
         }
 
         /**
@@ -216,15 +236,15 @@ class Session_Manager
      */
     public function get_session_data($update = false)
     {
-        $this->log('get_session_data() started. Update: ' . ($update ? 'yes' : 'no'));
+        Logger::log('get_session_data() started. Update: ' . ($update ? 'yes' : 'no'));
 
         if (!function_exists('WC') || null === WC() || null === WC()->cart) {
-            $this->log('Error: WC()->cart is not available.');
+            Logger::log('Error: WC()->cart is not available.');
             return array();
         }
 
         try {
-            $this->log('Building order data...');
+            Logger::log('Building order data...');
             $cart_items = $this->get_cart_items();
 
             // Calculate totals from items to ensure perfect match with Briqpay validation
@@ -244,7 +264,7 @@ class Session_Manager
                 $sum_inc += $item['totalAmount'];
             }
 
-            $this->log(sprintf('Final Summed Totals: Inc=%d, Ex=%d', $sum_inc, $sum_ex));
+            Logger::log(sprintf('Final Summed Totals: Inc=%d, Ex=%d', $sum_inc, $sum_ex));
 
             $data = array(
                 'data' => array(
@@ -286,7 +306,7 @@ class Session_Manager
             }
 
             if (!$update) {
-                $this->log('Building extra session data (non-update)...');
+                Logger::log('Building extra session data (non-update)...');
                 $data['product'] = array('type' => 'payment', 'intent' => 'payment_one_time');
                 $data['customerType'] = $this->get_customer_type();
 
@@ -298,13 +318,13 @@ class Session_Manager
 
                 $data['locale'] = $this->get_locale();
 
-                $this->log('Setting URLs...');
+                Logger::log('Setting URLs...');
                 $data['urls'] = array(
                     'terms' => get_permalink(wc_get_page_id('terms')) ?: get_home_url(),
                     'redirect' => $this->get_redirect_url(),
                 );
 
-                $this->log('Setting hooks...');
+                Logger::log('Setting hooks...');
                 $data['hooks'] = $this->get_webhooks();
                 $data['modules'] = array(
                     'loadModules' => array('payment'),
@@ -318,7 +338,7 @@ class Session_Manager
                 );
             }
 
-            $this->log('get_session_data() completed.');
+            Logger::log('get_session_data() completed.');
 
             /**
              * Filter the complete session data before it is used.
@@ -330,7 +350,7 @@ class Session_Manager
 
             return $data;
         } catch (\Exception $e) {
-            $this->log('EXCEPTION in get_session_data: ' . $e->getMessage());
+            Logger::log('EXCEPTION in get_session_data: ' . $e->getMessage());
             return array();
         }
     }
@@ -429,7 +449,7 @@ class Session_Manager
      */
     private function get_cart_items()
     {
-        $this->log('get_cart_items() started.');
+        Logger::log('get_cart_items() started.');
         $items = array();
         $cart = WC()->cart;
 
@@ -442,7 +462,7 @@ class Session_Manager
         foreach ($cart->get_cart() as $cart_item_key => $cart_item) {
             /** @var \WC_Product $product */
             $product = $cart_item['data'];
-            $this->log('Processing item: ' . (is_object($product) ? $product->get_name() : 'non-object'));
+            Logger::log('Processing item: ' . (is_object($product) ? $product->get_name() : 'non-object'));
 
             // Calculate V3 cart fields
             $quantity = $cart_item['quantity'];
@@ -470,7 +490,11 @@ class Session_Manager
             }
 
             // Get product image URL
-            $image_url = wp_get_attachment_image_url($product->get_image_id(), 'medium');
+            $image_id = $product->get_image_id();
+            if (!isset(self::$image_cache[$image_id])) {
+                self::$image_cache[$image_id] = wp_get_attachment_image_url($image_id, 'medium');
+            }
+            $image_url = self::$image_cache[$image_id];
 
             // Robust unique reference: SKU-ID or just ID
             $sku = $product->get_sku();
@@ -506,9 +530,9 @@ class Session_Manager
         $items = array_values($consolidated_items);
 
         // Shipping
-        $this->log('Shipping Total: ' . $cart->get_shipping_total());
+        Logger::log('Shipping Total: ' . $cart->get_shipping_total());
         if ($cart->get_shipping_total() > 0) {
-            $this->log('Processing shipping...');
+            Logger::log('Processing shipping...');
             $ship_total = $cart->get_shipping_total();
             $ship_tax = $cart->get_shipping_tax();
 
@@ -532,7 +556,7 @@ class Session_Manager
 
         // Fees
         foreach ($cart->get_fees() as $fee) {
-            $this->log('Processing fee: ' . $fee->name);
+            Logger::log('Processing fee: ' . $fee->name);
             $items[] = array(
                 'productType' => 'physical',
                 'reference' => $fee->id,
@@ -552,7 +576,7 @@ class Session_Manager
         }
         // Coupons/Discounts
         foreach ($cart->get_applied_coupons() as $coupon_code) {
-            $this->log('Processing coupon: ' . $coupon_code);
+            Logger::log('Processing coupon: ' . $coupon_code);
             $discount_amount = (float) $cart->get_coupon_discount_amount($coupon_code);
             $discount_tax = (float) $cart->get_coupon_discount_tax_amount($coupon_code);
 
@@ -599,7 +623,7 @@ class Session_Manager
             );
         }
 
-        $this->log('get_cart_items() completed.');
+        Logger::log('get_cart_items() completed.');
 
         /**
          * Filter the cart items sent to Briqpay.
@@ -635,12 +659,16 @@ class Session_Manager
     private function get_tax_rate($product)
     {
         $tax_class = $product->get_tax_class();
-        $tax_rates = \WC_Tax::get_rates($tax_class);
-        if (!empty($tax_rates)) {
-            $rate = reset($tax_rates);
-            return (int) ($rate['rate'] * 100);
+        if (!isset(self::$tax_rate_cache[$tax_class])) {
+            $tax_rates = \WC_Tax::get_rates($tax_class);
+            if (!empty($tax_rates)) {
+                $rate = reset($tax_rates);
+                self::$tax_rate_cache[$tax_class] = (int) ($rate['rate'] * 100);
+            } else {
+                self::$tax_rate_cache[$tax_class] = 0;
+            }
         }
-        return 0;
+        return self::$tax_rate_cache[$tax_class];
     }
 
     /**
@@ -708,7 +736,7 @@ class Session_Manager
         $current_b2b_active = (bool) apply_filters('briqpay_is_b2b_active', (bool) WC()->session->get('briqpay_b2b_active'));
         $previous_b2b_active = WC()->session->get('briqpay_prev_b2b_active');
 
-        $this->log(sprintf(
+        Logger::log(sprintf(
             'Type Check - Current: %s, Prev: %s | B2B Active - Current: %s, Prev: %s',
             $current_type,
             $previous_type,
@@ -718,7 +746,7 @@ class Session_Manager
 
         // 1. First-time initialization of session flags
         if (empty($previous_type)) {
-            $this->log('Initializing Briqpay session type for the first time: ' . $current_type);
+            Logger::log('Initializing Briqpay session type for the first time: ' . $current_type);
             WC()->session->set('briqpay_customer_type', $current_type);
             WC()->session->set('briqpay_prev_b2b_active', $current_b2b_active);
             return false; // Stay stable on first-ever load
@@ -727,7 +755,7 @@ class Session_Manager
         // 2. Check for actual Customer Type Change
         $type_changed = ($previous_type !== $current_type);
         if ($type_changed) {
-            $this->log(sprintf('Customer type changed: %s -> %s. Forcing new session.', $previous_type, $current_type));
+            Logger::log(sprintf('Customer type changed: %s -> %s. Forcing new session.', $previous_type, $current_type));
             WC()->session->set('briqpay_customer_type', $current_type);
         }
 
@@ -737,12 +765,12 @@ class Session_Manager
             $previous_b2b_active = (bool) $previous_b2b_active;
             $b2b_changed = ($current_b2b_active !== $previous_b2b_active);
             if ($b2b_changed) {
-                $this->log(sprintf('B2B Active state changed: %s -> %s. Forcing new session.', $previous_b2b_active ? 'yes' : 'no', $current_b2b_active ? 'yes' : 'no'));
+                Logger::log(sprintf('B2B Active state changed: %s -> %s. Forcing new session.', $previous_b2b_active ? 'yes' : 'no', $current_b2b_active ? 'yes' : 'no'));
                 WC()->session->set('briqpay_prev_b2b_active', $current_b2b_active);
             }
         } else {
             // First time seeing B2B flag, initialize it and don't trigger change
-            $this->log('Initializing B2B active state: ' . ($current_b2b_active ? 'yes' : 'no'));
+            Logger::log('Initializing B2B active state: ' . ($current_b2b_active ? 'yes' : 'no'));
             WC()->session->set('briqpay_prev_b2b_active', $current_b2b_active);
         }
 

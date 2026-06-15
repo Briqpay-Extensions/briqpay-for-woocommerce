@@ -47,7 +47,6 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_code')->andReturn('shipping');
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
-        $order->shouldReceive('get_coupons')->andReturn(array());
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
         $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
@@ -72,7 +71,7 @@ class OrderManagementTest extends TestCase
         $results = $method->invoke($order_mgmt, $order);
 
         $this->assertCount(1, $results);
-        $this->assertEquals('SKU1-123', $results[0]['reference']);
+        $this->assertEquals('SKU1-123', $results[0]['reference']); // format: {sku}-{product_id}
         $this->assertEquals(5000, $results[0]['unitPrice']); // (100 / 2) * 100
         $this->assertEquals(6250, $results[0]['unitPriceIncVat']); // (125 / 2) * 100
         $this->assertEquals(2500, $results[0]['taxRate']);
@@ -151,7 +150,6 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 25.00)));
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
-        $order->shouldReceive('get_coupons')->andReturn(array());
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
         $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());
@@ -283,7 +281,6 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 50.00)));
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
-        $order->shouldReceive('get_coupons')->andReturn(array());
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
         $order->shouldReceive('get_items')->with('line_item')->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());

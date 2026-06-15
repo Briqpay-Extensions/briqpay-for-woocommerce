@@ -3,7 +3,7 @@
  * Plugin Name: Briqpay for WooCommerce
  * Plugin URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Description: Briqpay connects multiple payment providers like Adyen, Stripe, PayPal, and Klarna in one integration.
- * Version: 1.0.13
+ * Version: 1.0.14
  * Author: Briqpay
  * Author URI: https://briqpay.com
  * Text Domain: briqpay-for-woocommerce
@@ -12,7 +12,7 @@
  * Requires PHP: 7.4
  * Requires Plugins: woocommerce
  * WC requires at least: 5.5
- * WC tested up to: 10.7
+ * WC tested up to: 10.8
  * License: GPLv2 or later
  * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  */
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('BRIQPAY_WC_VERSION', '1.0.13');
+define('BRIQPAY_WC_VERSION', '1.0.14');
 define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
 define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
 define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
@@ -105,7 +105,7 @@ if (!class_exists('Briqpay_WooCommerce')) {
                     $integration = new \Briqpay\WooCommerce\Blocks_Integration();
                     $payment_method_registry->register($integration);
                 } catch (\Exception $e) {
-                    $this->log('ERROR registering blocks integration: ' . $e->getMessage());
+                    \Briqpay\WooCommerce\Logger::log('ERROR registering blocks integration: ' . $e->getMessage());
                 }
             });
         }
@@ -151,17 +151,6 @@ if (!class_exists('Briqpay_WooCommerce')) {
         }
 
         /**
-         * Log message
-         */
-        private function log($message)
-        {
-            if (defined('WC_LOG_DIR')) {
-                $logger = wc_get_logger();
-                $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-            }
-        }
-
-        /**
          * On plugins loaded
          */
         public function on_plugins_loaded()
@@ -171,7 +160,7 @@ if (!class_exists('Briqpay_WooCommerce')) {
             }
 
             if (defined('WP_DEBUG') && WP_DEBUG) {
-                $this->log('Initializing Briqpay components...');
+                \Briqpay\WooCommerce\Logger::log('Initializing Briqpay components...');
             }
 
             // Initialize components
@@ -182,6 +171,7 @@ if (!class_exists('Briqpay_WooCommerce')) {
             (new \Briqpay\WooCommerce\Order_Management())->init();
             (new \Briqpay\WooCommerce\Admin_Order_Meta_Box())->init();
             (new \Briqpay\WooCommerce\Session_Reset_Handler())->init();
+            (new \Briqpay\WooCommerce\Pay_Button_Handler())->init();
         }
 
         /**
@@ -197,3 +187,14 @@ if (!class_exists('Briqpay_WooCommerce')) {
 
 // Initialize the plugin
 Briqpay_WooCommerce::get_instance();
+
+// Register activation and deactivation hooks
+register_activation_hook(BRIQPAY_WC_PLUGIN_FILE, function() {
+    require_once plugin_dir_path(__FILE__) . 'includes/class-order-status-manager.php';
+    \Briqpay\WooCommerce\Order_Status_Manager::schedule_events();
+});
+
+register_deactivation_hook(BRIQPAY_WC_PLUGIN_FILE, function() {
+    require_once plugin_dir_path(__FILE__) . 'includes/class-order-status-manager.php';
+    \Briqpay\WooCommerce\Order_Status_Manager::unschedule_events();
+});

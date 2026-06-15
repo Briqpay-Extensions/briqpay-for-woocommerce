@@ -11,18 +11,6 @@ if (!defined('ABSPATH')) {
 class Checkout_Handler
 {
     /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
-
-
-    /**
      * Init
      */
     public function init()
@@ -202,13 +190,13 @@ class Checkout_Handler
             return;
         }
 
-        $this->log('handle_briqpay_return() triggered.');
+        Logger::log('handle_briqpay_return() triggered.');
 
         // Get session ID from WC session
         $session_id = Session_Manager::get_session_id();
 
         if (!$session_id) {
-            $this->log('Error: No session ID found in WC session.');
+            Logger::log('Error: No session ID found in WC session.');
             wc_add_notice(__('Payment session not found.', 'briqpay-for-woocommerce'), 'error');
             wp_safe_redirect(wc_get_checkout_url());
             exit;
@@ -219,13 +207,13 @@ class Checkout_Handler
         $order = $this->get_order_by_session_id($session_id);
 
         if (!$order) {
-            $this->log('Warning: No temporary order found for session. This should not happen.');
+            Logger::log('Warning: No temporary order found for session. This should not happen.');
             wc_add_notice(__('Order not found.', 'briqpay-for-woocommerce'), 'error');
             wp_safe_redirect(wc_get_checkout_url());
             exit;
         }
 
-        $this->log('Found order: ' . $order->get_id() . ' with status: ' . $order->get_status());
+        Logger::log('Found order: ' . $order->get_id() . ' with status: ' . $order->get_status());
 
         // Get session from Briqpay to verify it's approved and get PSP name
         $settings = get_option('woocommerce_briqpay_settings');
@@ -233,7 +221,7 @@ class Checkout_Handler
         $session = $api->get_session($session_id);
 
         if (is_wp_error($session)) {
-            $this->log('Error retrieving session: ' . $session->get_error_message());
+            Logger::log('Error retrieving session: ' . $session->get_error_message());
             wc_add_notice(__('Could not verify payment.', 'briqpay-for-woocommerce'), 'error');
             wp_safe_redirect(wc_get_checkout_url());
             exit;
@@ -260,7 +248,7 @@ class Checkout_Handler
             $psp_name = $session['data']['paymentMethod']['name'];
         }
 
-        $this->log('Resolved PSP Name: ' . $psp_name);
+        Logger::log('Resolved PSP Name: ' . $psp_name);
 
         // Update order with PSP name and Extended Metadata
         $order->set_payment_method_title($psp_name);
@@ -287,17 +275,17 @@ class Checkout_Handler
 
         // If already upgraded to pending, just redirect now after updating title
         if ($order->has_status(array('pending', 'processing', 'completed'))) {
-            $this->log('Order already processed. Redirecting to order received page.');
+            Logger::log('Order already processed. Redirecting to order received page.');
             wp_safe_redirect($order->get_checkout_order_received_url());
             exit;
         }
 
         // Verify session is approved/completed
         $order_status = $session['order']['status'] ?? ($session['status'] ?? '');
-        $this->log('Session order status: ' . $order_status);
+        Logger::log('Session order status: ' . $order_status);
 
         if ($order_status !== 'completed') {
-            $this->log('Session not completed. Status: ' . $order_status);
+            Logger::log('Session not completed. Status: ' . $order_status);
             // translators: %s: session status
             $order->add_order_note(sprintf(__('Payment verification failed. Status: %s', 'briqpay-for-woocommerce'), $order_status));
             wc_add_notice(__('Payment not approved.', 'briqpay-for-woocommerce'), 'error');
@@ -308,7 +296,7 @@ class Checkout_Handler
         // Upgrade order status to pending
         $order->update_status('pending', __('Briqpay session verified. Awaiting webhook confirmation.', 'briqpay-for-woocommerce'));
         $order->save();
-        $this->log('Order upgraded to pending: ' . $order->get_id());
+        Logger::log('Order upgraded to pending: ' . $order->get_id());
 
         /**
          * Action after payment is verified and order upgraded.
@@ -321,7 +309,7 @@ class Checkout_Handler
         // B2B specific cleanup - Move here to only run on success
         $is_b2b = (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) || (isset($_COOKIE['briqpay_b2b_active']) && $_COOKIE['briqpay_b2b_active'] === '1');
         if ($is_b2b) {
-            $this->log('B2B Checkout Success. Performing cleanup...');
+            Logger::log('B2B Checkout Success. Performing cleanup...');
             if (null !== WC() && null !== WC()->session) {
                 WC()->session->set('briqpay_b2b_active', false);
                 WC()->session->set('briqpay_customer_type', null);
@@ -329,7 +317,7 @@ class Checkout_Handler
 
                 // Clear address so guests don't have their info remembered for next purchase
                 if (null !== WC()->customer) {
-                    $this->log('Clearing customer address data.');
+                    Logger::log('Clearing customer address data.');
                     WC()->customer->set_billing_first_name('');
                     WC()->customer->set_billing_last_name('');
                     WC()->customer->set_billing_company('');
@@ -394,11 +382,11 @@ class Checkout_Handler
             return;
         }
 
-        $this->log('clear_customer_data_after_purchase triggered for order: ' . $order_id);
+        Logger::log('clear_customer_data_after_purchase triggered for order: ' . $order_id);
 
         // B2B Cleanup
         if (null !== WC()->session) {
-            $this->log('Performing final aggressive B2B cleanup.');
+            Logger::log('Performing final aggressive B2B cleanup.');
             WC()->session->set('briqpay_b2b_active', false);
             WC()->session->set('briqpay_customer_type', null);
             WC()->session->set('briqpay_prev_b2b_active', null);
@@ -406,7 +394,7 @@ class Checkout_Handler
         setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
 
         // Clear all address fields
-        $this->log('Performing final aggressive address clearing.');
+        Logger::log('Performing final aggressive address clearing.');
         WC()->customer->set_billing_first_name('');
         WC()->customer->set_billing_last_name('');
         WC()->customer->set_billing_company('');
@@ -434,7 +422,7 @@ class Checkout_Handler
             WC()->session->save_data();
         }
 
-        $this->log('Customer address data cleared successfully on success page.');
+        Logger::log('Customer address data cleared successfully on success page.');
     }
 
     /**
@@ -442,12 +430,13 @@ class Checkout_Handler
      */
     private function get_order_by_session_id($session_id)
     {
-        $orders = wc_get_orders(array(
+        $order_ids = wc_get_orders(array(
             'meta_key' => '_briqpay_session_id', // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
             'meta_value' => $session_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
             'limit' => 1,
+            'return' => 'ids',
         ));
-        return !empty($orders) ? reset($orders) : null;
+        return !empty($order_ids) ? wc_get_order(reset($order_ids)) : null;
     }
 
     /**
@@ -456,7 +445,7 @@ class Checkout_Handler
     public function ajax_get_session()
     {
         check_ajax_referer('briqpay_nonce', 'nonce');
-        $this->log('ajax_get_session() triggered.');
+        Logger::log('ajax_get_session() triggered.');
 
         // Capture total BEFORE processing to detect changes
         $total_before = WC()->cart->get_total('edit');
@@ -467,7 +456,7 @@ class Checkout_Handler
             $blocks_data = json_decode(wp_unslash($_POST['blocks_data']), true);
             if (is_array($blocks_data)) {
                 $blocks_data = $this->sanitize_recursive($blocks_data);
-                $this->log('Updating WC Customer from blocks data.');
+                Logger::log('Updating WC Customer from blocks data.');
                 // Update Billing
                 if (isset($blocks_data['billing_address'])) {
                     $b = $blocks_data['billing_address'];
@@ -514,11 +503,9 @@ class Checkout_Handler
                     foreach ($blocks_data['shipping_rates'] as $package_index => $rate_id) {
                         $chosen_methods[$package_index] = $rate_id;
                     }
-                    $this->log('Setting chosen shipping methods from BLOCKS, count: ' . count($chosen_methods));
+                    Logger::log('Setting chosen shipping methods from BLOCKS, count: ' . count($chosen_methods));
                     WC()->session->set('chosen_shipping_methods', $chosen_methods);
                 }
-
-                WC()->customer->save();
             }
         }
 
@@ -531,12 +518,12 @@ class Checkout_Handler
             if (is_array($checkout_data)) {
                 // Recursively sanitize checkout_data
                 $checkout_data = $this->sanitize_recursive($checkout_data);
-                $this->log('Updating WC Customer from sanitized checkout data.');
+                Logger::log('Updating WC Customer from sanitized checkout data.');
             } else {
-                $this->log('checkout_data found but is empty.');
+                Logger::log('checkout_data found but is empty.');
             }
         } else {
-            $this->log('checkout_data is COMPLETELY MISSING from POST.');
+            Logger::log('checkout_data is COMPLETELY MISSING from POST.');
         }
 
         // Only proceed if we have checkout_data or blocks_data
@@ -569,7 +556,7 @@ class Checkout_Handler
 
                 if (isset($checkout_data['shipping_method'])) {
                     $methods = is_array($checkout_data['shipping_method']) ? $checkout_data['shipping_method'] : array($checkout_data['shipping_method']);
-                    $this->log('Setting chosen shipping methods, count: ' . count($methods));
+                    Logger::log('Setting chosen shipping methods, count: ' . count($methods));
                     WC()->session->set('chosen_shipping_methods', $methods);
                 }
 
@@ -607,19 +594,44 @@ class Checkout_Handler
         }
 
         WC()->customer->save();
-        WC()->cart->calculate_shipping();
-        WC()->cart->calculate_totals();
+
+        $shipping_country = WC()->customer->get_shipping_country();
+        $shipping_postcode = WC()->customer->get_shipping_postcode();
+        $shipping_city = WC()->customer->get_shipping_city();
+        $chosen_shipping_methods = null !== WC()->session ? WC()->session->get('chosen_shipping_methods') : null;
+        $cart_hash = WC()->cart->get_cart_hash();
+
+        $address_data = array(
+            $shipping_country,
+            $shipping_postcode,
+            $shipping_city,
+            $chosen_shipping_methods,
+            $cart_hash
+        );
+        $new_hash = md5(wp_json_encode($address_data));
+        $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_address_hash') : null;
+
+        if ($stored_hash !== $new_hash) {
+            WC()->cart->calculate_shipping();
+            WC()->cart->calculate_totals();
+            if (null !== WC()->session) {
+                WC()->session->set('briqpay_address_hash', $new_hash);
+            }
+            Logger::log('Recalculating shipping and totals because address or cart changed.');
+        } else {
+            Logger::log('Skipping shipping and totals recalculation (address and cart unchanged).');
+        }
 
         $total_after = WC()->cart->get_total('edit');
-        $this->log(sprintf('Total Check: Before=%s, After=%s', $total_before, $total_after));
+        Logger::log(sprintf('Total Check: Before=%s, After=%s', $total_before, $total_after));
 
         if ($total_before !== $total_after) {
             // Allow session to be patched (suspend/resume) even when totals change.
             // Session_Manager::get_or_create_session() handles updates via PATCH.
-            $this->log('Total changed, session will be patched (not regenerated).');
+            Logger::log('Total changed, session will be patched (not regenerated).');
         }
 
-        $this->log('Recalculated WC Total: ' . $total_after . ' (Shipping: ' . WC()->cart->get_shipping_total() . ')');
+        Logger::log('Recalculated WC Total: ' . $total_after . ' (Shipping: ' . WC()->cart->get_shipping_total() . ')');
 
         // Detect if the frontend signals that company name is required
         // (standard WooCommerce checkout with "business" option enabled).
@@ -641,7 +653,7 @@ class Checkout_Handler
         // Nonce was already verified at the top of this method via check_ajax_referer().
         if (isset($checkout_data) && !empty($checkout_data['briqpay_b2b'])) {
             if (null !== WC()->session && !WC()->session->get('briqpay_b2b_active')) {
-                $this->log('B2B auto-detect: briqpay_b2b=1 found in checkout_data. Setting B2B session flags.');
+                Logger::log('B2B auto-detect: briqpay_b2b=1 found in checkout_data. Setting B2B session flags.');
                 WC()->session->set('briqpay_b2b_active', true);
                 WC()->session->set('chosen_payment_method', 'briqpay');
                 WC()->session->set('briqpay_customer_type', 'business');
@@ -652,11 +664,11 @@ class Checkout_Handler
         $session = $session_manager->get_or_create_session();
 
         if (is_wp_error($session)) {
-            $this->log('AJAX Error: ' . $session->get_error_message());
+            Logger::log('AJAX Error: ' . $session->get_error_message());
             wp_send_json_error(array('message' => 'An error occurred while creating the session.'));
         }
 
-        $this->log('AJAX Success.');
+        Logger::log('AJAX Success.');
         WC()->session->save_data();
         wp_send_json_success($session);
     }
@@ -673,7 +685,7 @@ class Checkout_Handler
             wp_send_json_error(array('message' => 'Missing session ID'));
         }
 
-        $this->log('ajax_make_decision() triggered for session: ' . $session_id);
+        Logger::log('ajax_make_decision() triggered for session: ' . $session_id);
 
         // 1. Get session from Briqpay
         $settings = get_option('woocommerce_briqpay_settings');
@@ -681,7 +693,7 @@ class Checkout_Handler
         $session = $api->get_session($session_id);
 
         if (is_wp_error($session)) {
-            $this->log('Error retrieving session: ' . $session->get_error_message());
+            Logger::log('Error retrieving session: ' . $session->get_error_message());
             wp_send_json_error(array('message' => 'Could not retrieve session'));
         }
 
@@ -736,7 +748,7 @@ class Checkout_Handler
         // 2. Create order at decision point
         try {
             $order = $this->create_order_at_decision($session);
-            $this->log('Order created at decision: ' . $order->get_id());
+            Logger::log('Order created at decision: ' . $order->get_id());
 
             // Always map billing/shipping from Briqpay session to the order.
             // create_order_at_decision() may reuse an existing draft that has no address data
@@ -813,7 +825,7 @@ class Checkout_Handler
             }
 
             if ($has_amount_mismatch) {
-                $this->log(sprintf('Amount mismatch detected for session %s. Attempting emergency synchronization...', $session_id));
+                Logger::log(sprintf('Amount mismatch detected for session %s. Attempting emergency synchronization...', $session_id));
                 $session_manager = new Session_Manager();
                 $session = $session_manager->update_session($session_id);
 
@@ -821,18 +833,18 @@ class Checkout_Handler
                     // Extract amounts for logging to verify the PATCH actually updated Briqpay
                     $synced_bp_amount = $session['data']['order']['amountIncVat'] ?? 0;
                     $current_wc_amount = $this->get_cart_total_inc_vat();
-                    $this->log(sprintf('Emergency sync complete. New BP: %s, Current WC: %s. Re-validating...', $synced_bp_amount, $current_wc_amount));
+                    Logger::log(sprintf('Emergency sync complete. New BP: %s, Current WC: %s. Re-validating...', $synced_bp_amount, $current_wc_amount));
 
                     $validation = $this->validate_data_integrity($session);
                 } else {
-                    $this->log('Emergency sync failed: ' . $session->get_error_message());
+                    Logger::log('Emergency sync failed: ' . $session->get_error_message());
                 }
             }
 
             $initial_decision = 'allow';
 
             if (!$validation['valid']) {
-                $this->log('Validation failed: ' . implode(', ', $validation['errors']));
+                Logger::log('Validation failed: ' . implode(', ', $validation['errors']));
                 $initial_decision = array(
                     'decision' => 'reject',
                     'rejectionType' => 'notify_user',
@@ -862,7 +874,7 @@ class Checkout_Handler
 
             // Handle reject decision with softErrors
             if (is_array($decision) && isset($decision['decision']) && $decision['decision'] === 'reject') {
-                $this->log('Decision overridden to REJECT by filter for session: ' . $session_id);
+                Logger::log('Decision overridden to REJECT by filter for session: ' . $session_id);
                 $reject_payload = array(
                     'decision' => 'reject',
                     'rejectionType' => $decision['rejectionType'] ?? 'notify_user',
@@ -876,7 +888,7 @@ class Checkout_Handler
             }
 
             if (is_wp_error($decision_result)) {
-                $this->log('Decision API error: ' . $decision_result->get_error_message());
+                Logger::log('Decision API error: ' . $decision_result->get_error_message());
                 wp_send_json_error(array('message' => 'Decision failed'));
             }
 
@@ -889,7 +901,7 @@ class Checkout_Handler
              */
             do_action('briqpay_after_make_decision', $decision_result, $session_id, $order);
 
-            $this->log('Decision processed for session: ' . $session_id);
+            Logger::log('Decision processed for session: ' . $session_id);
 
             // Return success - order will be upgraded to pending on return
             wp_send_json_success(array(
@@ -899,7 +911,7 @@ class Checkout_Handler
                 'redirect_url' => add_query_arg('briqpay_return', '1', $this->get_current_url())
             ));
         } catch (\Exception $e) {
-            $this->log('Error creating order: ' . $e->getMessage());
+            Logger::log('Error creating order: ' . $e->getMessage());
             wp_send_json_error(array('message' => $e->getMessage()));
         }
     }
@@ -921,7 +933,7 @@ class Checkout_Handler
         // 1. Check if we already have an order for this session
         $existing_order = $this->get_order_by_session_id($session_id);
         if ($existing_order) {
-            $this->log('Found existing order for session: ' . $existing_order->get_id());
+            Logger::log('Found existing order for session: ' . $existing_order->get_id());
             return $existing_order;
         }
 
@@ -936,20 +948,29 @@ class Checkout_Handler
         if ($order_id) {
             $order = wc_get_order($order_id);
             if ($order && $order->has_status(array('pending', 'on-hold', 'checkout-draft', 'draft', 'auto-draft'))) {
-                $this->log('Reusing existing WC order from session: ' . $order_id . ' (Status: ' . $order->get_status() . ')');
-                $order->update_meta_data('_briqpay_session_id', $session_id);
+                // Verify ownership: customer ID must match
+                $current_user_id = (int) get_current_user_id();
+                $order_customer_id = (int) $order->get_customer_id();
 
-                // Check if the order already has line items (e.g. Blocks draft orders from Store API)
-                $existing_items = $order->get_items();
-                if (!empty($existing_items)) {
-                    $this->log('Order already has ' . count($existing_items) . ' item(s). Keeping existing items.');
-                    $needs_items = false;
+                if ($current_user_id !== $order_customer_id) {
+                    Logger::log('Security: Guest or customer mismatch for session-stored draft order. Resetting order.');
+                    $order = null;
                 } else {
-                    $this->log('Order has no items. Will add from cart.');
-                    $needs_items = true;
-                }
+                    Logger::log('Reusing existing WC order from session: ' . $order_id . ' (Status: ' . $order->get_status() . ')');
+                    $order->update_meta_data('_briqpay_session_id', $session_id);
 
-                $order->save();
+                    // Check if the order already has line items (e.g. Blocks draft orders from Store API)
+                    $existing_items = $order->get_items();
+                    if (!empty($existing_items)) {
+                        Logger::log('Order already has ' . count($existing_items) . ' item(s). Keeping existing items.');
+                        $needs_items = false;
+                    } else {
+                        Logger::log('Order has no items. Will add from cart.');
+                        $needs_items = true;
+                    }
+
+                    $order->save();
+                }
             } else {
                 $order = null;
             }
@@ -957,9 +978,10 @@ class Checkout_Handler
 
         // 2b. Fallback: Search for any draft order with same customer/session if not in WC session
         if (!$order) {
-            $this->log('No order in WC session, searching database for recent drafts.');
+            Logger::log('No order in WC session, searching database for recent drafts.');
+            $current_user_id = get_current_user_id();
             $recent_orders = wc_get_orders(array(
-                'customer' => get_current_user_id() ?: 0,
+                'customer' => $current_user_id ?: 0,
                 'status' => array('checkout-draft', 'draft', 'auto-draft'),
                 'limit' => 5,
                 'orderby' => 'date',
@@ -967,11 +989,25 @@ class Checkout_Handler
             ));
 
             foreach ($recent_orders as $ro) {
-                // If it's very recent (e.g. 10 mins) and has no Briqpay session or same session
+                // If it's very recent (e.g. 10 mins) and has same session (or no session, but only for registered users)
                 if (time() - $ro->get_date_created()->getTimestamp() < 600) {
                     $ro_session = $ro->get_meta('_briqpay_session_id');
-                    if (!$ro_session || $ro_session === $session_id) {
-                        $this->log('Found recent draft in DB to reuse: ' . $ro->get_id());
+                    $is_allowed = false;
+                    if ($current_user_id > 0) {
+                        // Registered user can reuse their own recent drafts
+                        if (!$ro_session || $ro_session === $session_id) {
+                            $is_allowed = true;
+                        }
+                    } else {
+                        // Guests can ONLY reuse a draft if it is already bound to this specific session ID.
+                        // They cannot reuse unbound guest drafts.
+                        if ($ro_session && $ro_session === $session_id) {
+                            $is_allowed = true;
+                        }
+                    }
+
+                    if ($is_allowed) {
+                        Logger::log('Found recent draft in DB to reuse: ' . $ro->get_id());
                         $order = $ro;
                         $order->update_meta_data('_briqpay_session_id', $session_id);
 
@@ -983,9 +1019,27 @@ class Checkout_Handler
             }
         }
 
+        // 2c. If reusing a draft that is NOT a trusted current-session draft, rebuild items from current cart
+        $is_trusted_draft = false;
+        if ($order) {
+            $session_order_id = WC()->session->get('order_awaiting_payment');
+            if (!$session_order_id) {
+                $session_order_id = WC()->session->get('store_api_draft_order', 0);
+            }
+            if ($session_order_id && (int) $order->get_id() === (int) $session_order_id) {
+                $is_trusted_draft = true;
+            }
+        }
+
+        if ($order && !$is_trusted_draft) {
+            Logger::log('Reused draft is not a trusted current-session draft. Rebuilding items from current cart.');
+            $order->remove_order_items();
+            $needs_items = true;
+        }
+
         // 3. Create new order if none found
         if (!$order) {
-            $this->log('Creating new manual order at decision point.');
+            Logger::log('Creating new manual order at decision point.');
             $order = wc_create_order(array(
                 'customer_id' => get_current_user_id() ?: 0,
                 'status' => 'pending',
@@ -1007,7 +1061,7 @@ class Checkout_Handler
 
         // Copy cart items with full metadata support (only if the order doesn't already have them)
         if ($needs_items) {
-            $this->log('Adding cart items to order.');
+            Logger::log('Adding cart items to order.');
             foreach (WC()->cart->get_cart() as $cart_item_key => $values) {
                 /** @var \WC_Product $product */
                 $product = $values['data'];
@@ -1101,7 +1155,7 @@ class Checkout_Handler
             $order->calculate_totals(true);
             $order->save();
         } else {
-            $this->log('Skipping item creation — order already has items from Store API.');
+            Logger::log('Skipping item creation — order already has items from Store API.');
         }
 
         // Get PSP display name from session data using robust lookup
@@ -1117,7 +1171,7 @@ class Checkout_Handler
             }
         }
 
-        $this->log('Initial PSP Name at decision: ' . $psp_name);
+        Logger::log('Initial PSP Name at decision: ' . $psp_name);
 
         $order->set_payment_method('briqpay');
         $order->set_payment_method_title($psp_name);
@@ -1223,9 +1277,9 @@ class Checkout_Handler
         $session_manager = new Session_Manager();
         $wc_data = $session_manager->get_session_data(true); // Get update payload
 
-        $this->log('Validating Session Integrity...');
-        $this->log('BP Data: ' . wp_json_encode($session['data']['order'] ?? array()));
-        $this->log('WC Data: ' . wp_json_encode($wc_data['data']['order'] ?? array()));
+        Logger::log('Validating Session Integrity...');
+        Logger::log('BP Data: ' . wp_json_encode($session['data']['order'] ?? array()));
+        Logger::log('WC Data: ' . wp_json_encode($wc_data['data']['order'] ?? array()));
 
         // Validate Totals
         // Briqpay uses integers (minor units) or floats. Session data usually has ints for amounts if strictly typed on backend?

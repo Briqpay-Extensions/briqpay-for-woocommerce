@@ -56,7 +56,7 @@ class Session_Reset_Handler
         delete_user_meta($user_id, '_briqpay_reset_session');
 
         // Reset the Briqpay session
-        $this->log('Login detected. Resetting Briqpay session for user: ' . $user_id);
+        Logger::log('Login detected. Resetting Briqpay session for user: ' . $user_id);
 
         // Clear WC session data
         if (null !== WC() && null !== WC()->session) {
@@ -69,17 +69,6 @@ class Session_Reset_Handler
         if (isset($_COOKIE['briqpay_session_id'])) {
             setcookie('briqpay_session_id', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
             unset($_COOKIE['briqpay_session_id']);
-        }
-    }
-
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
         }
     }
 }

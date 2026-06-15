@@ -72,7 +72,7 @@ class SessionManagerTest extends TestCase
         $results = $method->invoke($session_manager);
 
         $this->assertCount(1, $results);
-        $this->assertEquals('SKU1-1', $results[0]['reference']);
+        $this->assertEquals('SKU1-1', $results[0]['reference']); // format: {sku}-{product_id}
         $this->assertEquals(2, $results[0]['quantity']);
         $this->assertEquals(5000, $results[0]['unitPrice']); // (100 / 2) * 100
         $this->assertEquals(6250, $results[0]['unitPriceIncVat']); // (125 / 2) * 100

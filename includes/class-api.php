@@ -50,12 +50,7 @@ class API
     public function request($method, $endpoint, $body = array())
     {
         $url = $this->get_api_url() . $endpoint;
-        $this->log("Requesting ($method): $url");
-        $this->log("MID Check: " . substr($this->mid, 0, 5) . "...");
-
-        if (!empty($body)) {
-            $this->log("Payload: " . wp_json_encode($body));
-        }
+        Logger::log("Requesting ($method): $url");
 
         $auth = base64_encode($this->mid . ':' . $this->secret);
 
@@ -69,7 +64,7 @@ class API
                     'Briqpay Payment Module WooCommerce: %s - PHP: %s - Wordpress: %s - WooCommerce: %s',
                     BRIQPAY_WC_VERSION,
                     PHP_VERSION,
-                    $GLOBALS['wp_version'],
+                    $GLOBALS['wp_version'] ?? 'N/A',
                     class_exists('WooCommerce') ? WC()->version : 'N/A'
                 ),
             ),
@@ -83,7 +78,7 @@ class API
         $response = wp_remote_request($url, $args);
 
         if (is_wp_error($response)) {
-            $this->log('API Error: ' . $response->get_error_message());
+            Logger::error('API Error: ' . $response->get_error_message());
             return $response;
         }
 
@@ -92,7 +87,7 @@ class API
 
         if ($code >= 400) {
             $msg = $data['message'] ?? 'API Error ' . $code;
-            $this->log("API Error ($code): " . (is_array($data) ? wp_json_encode($data) : $data));
+            Logger::error("API Error ($code): " . (is_array($data) ? wp_json_encode($data) : $data));
             return new \WP_Error($data['code'] ?? 'api_error', $msg, $data);
         }
 
@@ -109,16 +104,7 @@ class API
         return $data;
     }
 
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
+
 
     /**
      * Create Session

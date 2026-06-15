@@ -1,4 +1,5 @@
 <?php
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_USER_DEPRECATED);
 
 if (!defined('ABSPATH')) {
     define('ABSPATH', __DIR__ . '/../../');
@@ -50,3 +51,21 @@ spl_autoload_register(function ($class) {
         require_once $file;
     }
 });
+
+if (!function_exists('get_option')) {
+    function get_option($option, $default = false) {
+        if ($option === 'woocommerce_briqpay_settings') {
+            return array('logging' => 'yes', 'merchant_id' => '123', 'shared_secret' => '456', 'testmode' => 'yes');
+        }
+        return $default;
+    }
+}
+
+if (!function_exists('wc_get_order')) {
+    function wc_get_order($id = false) {
+        if (is_object($id)) {
+            return $id;
+        }
+        return null;
+    }
+}

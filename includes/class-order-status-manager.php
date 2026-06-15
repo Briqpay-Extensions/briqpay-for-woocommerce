@@ -21,19 +21,67 @@ class Order_Status_Manager
         add_filter('woocommerce_reports_order_statuses', array($this, 'add_temp_status_to_reports'));
 
         // Hide from admin order list
-        add_action('pre_get_posts', array($this, 'hide_temp_orders_from_admin'));
+        if (class_exists('\Automattic\WooCommerce\Utilities\OrderUtil') && \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled()) {
+            add_filter('woocommerce_order_list_table_prepare_items_query_args', array($this, 'hpos_hide_temp_orders_from_admin'));
+        } else {
+            add_action('pre_get_posts', array($this, 'hide_temp_orders_from_admin'));
+        }
 
-        // Janitor logic: Cleanup stagnant orders every 30 minutes
+        add_action('briqpay_v3_janitor_cleanup', array($this, 'janitor_cleanup_task'));
+        add_action('briqpay_cleanup_temp_orders', array($this, 'cleanup_temp_orders'));
+    }
+
+    /**
+     * Hide from admin order list (HPOS version)
+     */
+    public function hpos_hide_temp_orders_from_admin($query_args)
+    {
+        if (!is_admin()) {
+            return $query_args;
+        }
+
+        $status = $query_args['status'] ?? '';
+        if (empty($status) || 'all' === $status) {
+            $all_statuses = array_keys(wc_get_order_statuses());
+            $all_statuses = array_diff($all_statuses, array('wc-briqpay-temp'));
+            $hpos_statuses = array_map(function($s) {
+                return str_replace('wc-', '', $s);
+            }, $all_statuses);
+            $query_args['status'] = $hpos_statuses;
+        }
+
+        return $query_args;
+    }
+
+    /**
+     * Schedule all background/cron events.
+     * Called on plugin activation.
+     */
+    public static function schedule_events()
+    {
         if (function_exists('as_next_scheduled_action') && !as_next_scheduled_action('briqpay_v3_janitor_cleanup')) {
             as_schedule_recurring_action(time(), 1800, 'briqpay_v3_janitor_cleanup', array(), 'briqpay');
         }
-        add_action('briqpay_v3_janitor_cleanup', array($this, 'janitor_cleanup_task'));
 
-        // Legacy cleanup (keeping for safety but reducing scope)
         if (!wp_next_scheduled('briqpay_cleanup_temp_orders')) {
             wp_schedule_event(time(), 'daily', 'briqpay_cleanup_temp_orders');
         }
-        add_action('briqpay_cleanup_temp_orders', array($this, 'cleanup_temp_orders'));
+    }
+
+    /**
+     * Unschedule all background/cron events.
+     * Called on plugin deactivation.
+     */
+    public static function unschedule_events()
+    {
+        if (function_exists('as_unschedule_all_actions')) {
+            as_unschedule_all_actions('briqpay_v3_janitor_cleanup', array(), 'briqpay');
+        }
+
+        $timestamp = wp_next_scheduled('briqpay_cleanup_temp_orders');
+        if ($timestamp) {
+            wp_unschedule_event($timestamp, 'briqpay_cleanup_temp_orders');
+        }
     }
 
     /**
@@ -92,7 +140,7 @@ class Order_Status_Manager
      */
     public function janitor_cleanup_task()
     {
-        $this->log('Janitor: Starting cleanup task...');
+        Logger::log('Janitor: Starting cleanup task...');
 
         $threshold_hours = 5;
         $threshold_time = time() - ($threshold_hours * HOUR_IN_SECONDS);
@@ -108,14 +156,14 @@ class Order_Status_Manager
         $orders = wc_get_orders($args);
 
         if (empty($orders)) {
-            $this->log('Janitor: No stagnant orders found.');
+            Logger::log('Janitor: No stagnant orders found.');
             return;
         }
 
-        $this->log(sprintf('Janitor: Found %d stagnant orders.', count($orders)));
+        Logger::log(sprintf('Janitor: Found %d stagnant orders.', count($orders)));
 
         foreach ($orders as $order) {
-            $this->log('Janitor: Processing order ' . $order->get_id());
+            Logger::log('Janitor: Processing order ' . $order->get_id());
 
             // Double check session status via API before cancelling
             $session_id = $order->get_meta('_briqpay_session_id');
@@ -125,29 +173,19 @@ class Order_Status_Manager
 
             if (!is_wp_error($session) && isset($session['status'])) {
                 if ($session['status'] === 'completed') {
-                    $this->log('Janitor: Session actually completed. Moving to processing instead of cancelling.');
+                    Logger::log('Janitor: Session actually completed. Moving to processing instead of cancelling.');
                     $order->update_status('processing', __('Briqpay Janitor: Recovered completed session.', 'briqpay-for-woocommerce'));
                     continue;
                 }
             }
 
             $order->update_status('cancelled', __('Briqpay Janitor: Order cancelled due to inactivity (5h threshold).', 'briqpay-for-woocommerce'));
-            $this->log('Janitor: Order ' . $order->get_id() . ' cancelled.');
+            Logger::log('Janitor: Order ' . $order->get_id() . ' cancelled.');
         }
 
-        $this->log('Janitor: Cleanup task finished.');
+        Logger::log('Janitor: Cleanup task finished.');
     }
 
-    /**
-     * Log message
-     */
-    private function log($message)
-    {
-        if (defined('WC_LOG_DIR')) {
-            $logger = wc_get_logger();
-            $logger->debug($message, array('source' => 'briqpay-for-woocommerce'));
-        }
-    }
 
     /**
      * Cleanup old temp orders
@@ -157,11 +195,15 @@ class Order_Status_Manager
         $args = array(
             'status' => 'wc-briqpay-temp',
             'date_created' => '<' . (time() - 2 * DAY_IN_SECONDS),
-            'limit' => -1,
+            'limit' => 50,
+            'return' => 'ids',
         );
-        $orders = wc_get_orders($args);
-        foreach ($orders as $order) {
-            $order->delete(true);
+        $order_ids = wc_get_orders($args);
+        foreach ($order_ids as $order_id) {
+            $order = wc_get_order($order_id);
+            if ($order) {
+                $order->delete(true);
+            }
         }
     }
 }

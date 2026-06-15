@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 1.0.13
+Stable tag: 1.0.14
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,22 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.0.14 =
+* Security: Fixed guest draft order reuse vulnerability (IDOR) by securing fallback lookups, validating customer ownership, and automatically rebuilding cart items for reused untrusted drafts.
+* Security: Hardened webhook processing by performing Briqpay API verification before capture and refund routing, verifying capture/refund IDs, and retrieving authoritative values directly from the API.
+* Fix: Corrected order status flow so pending Briqpay orders transition correctly through pending → processing → completed via webhooks, instead of entering an incorrect "paused" state.
+* Fix: Hidden the "Pay" button on the My Account orders page and order confirmation page for Briqpay orders awaiting webhook confirmation, preventing customers from re-initiating payment after completing checkout via the Briqpay iframe.
+* Fix: Blocked direct access to the order-pay endpoint for Briqpay orders that have already been paid, redirecting customers to My Account with a notice.
+* Improvement: Added verbose logging toggle in settings — when disabled, high-frequency trace logs (availability checks, script loading, cart processing) are suppressed while keeping critical diagnostics (totals, B2B flow, webhooks) in the default log level.
+* Performance: Centralized plugin logging, gating debug messages behind WooCommerce gateway settings, and disabling heavy payload logs.
+* Assets Optimization: Restructured admin scripts/styles to only load on Briqpay order edit views.
+* Reduced Recalculations: Deduplicated Blocks checkout customer saves and introduced cart/address hashing to prevent redundant recalculations.
+* B2B & Webhooks: Optimized B2B fragments and introduced a transient-based 5-minute guard to deduplicate webhook handling.
+* Cron Improvements: Relocated background job schedules to plugin activation/deactivation hooks and limited cleanup actions to batches of 50.
+* API Request Reductions: Skipped redundant PATCH requests for unchanged data and second GET calls when HTML snippets are available.
+* Caching & Lookups: Added request-level caching for product image URLs and tax rates, and optimized order lookups via IDs-first queries.
+* HPOS Compatibility: Enabled HPOS-aware order list table filtering to hide temporary orders.
 
 = 1.0.13 =
 * Improved Capture and Refund reliability: the plugin now fetches the current Briqpay session state before every order management action to ensure accuracy.
