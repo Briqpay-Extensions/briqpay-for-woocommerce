@@ -11,21 +11,40 @@ const BriqpayContent = (props) => {
     const { billing, shipping, shippingData, cart, cartData, cartTotals, checkoutStatus, activePaymentMethod } = props;
 
     // Toggle body class for button visibility
+    const restorePlaceOrderButton = () => {
+        document.body.classList.remove('briqpay-selected');
+        document.body.classList.add('briqpay-not-selected');
+
+        const buttons = document.querySelectorAll('#place_order, .form-row.place-order, .wc-block-checkout__actions, .wc-block-components-checkout-place-order-button, [data-testid="wc-block-components-checkout-place-order-button"]');
+        buttons.forEach(btn => {
+            btn.style.display = '';
+            btn.style.visibility = '';
+            btn.style.opacity = '';
+            btn.style.pointerEvents = '';
+            btn.style.height = '';
+            btn.style.maxHeight = '';
+            btn.style.overflow = '';
+            btn.removeAttribute('aria-hidden');
+            btn.removeAttribute('disabled');
+        });
+    };
+
     useEffect(() => {
         if (activePaymentMethod === 'briqpay') {
             document.body.classList.add('briqpay-selected');
             document.body.classList.remove('briqpay-not-selected');
         } else if (activePaymentMethod && activePaymentMethod !== 'briqpay') {
-            document.body.classList.remove('briqpay-selected');
-            document.body.classList.add('briqpay-not-selected');
-
-            const buttons = document.querySelectorAll('#place_order, .form-row.place-order, .wc-block-checkout__actions, .wc-block-components-checkout-place-order-button');
-            buttons.forEach(btn => {
-                btn.style.display = '';
-                btn.style.visibility = '';
-                btn.removeAttribute('disabled');
-            });
+            restorePlaceOrderButton();
         }
+
+        // WooCommerce Blocks only mounts this component while Briqpay is the active
+        // payment method — the moment the shopper picks a different method, this
+        // component unmounts immediately, before it can ever see the new
+        // activePaymentMethod value. The cleanup function is the only reliable place
+        // to catch that transition and undo the button hiding.
+        return () => {
+            restorePlaceOrderButton();
+        };
     }, [activePaymentMethod]);
 
     // Extract shipping methods from all possible prop locations.
@@ -159,7 +178,7 @@ const BriqpayPaymentMethod = {
     ariaLabel: label,
     content: createElement(BriqpayContent),
     edit: createElement(BriqpayContent),
-    canMakePayment: () => true,
+    canMakePayment: () => briqpayBlockConfig.can_make_payment !== false,
     supports: { features: briqpayBlockConfig.supports || ['products'] },
 };
 

@@ -146,10 +146,20 @@ class Admin_Order_Meta_Box
 
         foreach (array_reverse($history) as $capture) {
             ?>
-            <div class="briqpay-capture-item">
+            <div class="briqpay-capture-item" style="border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; background: #f9f9f9; border-radius: 4px;">
                 <strong>ID: <?php echo esc_html($capture['captureId']); ?></strong><br>
                 <span><?php echo esc_html($capture['date']); ?></span><br>
-                <span><?php echo wp_kses_post(wc_price($capture['amount'] / 100)); ?></span>
+                <span><strong><?php echo wp_kses_post(wc_price($capture['amount'] / 100)); ?></strong></span>
+                <?php if (!empty($capture['items'])): ?>
+                    <div style="margin-top: 6px; font-size: 0.9em; color: #555;">
+                        <strong><?php esc_html_e('Items Captured:', 'briqpay-for-woocommerce'); ?></strong>
+                        <ul style="margin: 4px 0 0 16px; padding: 0; list-style-type: disc;">
+                            <?php foreach ($capture['items'] as $item): ?>
+                                <li><?php echo esc_html($item['name']); ?>: <?php echo esc_html($item['quantity']); ?> pcs</li>
+                            <?php endforeach; ?>
+                        </ul>
+                    </div>
+                <?php endif; ?>
             </div>
             <?php
         }
@@ -186,7 +196,14 @@ class Admin_Order_Meta_Box
                 <tbody>
                     <?php foreach ($remaining as $item): ?>
                         <tr>
-                            <td><?php echo esc_html($item['name']); ?></td>
+                            <td>
+                                <?php echo esc_html($item['name']); ?>
+                                <?php if (!empty($item['already_captured'])): ?>
+                                    <span style="display: block; font-size: 0.85em; color: #777; margin-top: 2px;">
+                                        <?php printf(esc_html__('Captured: %1$d of %2$d', 'briqpay-for-woocommerce'), $item['already_captured'], $item['total_qty']); ?>
+                                    </span>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <input type="number" class="briqpay-capture-qty"
                                     data-ref="<?php echo esc_attr($item['reference']); ?>"
@@ -226,9 +243,12 @@ class Admin_Order_Meta_Box
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
             if (!$product) continue;
-            $sku = $product->get_sku();
-            $id = $product->get_id();
-            $ref = !empty($sku) ? $sku . '-' . $id : (string) $id;
+            $ref = $item->get_meta('_briqpay_item_reference');
+            if (empty($ref)) {
+                $sku = $product->get_sku();
+                $id = $product->get_id();
+                $ref = !empty($sku) ? $sku : (string) $id;
+            }
             $total_qty = $item->get_quantity();
             $already_captured = $captured_counts[$ref] ?? 0;
             $rem = $total_qty - $already_captured;
@@ -243,6 +263,8 @@ class Admin_Order_Meta_Box
 
                 if (isset($remaining_consolidated[$ref])) {
                     $remaining_consolidated[$ref]['quantity'] += $rem;
+                    $remaining_consolidated[$ref]['already_captured'] += $already_captured;
+                    $remaining_consolidated[$ref]['total_qty'] += $total_qty;
                     // Note: unit price is assumed to be the same for the same product
                 } else {
                     $remaining_consolidated[$ref] = array(
@@ -250,6 +272,8 @@ class Admin_Order_Meta_Box
                         'reference' => (string) $ref,
                         'name' => $item->get_name(),
                         'quantity' => $rem,
+                        'already_captured' => $already_captured,
+                        'total_qty' => $total_qty,
                         'unitPriceIncVat' => (int) round($unit_inc * 100),
                         'taxRate' => $this->get_item_tax_rate($item),
                     );
@@ -261,7 +285,12 @@ class Admin_Order_Meta_Box
 
         // Fees
         foreach ($order->get_fees() as $fee) {
-            $ref = $fee->get_id();
+            // Use the reference the fee was authorized under, not the numeric
+            // order-item ID. This reference is sent to Briqpay when the merchant runs
+            // a manual capture from this box, and is also what capture history is
+            // keyed by - deriving it from get_id() would both send an unrecognized
+            // reference and miss the already-captured check below.
+            $ref = $fee->get_meta('_briqpay_fee_reference') ?: (string) $fee->get_id();
             if (!isset($captured_counts[$ref])) {
                 $fee_total = (float) $fee->get_total();
                 $fee_tax = (float) $fee->get_total_tax();

@@ -45,6 +45,7 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_product_id')->andReturn(123);
         $item->shouldReceive('get_variation_id')->andReturn(0);
         $item->shouldReceive('get_code')->andReturn('shipping');
+        $item->shouldReceive('get_meta')->andReturn('');
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
@@ -71,7 +72,7 @@ class OrderManagementTest extends TestCase
         $results = $method->invoke($order_mgmt, $order);
 
         $this->assertCount(1, $results);
-        $this->assertEquals('SKU1-123', $results[0]['reference']); // format: {sku}-{product_id}
+        $this->assertEquals('SKU1', $results[0]['reference']);
         $this->assertEquals(5000, $results[0]['unitPrice']); // (100 / 2) * 100
         $this->assertEquals(6250, $results[0]['unitPriceIncVat']); // (125 / 2) * 100
         $this->assertEquals(2500, $results[0]['taxRate']);
@@ -100,7 +101,7 @@ class OrderManagementTest extends TestCase
         // Mock Refund
         $refund = Mockery::mock('WC_Order_Refund');
         $refund_item = Mockery::mock('WC_Order_Item_Product');
-        $refund_item->shouldReceive('get_meta')->with('_parent_line_item_id')->andReturn(12345);
+        $refund_item->shouldReceive('get_meta')->andReturn('');
         $refund_item->shouldReceive('get_product')->andReturn($this->mockProduct('SKU1', 'Test', 123));
         $refund_item->shouldReceive('get_product_id')->andReturn(123);
         $refund_item->shouldReceive('get_variation_id')->andReturn(0);
@@ -129,8 +130,8 @@ class OrderManagementTest extends TestCase
 
         $this->assertCount(1, $results);
         $this->assertEquals(1, $results[0]['quantity']);
-        $this->assertEquals(10000, $results[0]['unitPrice']); // From parent_item: 100 * 100
-        $this->assertEquals(12500, $results[0]['unitPriceIncVat']); // From parent_item: 125 * 100
+        $this->assertEquals(5000, $results[0]['unitPrice']);
+        $this->assertEquals(6250, $results[0]['unitPriceIncVat']);
     }
 
     public function testCaptureRemainingItemsShippingProductType()
@@ -148,6 +149,7 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_subtotal')->andReturn(100.00);
         $item->shouldReceive('get_subtotal_tax')->andReturn(25.00);
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 25.00)));
+        $item->shouldReceive('get_meta')->andReturn('');
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
@@ -211,6 +213,8 @@ class OrderManagementTest extends TestCase
         // Mock Refund with shipping
         $refund = Mockery::mock('WC_Order_Refund');
         $refund_item = Mockery::mock('WC_Order_Item_Product');
+        $refund_item->shouldReceive('get_meta')->with('_parent_line_item_id')->andReturn(12345);
+        $refund_item->shouldReceive('get_meta')->andReturn('');
         $refund_item->shouldReceive('get_product')->andReturn($this->mockProduct('SKU1', 'Test', 123));
         $refund_item->shouldReceive('get_product_id')->andReturn(123);
         $refund_item->shouldReceive('get_variation_id')->andReturn(0);
@@ -279,6 +283,7 @@ class OrderManagementTest extends TestCase
         $item->shouldReceive('get_subtotal')->andReturn(200.00);
         $item->shouldReceive('get_subtotal_tax')->andReturn(50.00);
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 50.00)));
+        $item->shouldReceive('get_meta')->andReturn('');
 
         $order->shouldReceive('get_billing_country')->andReturn('SE');
         $order->shouldReceive('get_items')->with()->andReturn(array($item));

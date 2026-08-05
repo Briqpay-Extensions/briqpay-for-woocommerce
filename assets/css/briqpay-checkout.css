@@ -21,18 +21,23 @@ body.briqpay-selected .wc-block-components-checkout-place-order-button {
     position: relative;
 }
 
-/* Hide Payment Method Selection */
-.wc_payment_method.payment_method_briqpay>label:first-child,
-.wc_payment_method.payment_method_briqpay>input[type="radio"],
-label[for="payment_method_briqpay"],
-.wc-block-components-radio-control__option[for*="briqpay"],
-label[for*="briqpay"] .wc-block-components-radio-control__label-group,
-.wc-block-components-checkout-payment-method-option--briqpay .wc-block-components-radio-control__option {
+/* Hide the Briqpay iframe when a different payment method is selected */
+body.briqpay-not-selected #briqpay-iframe-container {
+    display: none !important;
+}
+
+/* Hide Payment Method Selection ONLY when Briqpay is the sole gateway */
+body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay>label:first-child,
+body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay>input[type="radio"],
+body.briqpay-only-gateway label[for="payment_method_briqpay"],
+body.briqpay-only-gateway .wc-block-components-radio-control__option[for*="briqpay"],
+body.briqpay-only-gateway label[for*="briqpay"] .wc-block-components-radio-control__label-group,
+body.briqpay-only-gateway .wc-block-components-checkout-payment-method-option--briqpay .wc-block-components-radio-control__option {
     display: none !important;
 }
 
 /* Remove borders and padding from the container if it's the only method */
-.wc_payment_method.payment_method_briqpay {
+body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay {
     border: none !important;
     padding: 0 !important;
     margin: 0 !important;

@@ -20,6 +20,7 @@ class Order_Management
         add_action('woocommerce_order_status_completed', array($this, 'capture_order'));
         add_action('woocommerce_order_status_cancelled', array($this, 'cancel_order'));
         add_filter('briqpay_process_refund', array($this, 'refund_order'), 10, 4);
+        add_action('briqpay_retry_capture', array($this, 'retry_capture'));
     }
 
     /**
@@ -47,7 +48,82 @@ class Order_Management
             return;
         }
 
-        $this->execute_capture($order, $session_id, $remaining_items);
+        $result = $this->execute_capture($order, $session_id, $remaining_items);
+
+        if (is_wp_error($result)) {
+            Logger::log(sprintf('Capture failed for order %s: %s', $order_id, $result->get_error_message()));
+            /* translators: %s: error message */
+            $order->update_status('on-hold', sprintf(__('Briqpay capture failed: %s. Merchant action required.', 'briqpay-for-woocommerce'), $result->get_error_message()));
+            do_action('briqpay_capture_failed', $order, $result);
+
+            // Schedule automatic retry via Action Scheduler (up to 3 retries)
+            if (function_exists('as_schedule_single_action')) {
+                $retry_count = (int) $order->get_meta('_briqpay_capture_retry_count');
+                if ($retry_count < 3) {
+                    $order->update_meta_data('_briqpay_capture_retry_count', $retry_count + 1);
+                    $order->save();
+                    as_schedule_single_action(time() + 300, 'briqpay_retry_capture', array($order_id), 'briqpay');
+                    Logger::log(sprintf('Scheduled capture retry %d/3 for order %s in 5 minutes.', $retry_count + 1, $order_id));
+                } else {
+                    Logger::log(sprintf('Capture for order %s has exhausted all 3 retries. Manual intervention required.', $order_id));
+                }
+            }
+        }
+    }
+
+    /**
+     * Retry a failed capture (Action Scheduler callback)
+     *
+     * Only retries if the order is still on-hold (not manually resolved).
+     * On success, moves the order back to completed.
+     */
+    public function retry_capture($order_id)
+    {
+        $order = wc_get_order($order_id);
+        if (!$order || $order->get_payment_method() !== 'briqpay') {
+            return;
+        }
+
+        // Only retry if the order is still on-hold (merchant hasn't manually resolved it)
+        if (!$order->has_status('on-hold')) {
+            Logger::log(sprintf('Capture retry skipped for order %s — status is %s, not on-hold.', $order_id, $order->get_status()));
+            return;
+        }
+
+        $session_id = $order->get_meta('_briqpay_session_id');
+        if (!$session_id) {
+            return;
+        }
+
+        $remaining_items = $this->get_remaining_items_to_capture($order);
+        if (empty($remaining_items)) {
+            return;
+        }
+
+        $retry_count = (int) $order->get_meta('_briqpay_capture_retry_count');
+        Logger::log(sprintf('Executing capture retry %d/3 for order %s.', $retry_count, $order_id));
+
+        $result = $this->execute_capture($order, $session_id, $remaining_items);
+
+        if (is_wp_error($result)) {
+            /* translators: %1$d: retry number, %2$s: error message */
+            $order->add_order_note(sprintf(__('Briqpay: Capture retry %1$d/3 failed: %2$s', 'briqpay-for-woocommerce'), $retry_count, $result->get_error_message()));
+
+            if ($retry_count < 3 && function_exists('as_schedule_single_action')) {
+                $order->update_meta_data('_briqpay_capture_retry_count', $retry_count + 1);
+                $order->save();
+                as_schedule_single_action(time() + 300, 'briqpay_retry_capture', array($order_id), 'briqpay');
+                Logger::log(sprintf('Scheduled capture retry %d/3 for order %s.', $retry_count + 1, $order_id));
+            } else {
+                Logger::log(sprintf('Capture for order %s failed after 3 retries. Manual intervention required.', $order_id));
+            }
+        } else {
+            // Capture succeeded on retry — restore completed status
+            $order->update_status('completed', __('Briqpay: Capture succeeded on retry.', 'briqpay-for-woocommerce'));
+            $order->delete_meta_data('_briqpay_capture_retry_count');
+            $order->save();
+            Logger::log(sprintf('Capture retry succeeded for order %s. Status restored to completed.', $order_id));
+        }
     }
 
     /**
@@ -169,21 +245,11 @@ class Order_Management
                 $canonical = $this->get_canonical_session_item($session, $item['reference']);
                 if ($canonical) {
                     $qty = $item['quantity'] ?? 1;
-                    $session_unit_inc = (int) $canonical['unitPriceIncVat'];
-                    $local_unit_inc = (int) $item['unitPriceIncVat'];
-
-                    // Sanity check: If prices differ by more than 1%, it's likely a gross/net mismatch (legacy order).
-                    // In that case, we skip the canonical sync to avoid capturing the wrong amount.
-                    $diff = abs($session_unit_inc - $local_unit_inc);
-                    if ($local_unit_inc > 0 && ($diff / $local_unit_inc) > 0.01) {
-                        Logger::log(sprintf('Canonical sync skipped for %s: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
-                    } else {
-                        $api_item['unitPrice'] = $canonical['unitPrice'];
-                        $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
-                        $api_item['taxRate'] = $canonical['taxRate'];
-                        $api_item['totalAmount'] = (int) round($canonical['unitPriceIncVat'] * $qty);
-                        $api_item['totalVatAmount'] = (int) round(($canonical['unitPriceIncVat'] - $canonical['unitPrice']) * $qty);
-                    }
+                    $api_item['unitPrice'] = $canonical['unitPrice'];
+                    $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
+                    $api_item['taxRate'] = $canonical['taxRate'];
+                    $already_captured = $this->get_already_captured_from_session($session, $item['reference']);
+                    $this->apply_canonical_totals($api_item, $canonical, $qty, $already_captured);
                 }
             }
 
@@ -227,12 +293,14 @@ class Order_Management
             // translators: %s: capture ID
             $order->add_order_note(sprintf(__('Briqpay: Captured. ID: %s', 'briqpay-for-woocommerce'), $capture_id));
 
-            // Track history
+            // Track history using the actual amounts sent to Briqpay (cart_for_api),
+            // not the pre-canonical-correction $items - refund balance calculations
+            // rely on this being the authoritative captured amount per reference.
             $history = $order->get_meta('_briqpay_capture_history') ?: array();
             $history[] = array(
                 'captureId' => $capture_id,
                 'date' => current_time('mysql'),
-                'items' => $items,
+                'items' => $cart_for_api,
                 'amount' => $amount_inc_vat
             );
             $order->update_meta_data('_briqpay_capture_history', $history);
@@ -246,8 +314,14 @@ class Order_Management
 
             // If the order is currently pending/awaiting payment, mark it as paid since we successfully captured funds
             if ($order->has_status(array('pending', 'failed', 'on-hold', 'checkout-draft'))) {
-                Logger::log('Order is in unpaid status. Calling payment_complete() via manual capture.');
-                $order->payment_complete($capture_id);
+                $order_amount = (float) $order->get_total();
+                if (abs(($amount_inc_vat / 100) - $order_amount) > 0.05) {
+                    Logger::log(sprintf('Capture amount mismatch on manual capture. Captured: %s, Order Total: %s. Not marking order payment complete.', $amount_inc_vat / 100, $order_amount));
+                    $order->add_order_note(sprintf(__('Briqpay: Capture amount mismatch! Captured: %s, Order Total: %s. Order not marked as payment complete.', 'briqpay-for-woocommerce'), wc_price($amount_inc_vat / 100), wc_price($order_amount)));
+                } else {
+                    Logger::log('Order is in unpaid status. Calling payment_complete() via manual capture.');
+                    $order->payment_complete($capture_id);
+                }
             }
 
             return $capture_id;
@@ -312,6 +386,11 @@ class Order_Management
 
         // Map refund items to captures
         $refunds_to_execute = array();
+        // Tracks, per reference, how much the exact remaining-balance correction
+        // below differs from the naive unitPrice * qty amount WooCommerce's own
+        // refund record was created with - used to reconcile WC's displayed
+        // "Refunded"/"Net Payment" totals with what was actually sent to Briqpay.
+        $wc_amount_diffs = array();
         foreach ($refund_items as $ri) {
             $ref = $ri['reference'];
             $qty_to_refund = $ri['quantity'];
@@ -332,6 +411,26 @@ class Order_Management
 
                 if ('sales_tax' === ($ri['productType'] ?? '')) {
                     $part_item['totalTaxAmount'] = $taken;
+                } elseif ($taken === $available_qty && isset($nc['amount_balances'][$ref])) {
+                    // This exhausts everything still captured for this reference on this
+                    // capture. Use the exact remaining captured amount rather than a
+                    // proportional unitPrice * qty estimate, so the full captured total
+                    // always ends up refunded instead of leaving a residual ore stuck.
+                    $naive_amount = (int) round($ri['unitPriceIncVat'] * $taken);
+                    $true_amount = (int) $nc['amount_balances'][$ref];
+                    $true_vat = (int) ($nc['vat_balances'][$ref] ?? round(($ri['unitPriceIncVat'] - $ri['unitPrice']) * $taken));
+
+                    $exact = $this->resolve_exact_refund_totals($true_amount, $true_vat, $taken);
+                    $part_item['unitPrice'] = $exact['unitPrice'];
+                    $part_item['unitPriceIncVat'] = $exact['unitPriceIncVat'];
+                    $part_item['totalAmount'] = $exact['totalAmount'];
+                    $part_item['totalVatAmount'] = $exact['totalVatAmount'];
+                    $part_item['_exact'] = true;
+
+                    $diff = $part_item['totalAmount'] - $naive_amount;
+                    if (0 !== $diff) {
+                        $wc_amount_diffs[$ref] = ($wc_amount_diffs[$ref] ?? 0) + $diff;
+                    }
                 } else {
                     $part_item['totalAmount'] = (int) round($ri['unitPriceIncVat'] * $taken);
                     $part_item['totalVatAmount'] = (int) round(($ri['unitPriceIncVat'] - $ri['unitPrice']) * $taken);
@@ -340,43 +439,136 @@ class Order_Management
                 $refunds_to_execute[$nc['captureId']][] = $part_item;
 
                 $nc['balances'][$ref] -= $taken;
+                if (isset($nc['amount_balances'][$ref])) {
+                    $nc['amount_balances'][$ref] -= $part_item['totalAmount'];
+                }
+                if (isset($nc['vat_balances'][$ref])) {
+                    $nc['vat_balances'][$ref] -= $part_item['totalVatAmount'];
+                }
                 $qty_to_refund -= $taken;
             }
 
             if ($qty_to_refund > 0) {
                 Logger::log(sprintf('Warning: Could not find enough captured quantity for item %s (%d left).', $ref, $qty_to_refund));
-                // We'll proceed with what we found, or fallback to the latest capture for the remainder
+                // We'll proceed with what we found, or fallback to the latest capture for the remainder.
+                // Recompute totalAmount/totalVatAmount for the reduced quantity - $ri's
+                // totals are for the ORIGINAL full quantity, so reusing them unchanged
+                // alongside the smaller leftover quantity would again produce
+                // unitPriceIncVat * quantity != totalAmount and get rejected by Briqpay.
                 $last_cap_id = end($capture_history)['captureId'];
-                $refunds_to_execute[$last_cap_id][] = array_merge($ri, ['quantity' => $qty_to_refund]);
+                $leftover_item = $ri;
+                $leftover_item['quantity'] = $qty_to_refund;
+                if ('sales_tax' === ($ri['productType'] ?? '')) {
+                    $leftover_item['totalTaxAmount'] = $qty_to_refund;
+                } else {
+                    $leftover_item['totalAmount'] = (int) round($ri['unitPriceIncVat'] * $qty_to_refund);
+                    $leftover_item['totalVatAmount'] = (int) round(($ri['unitPriceIncVat'] - $ri['unitPrice']) * $qty_to_refund);
+                }
+                $refunds_to_execute[$last_cap_id][] = $leftover_item;
             }
+        }
+
+        // Enforce single-capture refund requirement
+        if (count($refunds_to_execute) > 1) {
+            Logger::log('Multi-capture refund rejected: refund spans multiple captures.');
+            return new \WP_Error('multi_capture_refund', __('This refund spans multiple captures. Please perform separate refunds per capture.', 'briqpay-for-woocommerce'));
         }
 
         // Execute API calls
         foreach ($refunds_to_execute as $capture_id => $items) {
-            $res = $this->execute_single_refund($order, $session_id, $capture_id, $items);
+            $res = $this->execute_single_refund($order, $session_id, $capture_id, $items, null, $amount);
             if (is_wp_error($res)) {
                 return $res;
             }
+        }
+
+        // If the exact-remaining-balance correction above changed what was actually
+        // refunded from what WooCommerce's own refund record was created with (e.g.
+        // WooCommerce's per-unit split entered 236.71 but Briqpay was refunded
+        // 236.72 to exactly zero out the captured balance), reconcile WooCommerce's
+        // refund record so its "Refunded"/"Net Payment" totals match reality instead
+        // of showing a residual amount that was, in fact, already refunded.
+        if (!empty($wc_amount_diffs)) {
+            $this->reconcile_wc_refund_amounts($order, $wc_amount_diffs);
         }
 
         return true;
     }
 
     /**
-     * Calculate available unrefunded quantities per capture
+     * Correct WooCommerce's own refund record to match what was actually refunded
+     * with Briqpay, when the exact-remaining-balance correction changed a line's
+     * amount away from WooCommerce's own (WC-UI-rounded) figure.
+     *
+     * Without this, WooCommerce's own bookkeeping (and its "Refunded"/"Net Payment"
+     * order totals) can permanently disagree with Briqpay even though the full
+     * captured amount was, in fact, refunded.
+     *
+     * @param \WC_Order $order
+     * @param array     $diffs_by_reference Reference => diff in ore (actual - WC's original amount).
+     */
+    private function reconcile_wc_refund_amounts($order, $diffs_by_reference)
+    {
+        $refunds = $order->get_refunds();
+        if (empty($refunds)) {
+            return;
+        }
+        $latest_refund = reset($refunds);
+        $total_diff_cents = 0;
+
+        foreach ($latest_refund->get_items() as $item) {
+            $product = $item->get_product();
+            $ref = $item->get_meta('_briqpay_item_reference');
+            if (empty($ref) && $product) {
+                $sku = $product->get_sku();
+                $id = $product->get_id();
+                $ref = !empty($sku) ? $sku : (string) $id;
+            }
+
+            if (!isset($diffs_by_reference[$ref])) {
+                continue;
+            }
+
+            $diff = $diffs_by_reference[$ref] / 100;
+            // Refund line totals are stored as negative values in WooCommerce.
+            $item->set_total((float) $item->get_total() - $diff);
+            $item->save();
+            $total_diff_cents += $diffs_by_reference[$ref];
+        }
+
+        if (0 !== $total_diff_cents) {
+            $latest_refund->set_total((float) $latest_refund->get_total() - ($total_diff_cents / 100));
+            $latest_refund->save();
+            Logger::log(sprintf('Reconciled WooCommerce refund total by %.2f to match the exact amount refunded with Briqpay.', -$total_diff_cents / 100));
+        }
+    }
+
+    /**
+     * Calculate available unrefunded quantities (and amounts) per capture
      */
     private function get_unrefunded_balances($capture_history, $refund_history)
     {
         $balances = array();
         foreach ($capture_history as $c) {
             $cap_items = array();
+            $cap_amounts = array();
+            $cap_vat = array();
             foreach ($c['items'] as $it) {
                 $ref = $it['reference'];
                 $cap_items[$ref] = ($cap_items[$ref] ?? 0) + $it['quantity'];
+                $cap_amounts[$ref] = ($cap_amounts[$ref] ?? 0) + (int) ($it['totalAmount'] ?? 0);
+                $cap_vat[$ref] = ($cap_vat[$ref] ?? 0) + (int) ($it['totalVatAmount'] ?? 0);
             }
             $balances[] = array(
                 'captureId' => $c['captureId'],
-                'balances' => $cap_items
+                'balances' => $cap_items,
+                // Remaining captured amount per reference. This is the source of truth
+                // for what a fully-exhausting refund of that reference must total -
+                // using it (instead of a proportional unitPrice * qty estimate) is what
+                // guarantees the full captured amount always ends up refunded, with no
+                // residual ore left stuck due to per-unit rounding.
+                'amount_balances' => $cap_amounts,
+                'vat_balances' => $cap_vat,
             );
         }
 
@@ -388,6 +580,12 @@ class Order_Management
                         $ref = $rit['reference'];
                         if (isset($b['balances'][$ref])) {
                             $b['balances'][$ref] -= $rit['quantity'];
+                        }
+                        if (isset($b['amount_balances'][$ref])) {
+                            $b['amount_balances'][$ref] -= (int) ($rit['totalAmount'] ?? 0);
+                        }
+                        if (isset($b['vat_balances'][$ref])) {
+                            $b['vat_balances'][$ref] -= (int) ($rit['totalVatAmount'] ?? 0);
                         }
                     }
                 }
@@ -401,7 +599,7 @@ class Order_Management
     /**
      * Execute a single refund request to Briqpay
      */
-    private function execute_single_refund($order, $session_id, $capture_id, $items, $override_amount = null)
+    private function execute_single_refund($order, $session_id, $capture_id, $items, $override_amount = null, $target_amount = null)
     {
         // 1. Sync with session first
         $session = $this->sync_with_briqpay_session($order);
@@ -451,6 +649,8 @@ class Order_Management
                 if (isset($item['totalVatAmount'])) {
                     $consolidated_items[$ref]['totalVatAmount'] += $item['totalVatAmount'];
                 }
+                // Only stays exact if every consolidated part was independently exact.
+                $consolidated_items[$ref]['_exact'] = !empty($consolidated_items[$ref]['_exact']) && !empty($item['_exact']);
             } else {
                 $consolidated_items[$ref] = $item;
             }
@@ -460,26 +660,37 @@ class Order_Management
         foreach ($items as $item) {
             $api_item = $item;
             $is_sales_tax = ('sales_tax' === ($item['productType'] ?? ''));
+            $is_exact = !empty($item['_exact']);
 
-            // Try to find canonical item in session to fix rounding
-            if (!$is_sales_tax && $item['reference'] !== 'refund') {
-                $canonical = $this->get_canonical_session_item($session, $item['reference']);
-                if ($canonical) {
+            // Look up the canonical (authorized) item for this reference. taxRate is
+            // ALWAYS synced from it below, regardless of $is_exact: Briqpay validates
+            // a refund's taxRate for a reference against what it has on record from
+            // authorization and rejects the request with CART_ITEM_NOT_FOUND /
+            // "mismatching taxRate" if it drifts even slightly - which it will
+            // whenever WooCommerce's own tax-class lookup (a nominal rate, e.g.
+            // 25.00%) differs from the amount-derived rate actually sent to Briqpay
+            // at authorization (e.g. 24.99%, from rounding ship_tax/ship_total for a
+            // total that doesn't divide evenly - see Session_Manager::get_cart_items()).
+            //
+            // unitPrice/unitPriceIncVat/totalAmount/totalVatAmount are handled
+            // separately and are NOT re-derived from canonical for items already
+            // marked exact - their totals are the precise remaining captured balance
+            // for that reference (see resolve_exact_refund_totals()), which is more
+            // trustworthy than re-deriving it from the order-level canonical unit
+            // price, and are already consistent with the canonical taxRate since the
+            // capture that produced that balance synced it the same way.
+            $canonical = (!$is_sales_tax && $item['reference'] !== 'refund')
+                ? $this->get_canonical_session_item($session, $item['reference'])
+                : null;
+
+            if ($canonical) {
+                $api_item['taxRate'] = $canonical['taxRate'];
+
+                if (!$is_exact) {
                     $qty = $item['quantity'] ?? 1;
-                    $session_unit_inc = (int) $canonical['unitPriceIncVat'];
-                    $local_unit_inc = (int) $item['unitPriceIncVat'];
-
-                    // Sanity check: If prices differ by more than 1%, it's likely a gross/net mismatch.
-                    $diff = abs($session_unit_inc - $local_unit_inc);
-                    if ($local_unit_inc > 0 && ($diff / $local_unit_inc) > 0.01) {
-                        Logger::log(sprintf('Canonical sync skipped for %s refund: Price mismatch (Session: %d, Local: %d)', $item['reference'], $session_unit_inc, $local_unit_inc));
-                    } else {
-                        $api_item['unitPrice'] = $canonical['unitPrice'];
-                        $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
-                        $api_item['taxRate'] = $canonical['taxRate'];
-                        $api_item['totalAmount'] = (int) round($canonical['unitPriceIncVat'] * $qty);
-                        $api_item['totalVatAmount'] = (int) round(($canonical['unitPriceIncVat'] - $canonical['unitPrice']) * $qty);
-                    }
+                    $api_item['unitPrice'] = $canonical['unitPrice'];
+                    $api_item['unitPriceIncVat'] = $canonical['unitPriceIncVat'];
+                    $this->apply_canonical_totals($api_item, $canonical, $qty);
                 }
             }
 
@@ -501,6 +712,64 @@ class Order_Management
             $cart_for_api[] = $api_item;
         }
 
+        // Apply rounding correction if we have a target refund total
+        if ($target_amount !== null && $override_amount === null) {
+            $target_amount_cents = (int) round($target_amount * 100);
+
+            $current_sum = 0;
+            foreach ($cart_for_api as $item) {
+                if ('sales_tax' === ($item['productType'] ?? '')) {
+                    $current_sum += ($item['totalTaxAmount'] ?? 0);
+                } else {
+                    $current_sum += ($item['totalAmount'] ?? 0);
+                }
+            }
+
+            $diff = $target_amount_cents - $current_sum;
+            if ($diff !== 0) {
+                Logger::log(sprintf('Refund rounding diff detected: %d cents. Target: %d, Current: %d', $diff, $target_amount_cents, $current_sum));
+                // Adjust the last physical item or shipping fee. Never adjust an item
+                // already marked exact - its totalAmount is the precise remaining
+                // captured balance, and WooCommerce's own target amount (which is what
+                // caused this diff in the first place) is not authoritative over it.
+                $adjusted = false;
+                for ($i = count($cart_for_api) - 1; $i >= 0; $i--) {
+                    if ('sales_tax' === ($cart_for_api[$i]['productType'] ?? '')) {
+                        continue;
+                    }
+                    if (!empty($cart_for_api[$i]['_exact'])) {
+                        continue;
+                    }
+                    $cart_for_api[$i]['totalAmount'] += $diff;
+                    if (isset($cart_for_api[$i]['totalVatAmount'])) {
+                        $cart_for_api[$i]['totalVatAmount'] += $diff;
+                    }
+                    Logger::log(sprintf('Adjusted refund item %s totalAmount by %d cents to match target refund total.', $cart_for_api[$i]['reference'] ?? 'unknown', $diff));
+                    $adjusted = true;
+                    break;
+                }
+                if (!$adjusted) {
+                    Logger::log('Skipped target refund total adjustment - all items are exact remaining-balance amounts.');
+                }
+            }
+        }
+
+        // Recalculate amountIncVat and amountExVat from the final (potentially adjusted) cart items
+        $amount_inc_vat = 0;
+        $amount_ex_vat = 0;
+        foreach ($cart_for_api as &$api_item) {
+            $is_sales_tax = ('sales_tax' === ($api_item['productType'] ?? ''));
+            if ($is_sales_tax) {
+                $amount_inc_vat += ($api_item['totalTaxAmount'] ?? 0);
+            } else {
+                $amount_inc_vat += ($api_item['totalAmount'] ?? 0);
+                $amount_ex_vat += (($api_item['totalAmount'] ?? 0) - ($api_item['totalVatAmount'] ?? 0));
+            }
+            // Internal bookkeeping flag only - must not be sent to the Briqpay API.
+            unset($api_item['_exact']);
+        }
+        unset($api_item);
+
         $data = array(
             'captureId' => $capture_id,
             'data' => array(
@@ -520,13 +789,16 @@ class Order_Management
             // translators: %1$s: refund amount, %2$s: capture ID
             $order->add_order_note(sprintf(__('Briqpay: Refunded %1$s from capture %2$s.', 'briqpay-for-woocommerce'), wc_price($amount_inc_vat / 100), $capture_id));
 
-            // Track in history
+            // Track in history using the actual amounts sent to Briqpay (cart_for_api),
+            // not the pre-adjustment $items - later refunds rely on this for accurate
+            // remaining-balance calculations.
             $refund_history = $order->get_meta('_briqpay_refund_history') ?: array();
             $refund_history[] = array(
                 'captureId' => $capture_id,
-                'date' => current_time('mysql'),
-                'items' => $items,
-                'amount' => $amount_inc_vat
+                'refundId'  => $response['refundId'] ?? null,
+                'date'      => current_time('mysql'),
+                'items'     => $cart_for_api,
+                'amount'    => $amount_inc_vat
             );
             $order->update_meta_data('_briqpay_refund_history', $refund_history);
             $order->save();
@@ -557,49 +829,37 @@ class Order_Management
         foreach ($latest_refund->get_items() as $item) {
             $product = $item->get_product();
             $qty = abs($item->get_quantity());
+            $item_total = abs((float) $item->get_total());
             $item_tax = abs((float) $item->get_total_tax());
 
-            $parent_unit_inc = 0;
-            $parent_unit_ex = 0;
             $parent_tax_rate = $this->get_item_tax_rate($item);
-            $ref = '';
-            if ($product) {
+            $ref = $item->get_meta('_briqpay_item_reference');
+            if (empty($ref) && $product) {
                 $sku = $product->get_sku();
                 $id = $product->get_id();
-                $ref = !empty($sku) ? $sku . '-' . $id : (string) $id;
+                $ref = !empty($sku) ? $sku : (string) $id;
             }
 
-            foreach ($order->get_items() as $parent_item) {
-                if ($parent_item->get_product_id() === $item->get_product_id() && $parent_item->get_variation_id() === $item->get_variation_id()) {
-                    $p_qty = $parent_item->get_quantity();
-                    $p_amount = (float) $parent_item->get_subtotal();
-                    $p_tax = (float) $parent_item->get_subtotal_tax();
-
-                    $parent_unit_ex = $p_amount / $p_qty;
-                    $parent_unit_inc = ($p_amount + $p_tax) / $p_qty;
-                    $parent_tax_rate = $this->get_item_tax_rate($parent_item);
-                    break;
-                }
-            }
-
-            // Fallback to current item logic if parent not found (shouldn't happen)
-            if ($parent_unit_inc <= 0) {
-                $item_total = abs((float) $item->get_subtotal());
-                $parent_unit_ex = ($item_total / ($qty ?: 1));
-                $parent_unit_inc = ($item_total + $item_tax) / ($qty ?: 1);
+            if ($qty > 0) {
+                $unit_ex = $item_total / $qty;
+                $unit_inc = ($item_total + $item_tax) / $qty;
+            } else {
+                $unit_ex = $item_total;
+                $unit_inc = $item_total + $item_tax;
+                $qty = 1;
             }
 
             $items[] = array(
                 'productType' => 'physical',
-                'reference' => $ref,
+                'reference' => $ref ?: 'refund_item',
                 'name' => $item->get_name(),
                 'quantity' => abs($qty),
                 'quantityUnit' => 'pc',
-                'unitPrice' => (int) round($parent_unit_ex * 100),
-                'unitPriceIncVat' => $is_us ? (int) round($parent_unit_ex * 100) : (int) round($parent_unit_inc * 100),
+                'unitPrice' => (int) round($unit_ex * 100),
+                'unitPriceIncVat' => $is_us ? (int) round($unit_ex * 100) : (int) round($unit_inc * 100),
                 'taxRate' => $is_us ? 0 : $parent_tax_rate,
-                'totalAmount' => $is_us ? (int) round($parent_unit_ex * abs($qty) * 100) : (int) round($parent_unit_inc * abs($qty) * 100),
-                'totalVatAmount' => $is_us ? 0 : (int) round(($parent_unit_inc - $parent_unit_ex) * abs($qty) * 100),
+                'totalAmount' => $is_us ? (int) round($unit_ex * abs($qty) * 100) : (int) round($unit_inc * abs($qty) * 100),
+                'totalVatAmount' => $is_us ? 0 : (int) round(($unit_inc - $unit_ex) * abs($qty) * 100),
             );
 
             if ($is_us) {
@@ -762,10 +1022,14 @@ class Order_Management
         $items_to_capture = array();
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
-            if (!$product) continue;
-            $sku = $product->get_sku();
-            $id = $product->get_id();
-            $ref = !empty($sku) ? $sku . '-' . $id : (string) $id;
+            $ref = $item->get_meta('_briqpay_item_reference');
+            if (empty($ref)) {
+                if (!$product) continue;
+                $sku = $product->get_sku();
+                $id = $product->get_id();
+                $ref = !empty($sku) ? $sku : (string) $id;
+            }
+
             $total_qty = $item->get_quantity();
             $remaining = $total_qty - ($captured_counts[$ref] ?? 0);
 
@@ -775,11 +1039,11 @@ class Order_Management
                 $tax_rate = $this->get_item_tax_rate($item);
 
                 $total_inc = $item_total + $item_tax;
-                $unit_inc = $total_inc / $total_qty;
-                $unit_ex = $item_total / $total_qty;
+                $unit_inc = $total_qty > 0 ? ($total_inc / $total_qty) : 0;
+                $unit_ex = $total_qty > 0 ? ($item_total / $total_qty) : 0;
 
                 if ($is_us) {
-                    $total_tax_to_capture += ($item_tax / $total_qty) * $remaining;
+                    $total_tax_to_capture += ($item_tax / ($total_qty ?: 1)) * $remaining;
                 }
 
                 $items_to_capture[] = array(
@@ -826,7 +1090,7 @@ class Order_Management
 
         // Add Fees
         foreach ($order->get_fees() as $fee) {
-            $ref = $fee->get_id();
+            $ref = $fee->get_meta('_briqpay_fee_reference') ?: (string) $fee->get_id();
             if (!isset($captured_counts[$ref])) {
                 $fee_total = (float) $fee->get_total();
                 $fee_tax = (float) $fee->get_total_tax();
@@ -901,14 +1165,24 @@ class Order_Management
 
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
-            $qty = $item->get_quantity();
+            $ref = $item->get_meta('_briqpay_item_reference');
+            if (empty($ref)) {
+                if ($product) {
+                    $sku = $product->get_sku();
+                    $id = $product->get_id();
+                    $ref = !empty($sku) ? $sku : (string) $id;
+                } else {
+                    $ref = 'item_' . $item->get_id();
+                }
+            }
 
+            $qty = $item->get_quantity();
             $item_total = (float) $item->get_subtotal();
             $item_tax = (float) $item->get_subtotal_tax();
             $tax_rate = $this->get_item_tax_rate($item);
 
-            $unit_inc = ($item_total + $item_tax) / $qty;
-            $unit_ex = $item_total / $qty;
+            $unit_inc = $qty > 0 ? (($item_total + $item_tax) / $qty) : 0;
+            $unit_ex = $qty > 0 ? ($item_total / $qty) : 0;
 
             if ($is_us) {
                 $total_tax += $item_tax;
@@ -918,7 +1192,7 @@ class Order_Management
 
             $items[] = array(
                 'productType' => 'physical',
-                'reference' => !empty($product->get_sku()) ? $product->get_sku() . '-' . $product->get_id() : (string) $product->get_id(),
+                'reference' => (string) $ref,
                 'name' => $item->get_name(),
                 'quantity' => $qty,
                 'quantityUnit' => 'pc',
@@ -976,6 +1250,7 @@ class Order_Management
         foreach ($order->get_fees() as $fee) {
             $fee_total = (float) $fee->get_total();
             $fee_tax = (float) $fee->get_total_tax();
+            $fee_ref = $fee->get_meta('_briqpay_fee_reference') ?: (string) $fee->get_id();
 
             if ($is_us) {
                 $total_tax += $fee_tax;
@@ -983,7 +1258,7 @@ class Order_Management
 
             $items[] = array(
                 'productType' => 'physical',
-                'reference' => $fee->get_id(),
+                'reference' => $fee_ref,
                 'name' => $fee->get_name(),
                 'quantity' => 1,
                 'quantityUnit' => 'pc',
@@ -1159,16 +1434,12 @@ class Order_Management
      */
     private function get_canonical_session_item($session, $reference)
     {
-        // Check the original order cart
-        if (isset($session['data']['order']['cart'])) {
-            foreach ($session['data']['order']['cart'] as $item) {
-                if ($item['reference'] === $reference) {
-                    return $item;
-                }
-            }
-        }
-
-        // Check transactions if not in order cart (e.g. if order was modified)
+        // Prefer the authorized transaction cart: it reflects exactly what the PSP
+        // (e.g. Klarna) approved, which is the hard ceiling for what a capture/refund
+        // can request. The session's top-level order.cart can keep drifting after
+        // authorization (e.g. via later session PATCHes), so using it as the primary
+        // source can produce a capture amount that exceeds what was ever authorized
+        // and gets rejected with CAPTURE_NOT_ALLOWED.
         if (isset($session['data']['transactions'])) {
             foreach ($session['data']['transactions'] as $tx) {
                 if (isset($tx['cart'])) {
@@ -1181,6 +1452,127 @@ class Order_Management
             }
         }
 
+        // Fallback: no authorized transaction recorded yet.
+        if (isset($session['data']['order']['cart'])) {
+            foreach ($session['data']['order']['cart'] as $item) {
+                if ($item['reference'] === $reference) {
+                    return $item;
+                }
+            }
+        }
+
         return null;
+    }
+
+    /**
+     * Sum already-approved-captured quantity/amount for a reference, read directly
+     * from the Briqpay session's own capture records - the authoritative source of
+     * what has actually been captured with the PSP so far.
+     *
+     * @param array  $session
+     * @param string $reference
+     * @return array{quantity:int,totalAmount:int,totalVatAmount:int}
+     */
+    private function get_already_captured_from_session($session, $reference)
+    {
+        $totals = array('quantity' => 0, 'totalAmount' => 0, 'totalVatAmount' => 0);
+
+        foreach (($session['data']['captures'] ?? array()) as $capture) {
+            if ('approved' !== ($capture['status'] ?? '')) {
+                continue;
+            }
+            foreach (($capture['cart'] ?? array()) as $it) {
+                if (($it['reference'] ?? null) !== $reference) {
+                    continue;
+                }
+                $totals['quantity'] += (int) ($it['quantity'] ?? 0);
+                $totals['totalAmount'] += (int) ($it['totalAmount'] ?? 0);
+                $totals['totalVatAmount'] += (int) ($it['totalVatAmount'] ?? 0);
+            }
+        }
+
+        return $totals;
+    }
+
+    /**
+     * Apply the canonical line total to a capture/refund API item.
+     *
+     * When the total authorized amount for a line isn't evenly divisible by its
+     * quantity (e.g. 473.43 SEK / 2 units), the canonical unitPriceIncVat is itself
+     * a rounded value (236.72). Recomputing round(unitPriceIncVat * qty) then
+     * reproduces a total that can be higher than what was ever authorized, which
+     * Klarna rejects with CAPTURE_NOT_ALLOWED - and doing that on each of several
+     * partial captures compounds into an over-capture even though each individual
+     * request looked correct in isolation. When the requested quantity, combined
+     * with whatever has already been captured for this reference, covers the full
+     * canonical line, use the exact remaining authorized amount (canonical total
+     * minus what the session shows as already captured) instead of recomputing it.
+     * Only fall back to a proportional unitPrice * qty calculation for a genuine
+     * partial capture/refund that still leaves some quantity for later.
+     *
+     * @param array $api_item Item to mutate (by reference).
+     * @param array $canonical Canonical session/transaction cart item.
+     * @param int   $qty Quantity being captured/refunded now.
+     * @param array $already_captured Quantity/amount already captured for this reference, e.g. from get_already_captured_from_session().
+     */
+    private function apply_canonical_totals(&$api_item, $canonical, $qty, $already_captured = array())
+    {
+        $canonical_qty = isset($canonical['quantity']) ? (int) $canonical['quantity'] : $qty;
+        $already_qty = (int) ($already_captured['quantity'] ?? 0);
+
+        if (($already_qty + $qty) >= $canonical_qty && isset($canonical['totalAmount'])) {
+            $api_item['totalAmount'] = (int) $canonical['totalAmount'] - (int) ($already_captured['totalAmount'] ?? 0);
+            $api_item['totalVatAmount'] = (int) ($canonical['totalVatAmount'] ?? 0) - (int) ($already_captured['totalVatAmount'] ?? 0);
+            return;
+        }
+
+        $api_item['totalAmount'] = (int) round($canonical['unitPriceIncVat'] * $qty);
+        $api_item['totalVatAmount'] = (int) round(($canonical['unitPriceIncVat'] - $canonical['unitPrice']) * $qty);
+    }
+
+    /**
+     * Recompute unitPrice/unitPriceIncVat/totalAmount/totalVatAmount for a refund
+     * line item that exhausts the true remaining captured balance for a reference.
+     *
+     * Deriving unitPriceIncVat from the true balance and then computing
+     * totalAmount FROM that rounded per-unit price - rather than sending the true
+     * total alongside a stale, independently-computed per-unit price left over from
+     * whatever WooCommerce's own refund line happened to compute - guarantees
+     * unitPriceIncVat * quantity === totalAmount. Briqpay validates that
+     * relationship server-side and rejects the ENTIRE refund with INVALID_DATA if
+     * it doesn't hold, which it won't whenever the true remaining balance differs
+     * from what WooCommerce's line naively computed (e.g. the admin adjusted a
+     * refund line's amount, or per-unit rounding drifted during capture).
+     *
+     * For the common quantity=1 case (shipping, fees, coupons, single-unit
+     * products) this introduces zero rounding drift. A multi-quantity full
+     * exhaustion could absorb up to (quantity - 1) minor units of drift versus the
+     * true balance - an acceptable trade-off against an outright API rejection.
+     *
+     * @param int $true_amount Exact remaining captured amount (minor units).
+     * @param int $true_vat    Exact remaining captured VAT amount (minor units).
+     * @param int $quantity    Quantity being refunded now.
+     * @return array{unitPrice:int,unitPriceIncVat:int,totalAmount:int,totalVatAmount:int}
+     */
+    private function resolve_exact_refund_totals($true_amount, $true_vat, $quantity)
+    {
+        if ($quantity <= 0) {
+            return array(
+                'unitPrice' => 0,
+                'unitPriceIncVat' => 0,
+                'totalAmount' => $true_amount,
+                'totalVatAmount' => $true_vat,
+            );
+        }
+
+        $unit_price_inc_vat = (int) round($true_amount / $quantity);
+        $unit_price = (int) round(($true_amount - $true_vat) / $quantity);
+
+        return array(
+            'unitPrice' => $unit_price,
+            'unitPriceIncVat' => $unit_price_inc_vat,
+            'totalAmount' => $unit_price_inc_vat * $quantity,
+            'totalVatAmount' => ($unit_price_inc_vat - $unit_price) * $quantity,
+        );
     }
 }

@@ -38,6 +38,7 @@ class FeeCaptureTest extends TestCase
         $fee->shouldReceive('get_total')->andReturn(100.00);
         $fee->shouldReceive('get_total_tax')->andReturn(25.00);
         $fee->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 25.00)));
+        $fee->shouldReceive('get_meta')->andReturn('');
 
         $order->shouldReceive('get_fees')->andReturn(array($fee));
         $order->shouldReceive('get_items')->with()->andReturn(array());

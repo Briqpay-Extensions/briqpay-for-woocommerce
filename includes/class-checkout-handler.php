@@ -33,7 +33,7 @@ class Checkout_Handler
      */
     public function filter_order_button_html($button_html)
     {
-        if (is_checkout() && !is_order_received_page()) {
+        if (is_checkout() && !is_order_received_page() && null !== WC() && null !== WC()->session) {
             $chosen_payment_method = WC()->session->get('chosen_payment_method');
             if ('briqpay' === $chosen_payment_method) {
                 return ''; // Remove the button entirely from HTML
@@ -66,16 +66,16 @@ class Checkout_Handler
         // 1. Nuclear CSS: Target the primary button, any button in the action area, and the area itself.
         $critical_css = '
             /* Standard Checkout */
-            #place_order,
-            .form-row.place-order,
+            body.briqpay-selected #place_order,
+            body.briqpay-selected .form-row.place-order,
             /* Blocks Checkout Action Areas */
-            .wc-block-checkout__actions,
-            .wc-block-checkout__actions button,
-            .wc-block-components-checkout-place-order-button,
-            .wc-block-components-checkout-place-order-button button,
-            [data-testid="wc-block-components-checkout-place-order-button"],
+            body.briqpay-selected .wc-block-checkout__actions,
+            body.briqpay-selected .wc-block-checkout__actions button,
+            body.briqpay-selected .wc-block-components-checkout-place-order-button,
+            body.briqpay-selected .wc-block-components-checkout-place-order-button button,
+            body.briqpay-selected [data-testid="wc-block-components-checkout-place-order-button"],
             /* Any button that might be a primary action */
-            .wc-block-components-button.wc-block-components-checkout-place-order-button { 
+            body.briqpay-selected .wc-block-components-button.wc-block-components-checkout-place-order-button { 
                 display: none !important; 
                 visibility: hidden !important;
                 opacity: 0 !important;
@@ -85,21 +85,26 @@ class Checkout_Handler
                 max-height: 1px !important;
             }
 
-            /* Hide Payment Method Selection (Briqpay is the only one) */
-            .wc_payment_method.payment_method_briqpay > label:first-child,
-            .wc_payment_method.payment_method_briqpay > input[type="radio"],
-            label[for="payment_method_briqpay"],
-            .wc-block-components-radio-control__option[for*="briqpay"],
-            label[for*="briqpay"] .wc-block-components-radio-control__label-group,
-            .wc-block-components-checkout-payment-method-option--briqpay .wc-block-components-radio-control__option {
+            /* Hide Payment Method Selection ONLY when Briqpay is the sole gateway */
+            body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay > label:first-child,
+            body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay > input[type="radio"],
+            body.briqpay-only-gateway label[for="payment_method_briqpay"],
+            body.briqpay-only-gateway .wc-block-components-radio-control__option[for*="briqpay"],
+            body.briqpay-only-gateway label[for*="briqpay"] .wc-block-components-radio-control__label-group,
+            body.briqpay-only-gateway .wc-block-components-checkout-payment-method-option--briqpay .wc-block-components-radio-control__option {
                 display: none !important;
             }
             
             /* If it is the only method, hide the entire radio list item container but keep the description/iframe */
-            .wc_payment_method.payment_method_briqpay {
+            body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay {
                 border: none !important;
                 padding: 0 !important;
                 margin: 0 !important;
+            }
+
+            /* When Briqpay is selected but NOT the only gateway, hide the iframe container for non-Briqpay methods */
+            body.briqpay-not-selected #briqpay-iframe-container {
+                display: none !important;
             }';
 
         wp_add_inline_style('briqpay-checkout-style', $critical_css);
@@ -108,8 +113,8 @@ class Checkout_Handler
         $critical_js = '
             (function() {
                 var checkAndKill = function() {
-                    if (document.body && !document.body.classList.contains("briqpay-selected")) {
-                        if (document.body.classList.contains("briqpay-not-selected")) return;
+                    if (!document.body || !document.body.classList.contains("briqpay-selected")) {
+                        return;
                     }
                     
                     var selectors = [
@@ -155,7 +160,29 @@ class Checkout_Handler
         if (is_checkout() && !is_order_received_page()) {
             $settings = get_option('woocommerce_briqpay_settings');
             if ('yes' === ($settings['enabled'] ?? 'no')) {
-                $classes[] = 'briqpay-selected';
+                $chosen_payment_method = (null !== WC() && null !== WC()->session) ? WC()->session->get('chosen_payment_method') : null;
+                $available_gateways = function_exists('WC') && null !== WC()->payment_gateways() ? WC()->payment_gateways()->get_available_payment_gateways() : array();
+                $is_only_gateway = (1 === count($available_gateways) && isset($available_gateways['briqpay']));
+
+                // Mirror WooCommerce's own wc_get_chosen_gateway() fallback: when nothing is
+                // stored in session yet (or the stored choice is no longer available), WC
+                // defaults to whichever gateway comes first in the list - which is not
+                // necessarily Briqpay. Guessing "briqpay" here would wrongly hide the native
+                // Place Order button while a different gateway is actually pre-selected.
+                if (empty($chosen_payment_method) || !isset($available_gateways[$chosen_payment_method])) {
+                    $default_gateway = reset($available_gateways);
+                    $chosen_payment_method = $default_gateway ? $default_gateway->id : '';
+                }
+
+                if ($is_only_gateway || 'briqpay' === $chosen_payment_method) {
+                    $classes[] = 'briqpay-selected';
+                } else {
+                    $classes[] = 'briqpay-not-selected';
+                }
+
+                if ($is_only_gateway) {
+                    $classes[] = 'briqpay-only-gateway';
+                }
             }
         }
         return $classes;
@@ -273,14 +300,22 @@ class Checkout_Handler
 
         $order->save();
 
-        // If already upgraded to pending, just redirect now after updating title
+        // If already upgraded to pending, run cleanup and redirect
         if ($order->has_status(array('pending', 'processing', 'completed'))) {
-            Logger::log('Order already processed. Redirecting to order received page.');
+            Logger::log('Order already processed. Running cleanup before redirect.');
+            // Idempotent cart and session cleanup
+            if (null !== WC()->cart && !WC()->cart->is_empty()) {
+                WC()->cart->empty_cart();
+            }
+            Session_Manager::set_session_id(null);
+            if (null !== WC()->session) {
+                WC()->session->save_data();
+            }
             wp_safe_redirect($order->get_checkout_order_received_url());
             exit;
         }
 
-        // Verify session is approved/completed
+        // Verify session is approved/completed BEFORE early redirect check
         $order_status = $session['order']['status'] ?? ($session['status'] ?? '');
         Logger::log('Session order status: ' . $order_status);
 
@@ -293,19 +328,6 @@ class Checkout_Handler
             exit;
         }
 
-        // Upgrade order status to pending
-        $order->update_status('pending', __('Briqpay session verified. Awaiting webhook confirmation.', 'briqpay-for-woocommerce'));
-        $order->save();
-        Logger::log('Order upgraded to pending: ' . $order->get_id());
-
-        /**
-         * Action after payment is verified and order upgraded.
-         *
-         * @param WC_Order $order   The WooCommerce order.
-         * @param array    $session Briqpay session from API.
-         */
-        do_action('briqpay_payment_complete', $order, $session);
-
         // B2B specific cleanup - Move here to only run on success
         $is_b2b = (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_b2b_active')) || (isset($_COOKIE['briqpay_b2b_active']) && $_COOKIE['briqpay_b2b_active'] === '1');
         if ($is_b2b) {
@@ -316,8 +338,8 @@ class Checkout_Handler
                 WC()->session->set('briqpay_prev_b2b_active', null);
 
                 // Clear address so guests don't have their info remembered for next purchase
-                if (null !== WC()->customer) {
-                    Logger::log('Clearing customer address data.');
+                if (null !== WC()->customer && get_current_user_id() === 0) {
+                    Logger::log('Clearing guest customer address data.');
                     WC()->customer->set_billing_first_name('');
                     WC()->customer->set_billing_last_name('');
                     WC()->customer->set_billing_company('');
@@ -346,26 +368,45 @@ class Checkout_Handler
             setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
         }
 
-        // Clear cart
-        WC()->cart->empty_cart();
-        WC()->session->save_data();
+        // Idempotent cart and session cleanup
+        if (null !== WC()->cart && !WC()->cart->is_empty()) {
+            WC()->cart->empty_cart();
+        }
+        if (null !== WC()->session) {
+            WC()->session->save_data();
+        }
 
-        // Redirect to order received page
+        // Upgrade order status if not already processed
+        if (!$order->has_status(array('pending', 'processing', 'completed'))) {
+            $order->update_status('pending', __('Briqpay session verified. Awaiting webhook confirmation.', 'briqpay-for-woocommerce'));
+            $order->save();
+            Logger::log('Order upgraded to pending: ' . $order->get_id());
+
+            /**
+             * Action after payment is verified and order upgraded.
+             *
+             * @param WC_Order $order   The WooCommerce order.
+             * @param array    $session Briqpay session from API.
+             */
+            do_action('briqpay_payment_complete', $order, $session);
+        }
+
         // Clear session data after successful placement to ensure second purchase starts fresh
         Session_Manager::clear_session_id();
-        WC()->session->set('order_awaiting_payment', null);
-        WC()->session->set('briqpay_customer_type', null);
+        if (null !== WC()->session) {
+            WC()->session->set('order_awaiting_payment', null);
+            WC()->session->set('briqpay_customer_type', null);
+        }
 
         wp_safe_redirect($order->get_checkout_order_received_url());
         exit;
     }
 
     /**
-     * Aggressively clear customer data after purchase
+     * Clear customer session data after purchase
      * 
-     * This is triggered on the 'woocommerce_thankyou' hook to ensure
-     * that even if WooCommerce re-populated customer data from the order,
-     * we wipe it before they continue browsing.
+     * Restricted strictly to guest B2B session flags to prevent erasing
+     * registered B2C customer profiles.
      */
     public function clear_customer_data_after_purchase($order_id)
     {
@@ -373,56 +414,58 @@ class Checkout_Handler
             return;
         }
 
+        // Prevent re-running cleanup on thank-you page revisit
+        $cleanup_key = 'briqpay_cleanup_done_' . $order_id;
+        if (get_transient($cleanup_key)) {
+            return;
+        }
+        set_transient($cleanup_key, 1, HOUR_IN_SECONDS);
+
         $order = wc_get_order($order_id);
         if (!$order || 'briqpay' !== $order->get_payment_method()) {
             return;
         }
 
-        if (null === WC() || null === WC()->customer) {
-            return;
-        }
-
         Logger::log('clear_customer_data_after_purchase triggered for order: ' . $order_id);
 
-        // B2B Cleanup
-        if (null !== WC()->session) {
-            Logger::log('Performing final aggressive B2B cleanup.');
+        // Session-only B2B cleanup
+        if (null !== WC() && null !== WC()->session) {
             WC()->session->set('briqpay_b2b_active', false);
             WC()->session->set('briqpay_customer_type', null);
             WC()->session->set('briqpay_prev_b2b_active', null);
         }
         setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
 
-        // Clear all address fields
-        Logger::log('Performing final aggressive address clearing.');
-        WC()->customer->set_billing_first_name('');
-        WC()->customer->set_billing_last_name('');
-        WC()->customer->set_billing_company('');
-        WC()->customer->set_billing_address_1('');
-        WC()->customer->set_billing_address_2('');
-        WC()->customer->set_billing_city('');
-        WC()->customer->set_billing_postcode('');
-        WC()->customer->set_billing_country('');
-        WC()->customer->set_billing_state('');
-        WC()->customer->set_billing_email('');
-        WC()->customer->set_billing_phone('');
+        // Only clear stored customer address if guest user to avoid corrupting registered user details
+        if (get_current_user_id() === 0 && null !== WC() && null !== WC()->customer) {
+            Logger::log('Clearing guest customer address fields on thank-you page.');
+            WC()->customer->set_billing_first_name('');
+            WC()->customer->set_billing_last_name('');
+            WC()->customer->set_billing_company('');
+            WC()->customer->set_billing_address_1('');
+            WC()->customer->set_billing_address_2('');
+            WC()->customer->set_billing_city('');
+            WC()->customer->set_billing_postcode('');
+            WC()->customer->set_billing_country('');
+            WC()->customer->set_billing_state('');
+            WC()->customer->set_billing_email('');
+            WC()->customer->set_billing_phone('');
 
-        WC()->customer->set_shipping_first_name('');
-        WC()->customer->set_shipping_last_name('');
-        WC()->customer->set_shipping_company('');
-        WC()->customer->set_shipping_address_1('');
-        WC()->customer->set_shipping_address_2('');
-        WC()->customer->set_shipping_city('');
-        WC()->customer->set_shipping_postcode('');
-        WC()->customer->set_shipping_country('');
-        WC()->customer->set_shipping_state('');
-        WC()->customer->save();
-
-        if (null !== WC()->session) {
-            WC()->session->save_data();
+            WC()->customer->set_shipping_first_name('');
+            WC()->customer->set_shipping_last_name('');
+            WC()->customer->set_shipping_company('');
+            WC()->customer->set_shipping_address_1('');
+            WC()->customer->set_shipping_address_2('');
+            WC()->customer->set_shipping_city('');
+            WC()->customer->set_shipping_postcode('');
+            WC()->customer->set_shipping_country('');
+            WC()->customer->set_shipping_state('');
+            WC()->customer->save();
         }
 
-        Logger::log('Customer address data cleared successfully on success page.');
+        if (null !== WC() && null !== WC()->session) {
+            WC()->session->save_data();
+        }
     }
 
     /**
@@ -524,6 +567,22 @@ class Checkout_Handler
             }
         } else {
             Logger::log('checkout_data is COMPLETELY MISSING from POST.');
+        }
+
+        // Record terms & conditions acceptance from the actual checkout form submitted
+        // here, so validate_data_integrity() can check it later. ajax_make_decision()
+        // (which calls validate_data_integrity()) never resubmits the checkout form -
+        // it only ever posts a sessionId - so this is the only request where the
+        // real 'terms' checkbox state is available.
+        if (wc_terms_and_conditions_checkbox_enabled() && isset($checkout_data) && !empty($checkout_data)) {
+            // WooCommerce always renders a 'terms-field' marker alongside the checkbox
+            // when the terms notice is shown; 'terms' itself is only present when checked.
+            $terms_shown = isset($checkout_data['terms-field']) || isset($checkout_data['terms']);
+            $terms_accepted = !$terms_shown || !empty($checkout_data['terms']);
+            if (null !== WC()->session) {
+                WC()->session->set('briqpay_terms_accepted', $terms_accepted);
+            }
+            Logger::log('Terms acceptance recorded: ' . ($terms_accepted ? 'yes' : 'no'));
         }
 
         // Only proceed if we have checkout_data or blocks_data
@@ -685,6 +744,19 @@ class Checkout_Handler
             wp_send_json_error(array('message' => 'Missing session ID'));
         }
 
+        $stored_session_id = Session_Manager::get_session_id();
+        if (!$stored_session_id || $stored_session_id !== $session_id) {
+            Logger::log('Security warning: ajax_make_decision session ID mismatch. Provided: ' . $session_id . ', Stored: ' . ($stored_session_id ?: 'none'));
+            wp_send_json_error(array('message' => 'Unauthorized session ID'));
+        }
+
+        $lock_key = 'briqpay_decision_lock_' . $session_id;
+        if (get_transient($lock_key)) {
+            Logger::log('Decision already in progress for session: ' . $session_id);
+            wp_send_json_error(array('message' => 'Decision in progress'));
+        }
+        set_transient($lock_key, 1, 30);
+
         Logger::log('ajax_make_decision() triggered for session: ' . $session_id);
 
         // 1. Get session from Briqpay
@@ -693,6 +765,7 @@ class Checkout_Handler
         $session = $api->get_session($session_id);
 
         if (is_wp_error($session)) {
+            delete_transient($lock_key);
             Logger::log('Error retrieving session: ' . $session->get_error_message());
             wp_send_json_error(array('message' => 'Could not retrieve session'));
         }
@@ -814,11 +887,12 @@ class Checkout_Handler
             // Validate data integrity before approving
             $validation = $this->validate_data_integrity($session);
 
-            // Optimization: If there is an amount mismatch, try ONE synchronous sync to Briqpay
-            // to reconcile race conditions (e.g. shipping fee just added) before giving up.
+            // Optimization: If there is an amount or cart-contents mismatch, try ONE
+            // synchronous sync to Briqpay to reconcile race conditions (e.g. shipping
+            // fee just added, or a session PATCH that failed earlier) before giving up.
             $has_amount_mismatch = false;
             foreach ($validation['errors'] as $err) {
-                if (strpos($err, 'Amount mismatch') !== false) {
+                if (strpos($err, 'Amount mismatch') !== false || strpos($err, 'Cart contents mismatch') !== false) {
                     $has_amount_mismatch = true;
                     break;
                 }
@@ -855,7 +929,8 @@ class Checkout_Handler
                 $whitelist = array(
                     __('Please select a shipping method.', 'briqpay-for-woocommerce'),
                     __('No shipping methods are available for your address.', 'briqpay-for-woocommerce'),
-                    __('Please fill in your email.', 'briqpay-for-woocommerce')
+                    __('Please fill in your email.', 'briqpay-for-woocommerce'),
+                    __('You must accept our Terms & Conditions to complete your purchase.', 'briqpay-for-woocommerce')
                 );
 
                 foreach ($validation['errors'] as $err) {
@@ -887,6 +962,8 @@ class Checkout_Handler
                 $decision_result = $api->make_decision($session_id, 'allow');
             }
 
+            delete_transient('briqpay_decision_lock_' . $session_id);
+
             if (is_wp_error($decision_result)) {
                 Logger::log('Decision API error: ' . $decision_result->get_error_message());
                 wp_send_json_error(array('message' => 'Decision failed'));
@@ -911,6 +988,7 @@ class Checkout_Handler
                 'redirect_url' => add_query_arg('briqpay_return', '1', $this->get_current_url())
             ));
         } catch (\Exception $e) {
+            delete_transient('briqpay_decision_lock_' . $session_id);
             Logger::log('Error creating order: ' . $e->getMessage());
             wp_send_json_error(array('message' => $e->getMessage()));
         }
@@ -959,11 +1037,39 @@ class Checkout_Handler
                     Logger::log('Reusing existing WC order from session: ' . $order_id . ' (Status: ' . $order->get_status() . ')');
                     $order->update_meta_data('_briqpay_session_id', $session_id);
 
-                    // Check if the order already has line items (e.g. Blocks draft orders from Store API)
+                    // Check if the order items match current cart items
                     $existing_items = $order->get_items();
                     if (!empty($existing_items)) {
-                        Logger::log('Order already has ' . count($existing_items) . ' item(s). Keeping existing items.');
-                        $needs_items = false;
+                        $cart_contents = (null !== WC() && null !== WC()->cart) ? WC()->cart->get_cart() : array();
+                        $items_match = (count($existing_items) === count($cart_contents));
+
+                        if ($items_match) {
+                            foreach ($existing_items as $order_item) {
+                                $found = false;
+                                foreach ($cart_contents as $cart_item) {
+                                    $p = $cart_item['data'];
+                                    $p_id = $p->get_type() === 'variation' ? $p->get_parent_id() : $p->get_id();
+                                    $v_id = $p->get_type() === 'variation' ? $p->get_id() : 0;
+                                    if ((int) $order_item->get_product_id() === (int) $p_id && (int) $order_item->get_variation_id() === (int) $v_id && (int) $order_item->get_quantity() === (int) $cart_item['quantity']) {
+                                        $found = true;
+                                        break;
+                                    }
+                                }
+                                if (!$found) {
+                                    $items_match = false;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if ($items_match) {
+                            Logger::log('Order items match cart exactly. Keeping existing items.');
+                            $needs_items = false;
+                        } else {
+                            Logger::log('Order items do not match cart. Rebuilding items.');
+                            $order->remove_order_items();
+                            $needs_items = true;
+                        }
                     } else {
                         Logger::log('Order has no items. Will add from cart.');
                         $needs_items = true;
@@ -1086,6 +1192,22 @@ class Checkout_Handler
                 $item->set_taxes($values['line_tax_data']);
                 $item->set_backorder_meta();
 
+                $sku = $product->get_sku();
+                $id = $product->get_id();
+                $base_ref = !empty($sku) ? $sku : (string) $id;
+
+                // Mirror Session_Manager::get_cart_items()'s reference format so
+                // capture/refund lookups (which match session cart items to order
+                // items by reference) keep working when the same SKU appears at
+                // different prices in one cart (add-ons, bundles, personalization,
+                // role pricing). Store it so it survives even if the product is
+                // later deleted or its price changes.
+                $unit_price_minor_units = $values['quantity'] > 0
+                    ? (int) round(($values['line_subtotal'] / $values['quantity']) * 100)
+                    : 0;
+                $ref = $base_ref . '-' . $unit_price_minor_units;
+                $item->add_meta_data('_briqpay_item_reference', $ref);
+
                 // Add variation attributes as item meta (e.g. "Color: Blue")
                 if (!empty($values['variation'])) {
                     foreach ($values['variation'] as $attr_key => $attr_value) {
@@ -1100,62 +1222,49 @@ class Checkout_Handler
                 $order->add_item($item);
             }
 
-            // Set shipping
-            $chosen_methods = WC()->session->get('chosen_shipping_methods');
-            if (!empty($chosen_methods)) {
-                $shipping_packages = WC()->shipping()->get_packages();
-                foreach ($shipping_packages as $i => $package) {
-                    if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
-                        $rate = $package['rates'][$chosen_methods[$i]];
-                        $item = new \WC_Order_Item_Shipping();
-                        $item->set_props(array(
-                            'method_title' => $rate->label,
-                            'method_id' => $rate->method_id,
-                            'instance_id' => $rate->instance_id,
-                            'total' => wc_format_decimal($rate->cost),
-                            'taxes' => array('total' => $rate->taxes),
-                        ));
+            // Set shipping, fees, and coupons from the current cart
+            $this->add_shipping_items_from_cart($order);
+            $this->add_fee_items_from_cart($order);
+            $this->add_coupon_items_from_cart($order);
 
-                        // Allow plugins to modify shipping item
-                        do_action('woocommerce_checkout_create_order_shipping_item', $item, $i, $package, $order);
-
-                        $order->add_item($item);
-                    }
-                }
-            }
-
-            // Add Fees manually since we are not using the standard checkout flow
-            foreach (WC()->cart->get_fees() as $fee) {
-                $item = new \WC_Order_Item_Fee();
-                $item->set_name($fee->name);
-                $item->set_tax_class($fee->tax_class);
-                $item->set_tax_status($fee->taxable ? 'taxable' : 'none');
-                $item->set_total($fee->total);
-                $item->set_total_tax($fee->tax);
-                $item->set_taxes(array('total' => $fee->tax_data));
-
-                do_action('woocommerce_checkout_create_order_fee_item', $item, $fee->id, $fee, $order);
-
-                $order->add_item($item);
-            }
-
-            // Add Coupons
-            foreach (WC()->cart->get_coupons() as $code => $coupon) {
-                $item = new \WC_Order_Item_Coupon();
-                $item->set_code($code);
-                $item->set_discount(WC()->cart->get_coupon_discount_amount($code));
-                $item->set_discount_tax(WC()->cart->get_coupon_discount_tax_amount($code));
-
-                do_action('woocommerce_checkout_create_order_coupon_item', $item, $code, $coupon, $order);
-
-                $order->add_item($item);
-            }
-
-            // Important: Recalculate totals after adding items manually
-            $order->calculate_totals(true);
+            // Persist items now; tax-aware totals are calculated below after addresses are set
             $order->save();
         } else {
-            Logger::log('Skipping item creation — order already has items from Store API.');
+            // Product items already match the cart and were kept as-is (e.g. a
+            // trusted Store API draft), but shipping method, fees, and coupons can
+            // still have drifted after this draft was first created - a shipping
+            // method or coupon can change without the product line items themselves
+            // changing. Reconcile those three categories independently so the order
+            // never authorizes/charges a stale shipping method, fee, or coupon.
+            // Product line items are intentionally left untouched here since we
+            // already verified above that they match the cart.
+            Logger::log('Order items match cart. Reconciling shipping/fees/coupons in case those changed since the draft was created.');
+
+            // Shipping is reconciled conservatively. add_shipping_items_from_cart()
+            // can legitimately resolve nothing (e.g. a Blocks draft where the Store
+            // API owns the shipping selection and chosen_shipping_methods was never
+            // mirrored into the WC session), so removing first and adding second
+            // could strip the draft's shipping line and undercharge the customer.
+            // Only swap it out when the cart actually yields replacement rates, and
+            // only clear it outright when the cart genuinely no longer needs shipping.
+            if (!WC()->cart->needs_shipping()) {
+                $order->remove_order_items('shipping');
+            } elseif ($this->cart_has_resolvable_shipping()) {
+                $order->remove_order_items('shipping');
+                $this->add_shipping_items_from_cart($order);
+            } else {
+                Logger::log('Keeping existing shipping item: no chosen shipping rate could be resolved from the current cart.');
+            }
+
+            // Fees and coupons come straight from the cart, which calculate_totals()
+            // has already refreshed, so an empty result here genuinely means "none".
+            $order->remove_order_items('fee');
+            $this->add_fee_items_from_cart($order);
+
+            $order->remove_order_items('coupon');
+            $this->add_coupon_items_from_cart($order);
+
+            $order->save();
         }
 
         // Get PSP display name from session data using robust lookup
@@ -1229,7 +1338,8 @@ class Checkout_Handler
             $order->set_shipping_country($s['country'] ?? '');
         }
 
-        $order->calculate_totals();
+        // Calculate totals with tax AFTER addresses are set so tax rules resolve correctly
+        $order->calculate_totals(true);
 
         /**
          * Filter additional metadata to store on the order.
@@ -1254,6 +1364,95 @@ class Checkout_Handler
         do_action('briqpay_after_create_order', $order, $session);
 
         return $order;
+    }
+
+    /**
+     * Add shipping item(s) to the order from the current cart's chosen shipping methods.
+     */
+    private function add_shipping_items_from_cart($order)
+    {
+        $chosen_methods = WC()->session->get('chosen_shipping_methods');
+        if (empty($chosen_methods)) {
+            return;
+        }
+
+        $shipping_packages = WC()->shipping()->get_packages();
+        foreach ($shipping_packages as $i => $package) {
+            if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
+                $rate = $package['rates'][$chosen_methods[$i]];
+                $item = new \WC_Order_Item_Shipping();
+                $item->set_props(array(
+                    'method_title' => $rate->label,
+                    'method_id' => $rate->method_id,
+                    'instance_id' => $rate->instance_id,
+                    'total' => wc_format_decimal($rate->cost),
+                    'taxes' => array('total' => $rate->taxes),
+                ));
+
+                // Allow plugins to modify shipping item
+                do_action('woocommerce_checkout_create_order_shipping_item', $item, $i, $package, $order);
+
+                $order->add_item($item);
+            }
+        }
+    }
+
+    /**
+     * Whether the current cart yields at least one resolvable chosen shipping rate.
+     * Used to avoid removing an existing shipping line we cannot replace.
+     */
+    private function cart_has_resolvable_shipping()
+    {
+        $chosen_methods = WC()->session->get('chosen_shipping_methods');
+        if (empty($chosen_methods)) {
+            return false;
+        }
+
+        foreach (WC()->shipping()->get_packages() as $i => $package) {
+            if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Add fee item(s) to the order from the current cart's fees.
+     */
+    private function add_fee_items_from_cart($order)
+    {
+        foreach (WC()->cart->get_fees() as $fee) {
+            $item = new \WC_Order_Item_Fee();
+            $item->set_name($fee->name);
+            $item->set_tax_class($fee->tax_class);
+            $item->set_tax_status($fee->taxable ? 'taxable' : 'none');
+            $item->set_total($fee->total);
+            $item->set_total_tax($fee->tax);
+            $item->set_taxes(array('total' => $fee->tax_data));
+            $item->add_meta_data('_briqpay_fee_reference', $fee->id);
+
+            do_action('woocommerce_checkout_create_order_fee_item', $item, $fee->id, $fee, $order);
+
+            $order->add_item($item);
+        }
+    }
+
+    /**
+     * Add coupon item(s) to the order from the current cart's applied coupons.
+     */
+    private function add_coupon_items_from_cart($order)
+    {
+        foreach (WC()->cart->get_coupons() as $code => $coupon) {
+            $item = new \WC_Order_Item_Coupon();
+            $item->set_code($code);
+            $item->set_discount(WC()->cart->get_coupon_discount_amount($code));
+            $item->set_discount_tax(WC()->cart->get_coupon_discount_tax_amount($code));
+
+            do_action('woocommerce_checkout_create_order_coupon_item', $item, $code, $coupon, $order);
+
+            $order->add_item($item);
+        }
     }
 
     /**
@@ -1304,6 +1503,68 @@ class Checkout_Handler
             $errors[] = "Currency mismatch: WC {$wc_currency} vs BP {$bp_currency}";
         }
 
+        // Validate cart CONTENTS, not just the aggregate total. The aggregate check
+        // above can coincidentally pass even when a failed/raced session sync left
+        // Briqpay authorizing a same-value but different set of products/quantities
+        // than what WooCommerce is about to charge (e.g. two same-priced products
+        // swapped during a mid-checkout API failure). Compare per-reference
+        // quantities on both sides to catch that.
+        // Only compare when BOTH sides actually returned a cart. A missing/empty cart
+        // on either side means we have nothing meaningful to compare - treating that
+        // as a mismatch would reject every checkout, which is far worse than the race
+        // this guards against.
+        $bp_cart = $session['data']['order']['cart'] ?? array();
+        $wc_cart = $wc_data['data']['order']['cart'] ?? array();
+        if (!empty($bp_cart) && !empty($wc_cart) && !$this->cart_quantities_match($bp_cart, $wc_cart)) {
+            $errors[] = 'Cart contents mismatch: WC and BP carts contain different products or quantities.';
+        }
+
+        // Check if there was a previous session update sync failure
+        if (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_sync_failed')) {
+            $errors[] = __('We were unable to synchronize your cart with the payment provider. Please reload the page and try again.', 'briqpay-for-woocommerce');
+        }
+
+        // Validate stock levels for all items in the cart
+        if (null !== WC() && null !== WC()->cart) {
+            foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
+                $product = $cart_item['data'];
+                if (!$product || !$product->is_purchasable()) {
+                    $errors[] = sprintf(__('"%s" is no longer available for purchase.', 'briqpay-for-woocommerce'), $product ? $product->get_name() : '');
+                } elseif (!$product->is_in_stock()) {
+                    $errors[] = sprintf(__('"%s" is out of stock.', 'briqpay-for-woocommerce'), $product->get_name());
+                } elseif ($product->managing_stock() && !$product->has_enough_stock($cart_item['quantity'])) {
+                    $errors[] = sprintf(__('We do not have enough stock of "%s" to fulfill your order.', 'briqpay-for-woocommerce'), $product->get_name());
+                }
+            }
+        }
+
+        // Validate coupons
+        if (null !== WC()->cart) {
+            foreach (WC()->cart->get_applied_coupons() as $coupon_code) {
+                $coupon = new \WC_Coupon($coupon_code);
+                if (!$coupon->is_valid()) {
+                    $errors[] = sprintf(__('Coupon "%s" is not valid.', 'briqpay-for-woocommerce'), $coupon_code);
+                }
+            }
+        }
+
+        // Validate terms acceptance
+        //
+        // This method runs from ajax_make_decision(), which only ever posts a
+        // sessionId - the checkout form is never resubmitted here, so $_POST can't
+        // tell us whether terms were accepted. Instead we read the flag
+        // ajax_get_session() stored the last time the actual checkout form (with its
+        // terms checkbox) was submitted. If that flag was never set (e.g. Blocks
+        // checkout, which doesn't submit a classic serialized form), we don't block -
+        // there is no reliable signal to check here, and rejecting unconditionally is
+        // exactly the bug this replaces.
+        if (wc_terms_and_conditions_checkbox_enabled()) {
+            $terms_accepted = (null !== WC() && null !== WC()->session) ? WC()->session->get('briqpay_terms_accepted') : null;
+            if (false === $terms_accepted) {
+                $errors[] = __('You must accept our Terms & Conditions to complete your purchase.', 'briqpay-for-woocommerce');
+            }
+        }
+
         // Validate Address Fields
         if (isset($session['data']['billing']) && isset($wc_data['data']['billing'])) {
             $this->validate_address_fields($wc_data['data']['billing'], $session['data']['billing'], 'Billing', $errors);
@@ -1313,42 +1574,24 @@ class Checkout_Handler
             $this->validate_address_fields($wc_data['data']['shipping'], $session['data']['shipping'], 'Shipping', $errors);
         }
 
-        // Validate Shipping Selection
+        // Validate Shipping Selection (multi-package aware)
         if (WC()->cart->needs_shipping()) {
             $chosen_methods = WC()->session->get('chosen_shipping_methods');
             $chosen_methods = is_array($chosen_methods) ? $chosen_methods : array();
-
-            // Check if any shipping rates are actually available for this package
             $packages = WC()->shipping()->get_packages();
-            $available_rate_ids = array();
-            foreach ($packages as $package) {
-                if (!empty($package['rates'])) {
-                    foreach (array_keys($package['rates']) as $rate_id) {
-                        $available_rate_ids[] = (string) $rate_id;
-                    }
-                }
-            }
 
-            $valid_selection = false;
-            foreach ($chosen_methods as $chosen) {
-                if (in_array((string) $chosen, $available_rate_ids, true)) {
-                    $valid_selection = true;
+            foreach ($packages as $pkg_index => $package) {
+                if (empty($package['rates'])) {
+                    $errors[] = __('No shipping methods are available for your address.', 'briqpay-for-woocommerce');
                     break;
                 }
-            }
-
-            // Fallback for external iFrames/fees that might not be in standard packages (e.g., Ingrid, nShift)
-            // If there's a shipping cost, we assume a valid external selection was made.
-            if (!$valid_selection && (float) WC()->cart->get_shipping_total() > 0) {
-                $valid_selection = true;
-            }
-
-            // Final check
-            if (!$valid_selection) {
-                if (!empty($available_rate_ids)) {
-                    $errors[] = __('Please select a shipping method.', 'briqpay-for-woocommerce');
-                } else {
-                    $errors[] = __('No shipping methods are available for your address.', 'briqpay-for-woocommerce');
+                $chosen = $chosen_methods[$pkg_index] ?? '';
+                if (empty($chosen) || !isset($package['rates'][$chosen])) {
+                    // Check fallback for external integrations
+                    if ((float) WC()->cart->get_shipping_total() <= 0) {
+                        $errors[] = __('Please select a shipping method.', 'briqpay-for-woocommerce');
+                        break;
+                    }
                 }
             }
         }
@@ -1357,6 +1600,40 @@ class Checkout_Handler
             'valid' => empty($errors),
             'errors' => $errors
         );
+    }
+
+    /**
+     * Compare item references+quantities between two Briqpay-format cart arrays.
+     * Only quantities are compared (not amounts) to avoid false positives from
+     * rounding noise - the aggregate amount check elsewhere already covers totals.
+     */
+    private function cart_quantities_match($bp_cart, $wc_cart)
+    {
+        return $this->cart_quantity_signature($bp_cart) === $this->cart_quantity_signature($wc_cart);
+    }
+
+    /**
+     * Build a reference => total quantity map for a Briqpay-format cart array.
+     *
+     * sales_tax lines are excluded: they are built without a 'quantity' key at all
+     * (see Session_Manager::get_cart_items()), so any quantity we inferred for them
+     * would be invented on our side and could disagree with whatever Briqpay echoes
+     * back - producing a false mismatch that would block every US checkout. Tax
+     * totals are already covered by the aggregate amount check.
+     */
+    private function cart_quantity_signature($cart)
+    {
+        $signature = array();
+        foreach ((array) $cart as $line) {
+            if ('sales_tax' === ($line['productType'] ?? '')) {
+                continue;
+            }
+            $ref = (string) ($line['reference'] ?? '');
+            $qty = isset($line['quantity']) ? (int) $line['quantity'] : 1;
+            $signature[$ref] = ($signature[$ref] ?? 0) + $qty;
+        }
+        ksort($signature);
+        return $signature;
     }
 
     /**

@@ -44,6 +44,7 @@ class ShippingCaptureTest extends TestCase
         $item->shouldReceive('get_subtotal')->andReturn(100.00);
         $item->shouldReceive('get_subtotal_tax')->andReturn(25.00);
         $item->shouldReceive('get_taxes')->andReturn(array('total' => array(1 => 25.00)));
+        $item->shouldReceive('get_meta')->andReturn('');
 
         $order->shouldReceive('get_items')->with()->andReturn(array($item));
         $order->shouldReceive('get_items')->with('coupon')->andReturn(array());

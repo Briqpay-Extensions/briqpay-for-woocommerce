@@ -98,22 +98,28 @@ class Session_Manager
         }
 
         Logger::log('Found existing session: ' . $session_id);
-        $api = $this->get_api();
 
-        // Check if session is still valid/exists
-        $session = $api->get_session($session_id);
-        if (!is_wp_error($session) && !empty($session['sessionId']) && $session['status'] !== 'completed') {
-            Logger::log('Existing session is not completed, updating...');
-            // Update session with latest cart
-            $updated_session = $this->update_session($session_id, $session);
-            if (is_wp_error($updated_session)) {
-                Logger::log('Update failed: ' . $updated_session->get_error_message());
-                return $session; // Fallback to old one if update failed
+        // Attempt the PATCH directly and handle errors (e.g. 404/410/etc.) by creating a new session.
+        $updated_session = $this->update_session($session_id);
+        if (!is_wp_error($updated_session) && !empty($updated_session['sessionId']) && ($updated_session['status'] ?? '') !== 'completed') {
+            if (null !== WC() && null !== WC()->session) {
+                WC()->session->set('briqpay_sync_failed', false);
             }
             return $updated_session;
         }
 
-        Logger::log('Existing session invalid, expired, or completed. Creating new one.');
+        if (is_wp_error($updated_session)) {
+            Logger::log('Direct update failed: ' . $updated_session->get_error_message() . '. Creating a new session.');
+            if (null !== WC() && null !== WC()->session) {
+                WC()->session->set('briqpay_sync_failed', true);
+            }
+        } else {
+            Logger::log('Session already completed or invalid. Creating a new session.');
+            if (null !== WC() && null !== WC()->session) {
+                WC()->session->set('briqpay_sync_failed', false);
+            }
+        }
+
         return $this->create_session();
     }
 
@@ -496,10 +502,17 @@ class Session_Manager
             }
             $image_url = self::$image_cache[$image_id];
 
-            // Robust unique reference: SKU-ID or just ID
             $sku = $product->get_sku();
             $id = $product->get_id();
-            $reference = !empty($sku) ? $sku . '-' . $id : (string) $id;
+            $base_reference = !empty($sku) ? $sku : (string) $id;
+
+            // Differentiate cart lines for the same product/variation that carry a
+            // different unit price (add-ons, bundles, personalization, role-based
+            // pricing). Consolidating purely by SKU/ID would merge them into one
+            // line while keeping only the first unit price, producing an invalid
+            // Briqpay cart total. Lines sharing both the product AND the unit price
+            // still consolidate into one line, same as before.
+            $reference = $base_reference . '-' . $unit_price;
 
             if (isset($consolidated_items[$reference])) {
                 $consolidated_items[$reference]['quantity'] += $quantity;
@@ -536,6 +549,14 @@ class Session_Manager
             $ship_total = $cart->get_shipping_total();
             $ship_tax = $cart->get_shipping_tax();
 
+            // Prefer the nominal, store-configured rate; only fall back to deriving
+            // it from amounts if no tax rate ID is available (e.g. shipping is
+            // untaxed and get_shipping_taxes() is empty).
+            $ship_tax_rate = $this->get_nominal_tax_rate_from_tax_data($cart->get_shipping_taxes());
+            if (null === $ship_tax_rate) {
+                $ship_tax_rate = ($ship_total > 0) ? (int) round($ship_tax / $ship_total * 10000) : 0;
+            }
+
             $items[] = array(
                 'productType' => 'shipping_fee',
                 'reference' => 'shipping',
@@ -543,7 +564,7 @@ class Session_Manager
                 'quantity' => 1,
                 'quantityUnit' => 'pc',
                 'unitPrice' => $this->to_int($ship_total),
-                'taxRate' => $is_us ? 0 : (int) (($ship_total > 0) ? ($ship_tax / $ship_total * 10000) : 0),
+                'taxRate' => $is_us ? 0 : $ship_tax_rate,
                 'unitPriceIncVat' => $is_us ? $this->to_int($ship_total) : $this->to_int($ship_total + $ship_tax),
                 'totalVatAmount' => $is_us ? 0 : $this->to_int($ship_tax),
                 'totalAmount' => $is_us ? $this->to_int($ship_total) : $this->to_int($ship_total + $ship_tax),
@@ -557,6 +578,14 @@ class Session_Manager
         // Fees
         foreach ($cart->get_fees() as $fee) {
             Logger::log('Processing fee: ' . $fee->name);
+
+            // Prefer the nominal, store-configured rate; only fall back to deriving
+            // it from amounts if no tax rate ID is available (e.g. an untaxed fee).
+            $fee_tax_rate = $this->get_nominal_tax_rate_from_tax_data($fee->tax_data ?? array());
+            if (null === $fee_tax_rate) {
+                $fee_tax_rate = ($fee->total > 0) ? (int) round($fee->tax / $fee->total * 10000) : 0;
+            }
+
             $items[] = array(
                 'productType' => 'physical',
                 'reference' => $fee->id,
@@ -564,7 +593,7 @@ class Session_Manager
                 'quantity' => 1,
                 'quantityUnit' => 'pc',
                 'unitPrice' => $this->to_int($fee->total),
-                'taxRate' => $is_us ? 0 : (int) (($fee->total > 0) ? ($fee->tax / $fee->total * 10000) : 0),
+                'taxRate' => $is_us ? 0 : $fee_tax_rate,
                 'unitPriceIncVat' => $is_us ? $this->to_int($fee->total) : $this->to_int($fee->total + $fee->tax),
                 'totalVatAmount' => $is_us ? 0 : $this->to_int($fee->tax),
                 'totalAmount' => $is_us ? $this->to_int($fee->total) : $this->to_int($fee->total + $fee->tax),
@@ -669,6 +698,34 @@ class Session_Manager
             }
         }
         return self::$tax_rate_cache[$tax_class];
+    }
+
+    /**
+     * Get the nominal, store-configured tax rate (Briqpay format, e.g. 2500 for
+     * 25%) from a WooCommerce tax_data array ([tax_rate_id => amount], the shape
+     * returned by WC_Cart::get_shipping_taxes() and a cart fee's ->tax_data).
+     *
+     * Reading the configured rate directly via WC_Tax avoids deriving it by
+     * dividing tax/total, which is imprecise - WC's tax and total figures are
+     * themselves already rounded to 2 decimals - and visibly misreports a store's
+     * real 25% rate as 24.99% or 25.01% (see the identical fix already applied to
+     * coupons below).
+     *
+     * @param array $tax_data
+     * @return int|null Rate in Briqpay format, or null if no rate ID is available.
+     */
+    private function get_nominal_tax_rate_from_tax_data($tax_data)
+    {
+        if (empty($tax_data)) {
+            return null;
+        }
+
+        $tax_rate_id = array_key_first($tax_data);
+        if (!$tax_rate_id) {
+            return null;
+        }
+
+        return (int) round(\WC_Tax::get_rate_percent_value($tax_rate_id) * 100);
     }
 
     /**

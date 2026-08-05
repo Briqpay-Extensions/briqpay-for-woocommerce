@@ -32,9 +32,6 @@ window.briqpayCheckout = {
                 // ONLY unhide if we are certain a different method is actually selected
                 $('body').removeClass('briqpay-selected');
                 $('body').addClass('briqpay-not-selected');
-                // Remove critical hide if another method is picked
-                $('#briqpay-critical-css').remove();
-                $('#briqpay-critical-js').remove();
 
                 // Restore button visibility that might have been hidden by inline CSS/JS
                 $('#place_order, .form-row.place-order, .wc-block-checkout__actions, .wc-block-components-checkout-place-order-button, [data-testid="wc-block-components-checkout-place-order-button"]').each(function () {
@@ -50,6 +47,11 @@ window.briqpayCheckout = {
         // Listen for shipping method changes to trigger immediate Briqpay update
         $(document.body).on('change', 'input[name^="shipping_method"]', function () {
             window.briqpayCheckout.forceUpdate();
+        });
+
+        // Also listen to payment method selections in WooCommerce Blocks
+        $(document.body).on('change click', '.wc-block-checkout__payment-methods, .wc-block-components-radio-control', function () {
+            window.briqpayCheckout.onUpdatedCheckout();
         });
 
         // Also listen for any changes inside the checkout form that might affect totals
@@ -78,8 +80,6 @@ window.briqpayCheckout = {
         } else if (currentMethod && currentMethod !== 'briqpay') {
             $('body').removeClass('briqpay-selected');
             $('body').addClass('briqpay-not-selected');
-            $('#briqpay-critical-css').remove();
-            $('#briqpay-critical-js').remove();
 
             // Restore button visibility
             $('#place_order, .form-row.place-order, .wc-block-checkout__actions, .wc-block-components-checkout-place-order-button, [data-testid="wc-block-components-checkout-place-order-button"]').each(function () {
@@ -107,7 +107,7 @@ window.briqpayCheckout = {
             }
         }
 
-        this.onUpdatedCheckout();
+        setTimeout(this.onUpdatedCheckout.bind(this), 500);
     },
 
     onUpdatedCheckout: function () {
@@ -119,33 +119,33 @@ window.briqpayCheckout = {
         self._updateDebounceTimer = setTimeout(function () {
             self._updateDebounceTimer = null;
 
-            var isBriqpaySelected = $('#payment_method_briqpay').is(':checked');
-            var isBriqpayValue = $('input[name="payment_method"]:checked').val() === 'briqpay';
-            var isSingleMethod = $('input[name="payment_method"]').length === 1;
-            var containerExists = $('#briqpay-iframe-container').length > 0;
-            var bodyHasClass = $('body').hasClass('briqpay-selected');
+            var isBlocksCheckout = $('.wc-block-checkout').length > 0 || $('.wc-block-components-checkout-step').length > 0 || !!window.briqpayRegistered;
+            var isBriqpaySelected = false;
+            var isSingleMethod = false;
 
-            if (isBriqpaySelected || isBriqpayValue || isSingleMethod || containerExists || bodyHasClass) {
-                // In WooCommerce Blocks checkout, blocks-checkout.js handles ALL updates
-                // after the initial iframe creation. If we call updateSession here without
-                // blocks_data, we send empty shipping info that overwrites the correct total.
-                var isBlocksCheckout = !!window.briqpayRegistered;
-                var hasSession = !!self.session;
-                var hasIframe = $('#briqpay-iframe-container').children().length > 0;
-
-                if (isBlocksCheckout && hasSession && hasIframe) {
-                    return;
+            if (isBlocksCheckout) {
+                // In Blocks, Briqpay is active/selected if its content iframe container is rendered in the DOM
+                var iframeContainer = $('#briqpay-iframe-container');
+                isBriqpaySelected = iframeContainer.length > 0;
+                
+                // Blocks payment option radio buttons container check
+                var blockOptions = $('.wc-block-components-radio-control__option');
+                if (blockOptions.length === 1 && blockOptions.filter('[for*="briqpay"]').length > 0) {
+                    isSingleMethod = true;
                 }
+            } else {
+                var paymentMethods = $('input[name="payment_method"]');
+                isBriqpaySelected = $('#payment_method_briqpay').is(':checked') || (paymentMethods.length > 0 && paymentMethods.filter(':checked').val() === 'briqpay');
+                isSingleMethod = paymentMethods.length === 1 && paymentMethods.val() === 'briqpay';
+            }
 
+            if (isBriqpaySelected || isSingleMethod) {
                 self.initOrUpdate();
             }
         }, 500);
     },
 
     forceUpdate: function () {
-        if (window.briqpayRegistered && this.session) {
-            return;
-        }
         clearTimeout(this._updateDebounceTimer);
         this._updateDebounceTimer = null;
         this.initOrUpdate();

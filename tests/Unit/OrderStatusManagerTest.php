@@ -52,7 +52,7 @@ class OrderStatusManagerTest extends TestCase
 
         // Mock API overload
         $api = Mockery::mock('overload:Briqpay\WooCommerce\API');
-        $api->shouldReceive('get_session')->with('sess_123')->andReturn(array('status' => 'pending'));
+        $api->shouldReceive('get_session')->with('sess_123')->andReturn(array('status' => 'expired'));
 
         WP_Mock::userFunction('__', array('return_arg' => 0));
 

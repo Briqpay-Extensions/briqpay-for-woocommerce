@@ -34,8 +34,9 @@ class Blocks_Integration extends AbstractPaymentMethodType
      */
     public function is_active()
     {
-        $active = !empty($this->settings['enabled']) && 'yes' === $this->settings['enabled'];
-        return $active;
+        $enabled = !empty($this->settings['enabled']) && 'yes' === $this->settings['enabled'];
+        $has_creds = !empty($this->settings['merchant_id']) && !empty($this->settings['shared_secret']);
+        return $enabled && $has_creds;
     }
 
     /**
@@ -98,6 +99,7 @@ class Blocks_Integration extends AbstractPaymentMethodType
             'title' => $this->get_setting('title', 'Briqpay'),
             'description' => $this->get_setting('description', 'Pay with Briqpay'),
             'supports' => $this->get_supported_features(),
+            'can_make_payment' => $this->is_active(),
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('briqpay_nonce'),
         );

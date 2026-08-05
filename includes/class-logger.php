@@ -95,7 +95,10 @@ class Logger
                 'Recalculated WC Total',
                 'Session Stats',
                 'briqpay_force_new_session filter',
-                'get_or_create_session() entered'
+                'get_or_create_session() entered',
+                'BP Data:',
+                'WC Data:',
+                'Validating Session Integrity'
             );
 
             foreach ($chatty_patterns as $pattern) {

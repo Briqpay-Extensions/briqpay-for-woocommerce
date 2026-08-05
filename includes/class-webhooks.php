@@ -69,7 +69,8 @@ class Webhooks
         $session_id = $data['sessionId'] ?? '';
         $action = $data['action'] ?? ($data['event'] ?? '');
         $status = $data['status'] ?? '';
-        $dedup_key = 'briqpay_wh_' . md5($session_id . '|' . $action . '|' . $status);
+        $event_id = $data['captureId'] ?? ($data['refundId'] ?? ($data['id'] ?? ''));
+        $dedup_key = 'briqpay_wh_' . md5($session_id . '|' . $action . '|' . $status . '|' . $event_id);
 
         if (get_transient($dedup_key)) {
             Logger::log('Webhook duplicate skipped for session: ' . $session_id);
@@ -97,6 +98,7 @@ class Webhooks
     {
         $session_id = $data['sessionId'] ?? '';
         $action = $data['action'] ?? ($data['event'] ?? 'session');
+        $retry_count = (int) ($data['_briqpay_retry_count'] ?? 0);
 
         if (!$session_id) {
             return;
@@ -106,7 +108,7 @@ class Webhooks
 
         $order = $this->get_order_by_session_id($session_id);
         if (!$order) {
-            Logger::log('Error: Order not found for session ' . $session_id);
+            $this->retry_or_fail_webhook($data, $retry_count, 'Order not found for session ' . $session_id);
             return;
         }
 
@@ -116,7 +118,7 @@ class Webhooks
         $session = $api->get_session($session_id);
 
         if (is_wp_error($session)) {
-            Logger::log('Error retrieving session from API: ' . $session->get_error_message());
+            $this->retry_or_fail_webhook($data, $retry_count, 'API error: ' . $session->get_error_message());
             return;
         }
 
@@ -175,13 +177,24 @@ class Webhooks
                 return;
 
             case 'cancelled':
-                $new_wc_status = 'cancelled';
-                $status_note = __('Briqpay: Session cancelled.', 'briqpay-for-woocommerce');
-                break;
-
             case 'failed':
-                $new_wc_status = 'failed';
-                $status_note = __('Briqpay: Session failed.', 'briqpay-for-woocommerce');
+                // Guard against a delayed/out-of-order webhook regressing an order
+                // that a later webhook has already moved past this point (e.g. a
+                // stale 'failed' notification arriving after the order was approved
+                // and captured) - mirrors the same rank guard handle_order_status()
+                // already applies to order_status webhooks.
+                if ($order->has_status(array('processing', 'completed'))) {
+                    Logger::log(sprintf('Ignoring session %s webhook for order %s because order is already %s.', $status, $order->get_id(), $order->get_status()));
+                    return;
+                }
+
+                if ('cancelled' === $status) {
+                    $new_wc_status = 'cancelled';
+                    $status_note = __('Briqpay: Session cancelled.', 'briqpay-for-woocommerce');
+                } else {
+                    $new_wc_status = 'failed';
+                    $status_note = __('Briqpay: Session failed.', 'briqpay-for-woocommerce');
+                }
                 break;
         }
 
@@ -195,8 +208,28 @@ class Webhooks
         }
     }
 
+    /**
+     * Retry a transient webhook processing failure (order not found yet, or a
+     * Briqpay API error) up to 3 times with a 5-minute delay, mirroring
+     * Order_Management's capture-retry pattern. Each attempt is a fresh Action
+     * Scheduler action, so the failing one still shows up in the Scheduled Actions
+     * log; once retries are exhausted, throw so the final failure stays visible
+     * there too instead of processing silently stopping.
+     */
+    private function retry_or_fail_webhook($data, $retry_count, $message)
+    {
+        $max_retries = 3;
+        $session_id = $data['sessionId'] ?? '';
 
+        if ($retry_count >= $max_retries || !function_exists('as_schedule_single_action')) {
+            Logger::log(sprintf('Webhook processing failed permanently for session %s after %d attempt(s): %s', $session_id, $retry_count + 1, $message));
+            throw new \Exception($message);
+        }
 
+        $data['_briqpay_retry_count'] = $retry_count + 1;
+        as_schedule_single_action(time() + 300, 'briqpay_v3_process_webhook_callback', array('payload' => $data), 'briqpay');
+        Logger::log(sprintf('Webhook processing failed (attempt %d/%d) for session %s: %s. Retrying in 5 minutes.', $retry_count + 1, $max_retries, $session_id, $message));
+    }
 
     /**
      * Get Order by Session ID
@@ -218,19 +251,39 @@ class Webhooks
      */
     private function handle_order_status($order, $status, $data)
     {
+        $status_hierarchy = array(
+            'pending' => 1,
+            'on-hold' => 2,
+            'processing' => 3,
+            'completed' => 4,
+        );
+
+        $current_status = $order->get_status();
+        $current_rank = $status_hierarchy[$current_status] ?? 0;
+
         switch ($status) {
             case 'order_pending':
+                if ($current_rank >= 1) {
+                    Logger::log(sprintf('Ignoring order_pending webhook for order %s because current status is %s', $order->get_id(), $current_status));
+                    return;
+                }
                 $order->update_status('pending', __('Briqpay: Order pending.', 'briqpay-for-woocommerce'));
                 break;
             case 'order_approved_not_captured':
+                if ($current_rank >= 3) {
+                    Logger::log(sprintf('Ignoring order_approved_not_captured webhook for order %s because current status is %s', $order->get_id(), $current_status));
+                    return;
+                }
                 $order->update_status('processing', __('Briqpay: Order approved, ready for capture.', 'briqpay-for-woocommerce'));
-
-                // Update payment method title from session
                 $this->update_payment_method_title($order);
                 break;
             case 'order_rejected':
             case 'order_cancelled':
-                // translators: %s: order status
+                if ($current_rank >= 3) {
+                    Logger::log(sprintf('Ignoring %s webhook for order %s because order is already %s', $status, $order->get_id(), $current_status));
+                    return;
+                }
+                /* translators: %s: order status */
                 $order->update_status('cancelled', sprintf(__('Briqpay: Order %s.', 'briqpay-for-woocommerce'), $status));
                 break;
         }
@@ -351,6 +404,17 @@ class Webhooks
 
             // If the order is currently pending/awaiting payment, mark it as paid since we successfully captured funds
             if ($order->has_status(array('pending', 'failed', 'on-hold', 'checkout-draft'))) {
+                $bp_amount = $authoritative_capture['amountIncVat'] ?? ($authoritative_capture['amount'] ?? 0);
+                $order_amount = (float) $order->get_total();
+                $bp_currency = $authoritative_capture['currency'] ?? ($session['data']['order']['currency'] ?? '');
+                $order_currency = $order->get_currency();
+
+                if (abs(($bp_amount / 100) - $order_amount) > 0.05 || (!empty($bp_currency) && strtolower($bp_currency) !== strtolower($order_currency))) {
+                    Logger::log(sprintf('Security: Amount or currency mismatch on capture webhook. BP: %s %s, WC: %s %s. Setting order to on-hold.', $bp_amount, $bp_currency, $order_amount, $order_currency));
+                    $order->update_status('on-hold', sprintf(__('Briqpay: Capture amount/currency mismatch! BP: %s %s, WC: %s %s.', 'briqpay-for-woocommerce'), $bp_amount, $bp_currency, $order_amount, $order_currency));
+                    return;
+                }
+
                 Logger::log('Order is in unpaid status. Calling payment_complete() via capture webhook.');
                 $order->payment_complete($capture_id);
             }

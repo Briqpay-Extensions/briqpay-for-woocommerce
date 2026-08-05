@@ -101,10 +101,15 @@ describe('Briqpay Checkout JS', () => {
     });
 
     test('should update session when fields change', () => {
+        // Briqpay must be the selected payment method for a sync to happen at all.
+        // Sessions are deliberately NOT synced while another gateway is selected -
+        // see the 'should not sync session when another gateway is selected' test below.
+        $('#payment_method_briqpay').prop('checked', true);
+
         // First init
         window.briqpayCheckout.session = 'existing_session';
         $('#briqpay-iframe-container').html('<iframe></iframe>');
-        
+
         // Trigger a field change
         $('input[name="billing_first_name"]').val('Jane').trigger('change');
         jest.runAllTimers();
@@ -115,6 +120,23 @@ describe('Briqpay Checkout JS', () => {
             })
         }));
         expect(window._briqpay.v3.suspend).toHaveBeenCalled();
+    });
+
+    test('should not sync session when another gateway is selected', () => {
+        // Regression guard for the "other gateways become unusable" fix: when a
+        // different gateway is selected, Briqpay must not create/patch a session
+        // and must not hide the native Place Order button.
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        $.ajax.mockClear();
+
+        $('#payment_method_cod').prop('checked', true).trigger('change');
+        $('input[name="billing_first_name"]').val('Jane').trigger('change');
+        jest.runAllTimers();
+
+        expect($.ajax).not.toHaveBeenCalled();
+        expect($('body').hasClass('briqpay-selected')).toBe(false);
+        expect($('body').hasClass('briqpay-not-selected')).toBe(true);
     });
 
     test('should attach listeners to SDK events', () => {

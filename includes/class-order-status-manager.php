@@ -165,22 +165,31 @@ class Order_Status_Manager
         foreach ($orders as $order) {
             Logger::log('Janitor: Processing order ' . $order->get_id());
 
-            // Double check session status via API before cancelling
             $session_id = $order->get_meta('_briqpay_session_id');
             $settings = get_option('woocommerce_briqpay_settings');
             $api = new API($settings['merchant_id'], $settings['shared_secret'], 'yes' === $settings['testmode']);
             $session = $api->get_session($session_id);
 
-            if (!is_wp_error($session) && isset($session['status'])) {
-                if ($session['status'] === 'completed') {
-                    Logger::log('Janitor: Session actually completed. Moving to processing instead of cancelling.');
-                    $order->update_status('processing', __('Briqpay Janitor: Recovered completed session.', 'briqpay-for-woocommerce'));
-                    continue;
-                }
+            if (is_wp_error($session)) {
+                Logger::log('Janitor: API error checking session ' . $session_id . ': ' . $session->get_error_message() . '. Skipping.');
+                continue;
             }
 
-            $order->update_status('cancelled', __('Briqpay Janitor: Order cancelled due to inactivity (5h threshold).', 'briqpay-for-woocommerce'));
-            Logger::log('Janitor: Order ' . $order->get_id() . ' cancelled.');
+            $status = $session['status'] ?? '';
+
+            if ($status === 'completed') {
+                Logger::log('Janitor: Session actually completed. Moving to processing instead of cancelling.');
+                $order->update_status('processing', __('Briqpay Janitor: Recovered completed session.', 'briqpay-for-woocommerce'));
+                continue;
+            }
+
+            $cancellable_states = array('expired', 'cancelled', 'failed', 'rejected');
+            if (in_array($status, $cancellable_states, true)) {
+                $order->update_status('cancelled', __('Briqpay Janitor: Order cancelled due to inactivity (5h threshold).', 'briqpay-for-woocommerce'));
+                Logger::log('Janitor: Order ' . $order->get_id() . ' cancelled.');
+            } else {
+                Logger::log('Janitor: Session ' . $session_id . ' status is "' . $status . '". Not cancelling.');
+            }
         }
 
         Logger::log('Janitor: Cleanup task finished.');

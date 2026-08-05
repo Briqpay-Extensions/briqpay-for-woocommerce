@@ -3,7 +3,7 @@
  * Plugin Name: Briqpay for WooCommerce
  * Plugin URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Description: Briqpay connects multiple payment providers like Adyen, Stripe, PayPal, and Klarna in one integration.
- * Version: 1.0.14
+ * Version: 1.1.0
  * Author: Briqpay
  * Author URI: https://briqpay.com
  * Text Domain: briqpay-for-woocommerce
@@ -12,7 +12,7 @@
  * Requires PHP: 7.4
  * Requires Plugins: woocommerce
  * WC requires at least: 5.5
- * WC tested up to: 10.8
+ * WC tested up to: 11.0
  * License: GPLv2 or later
  * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  */
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('BRIQPAY_WC_VERSION', '1.0.14');
+define('BRIQPAY_WC_VERSION', '1.1.1');
 define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
 define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
 define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
@@ -141,12 +141,13 @@ if (!class_exists('Briqpay_WooCommerce')) {
         }
 
         /**
-         * Declare HPOS compatibility
+         * Declare HPOS and Blocks compatibility
          */
         public function declare_hpos_compatibility()
         {
             if (class_exists(\Automattic\WooCommerce\Utilities\FeaturesUtil::class)) {
                 \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+                \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('cart_checkout_blocks', __FILE__, true);
             }
         }
 

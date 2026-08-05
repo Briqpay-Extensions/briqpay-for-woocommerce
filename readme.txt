@@ -3,9 +3,9 @@ Contributors: briqpay
 Donate link: https://briqpay.com
 Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
-Tested up to: 6.9
+Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.0.14
+Stable tag: 1.1.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -69,6 +69,33 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.0 =
+* Fix: Scoped payment gateway hiding rules strictly to `body.briqpay-selected` to prevent hiding other payment options.
+* Fix: Always verify payment status and execute cart & session cleanup prior to return redirect.
+* Fix: Prevented registered user address erasure on the thank-you page.
+* Fix: Added robust order validation (stock, coupons, terms, per-package shipping) to prevent invalid checkouts.
+* Fix: Ensured draft orders are correctly reconciled and rebuilt when items differ.
+* Fix: Added session-to-order mapping and lock to prevent concurrent duplicate orders.
+* Fix: Enforced address updates before tax calculations.
+* Fix: Set sync-failed session flag on updates to reject out-of-sync checkouts.
+* Fix: Enabled currency multiplier for zero/three-decimal currencies.
+* Fix: Disambiguated references for identical items at different prices.
+* Fix: Saved and preserved fee references in order-item metadata.
+* Fix: Calculated refunds correctly using the entered value.
+* Fix: Restructured multi-capture refunds to enforce single-capture refunds atomically.
+* Fix: Persisted item metadata to prevent checkout errors on deleted products.
+* Fix: Added capture failure on-hold statuses and automatic retry task scheduling.
+* Fix: Hardened webhook processing with retry exception handling, monotonic status flow transitions, and unique key deduplication.
+* Fix: Prevented Janitor from cancelling orders on temporary API errors.
+* Fix: Hardened Blocks active checks and declared full cart_checkout_blocks compatibility.
+
+= 1.0.15 =
+* Security: Added IDOR protection check to ajax_make_decision to verify the requested session ID matches the user's active session.
+* Security: Added amount and currency matching verification to the webhook capture status handler.
+* Security: Added amount verification guard to the manual backend order capture execution.
+* Optimization: Removed redundant GET request by initiating PATCH request directly in get_or_create_session.
+* Privacy: Suppressed full customer/order payload logs during validation checks when verbose logging is disabled.
 
 = 1.0.14 =
 * Security: Fixed guest draft order reuse vulnerability (IDOR) by securing fallback lookups, validating customer ownership, and automatically rebuilding cart items for reused untrusted drafts.

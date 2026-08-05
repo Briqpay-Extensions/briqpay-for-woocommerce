@@ -269,7 +269,8 @@ class WebhooksTest extends TestCase
             ->with('sess_os_123')
             ->andReturn($session_data);
 
-        // Expect order to receive update_status for pending status
+        $order->shouldReceive('get_id')->andReturn(123);
+        $order->shouldReceive('get_status')->andReturn('checkout-draft');
         $order->shouldReceive('update_status')
             ->with('pending', Mockery::any())
             ->once();
@@ -321,6 +322,7 @@ class WebhooksTest extends TestCase
             ->with('sess_os_123')
             ->andReturn($session_data);
 
+        $order->shouldReceive('get_status')->andReturn('pending');
         // Expect order to receive update_status for processing status
         $order->shouldReceive('update_status')
             ->with('processing', Mockery::any())
