@@ -38,17 +38,27 @@ The plugin supports both automated and manual order management:
 - Automated: 
   - Processing -> Completed: Triggers a full capture.
   - Refund processed in WC: Triggers a refund in Briqpay.
-- Manual: 
+- Manual:
   - Inside the Order Edit screen, a 'Briqpay Payment Details' meta box appears.
   - You can perform partial captures by selecting specific items and quantities.
   - The capture history is displayed directly in the meta box for transparency.
+- Auto-capture: If the payment method used for the order has auto-capture
+  enabled on Briqpay's side (session data.transactions[].autoCaptureEnabled),
+  the 'Manual Capture' button is replaced with an 'Auto capture in progress'
+  notice instead, since Briqpay is already handling the capture itself.
 
 --------------------------------------------------------------------------------
 5. ACTION SCHEDULER & BACKGROUND PROCESSING
 --------------------------------------------------------------------------------
-Webhooks from Briqpay are processed asynchronously to ensure high availability 
+Webhooks from Briqpay are processed asynchronously to ensure high availability
 and to prevent timeouts during complex order operations.
 
+- Real-Time Processing: Every session this plugin creates sets
+  config.realTimeProcessing to true, so Briqpay delivers webhooks/status
+  updates immediately instead of in batches. Note this means event delivery
+  order is not guaranteed - the plugin's webhook handling already guards
+  against out-of-order delivery (rank-checked status transitions, idempotent
+  capture/refund history) for this reason.
 - Background Task: Incoming webhooks are enqueued as 'briqpay_v3_process_webhook_callback'.
 - Reliability: If a webhook fails to process (e.g., database lock), Action 
   Scheduler will automatically retry.
@@ -84,7 +94,65 @@ The Briqpay iFrame is highly dynamic. To ensure it functions correctly:
     unless you are targeting the `.briqpay-selected` class specifically.
 
 --------------------------------------------------------------------------------
-8. DEVELOPER HOOKS (ACTIONS & FILTERS)
+8. ORDER ATTRIBUTION (Origin column)
+--------------------------------------------------------------------------------
+WooCommerce's built-in Order Attribution feature (the "Origin" column in
+WooCommerce > Orders) only captures data via WC_Checkout::process_checkout(),
+which this plugin's storefront checkout never calls - orders are created in
+Checkout_Handler::create_order_at_decision(), triggered by our own
+'briqpay_make_decision' AJAX action instead. Without help, this shows every
+Briqpay order as "Unknown".
+
+- Capture (classic checkout): ajax_get_session() already receives the full
+  serialized checkout form as 'checkout_data' on every session sync.
+  Checkout_Handler::capture_order_attribution() reads WooCommerce's own
+  wc_order_attribution_* hidden fields out of that data (Sourcebuster-derived,
+  stamped into the checkout form by WC's own JS) and stashes them in the WC
+  session, since the decision AJAX call itself never resends the form.
+- Capture (Blocks checkout): Blocks stores this data in the Checkout block's
+  own extension data instead of hidden form fields. blocks-checkout.js's
+  window.briqpayReadOrderAttribution() reads it client-side - preferring
+  WooCommerce's own already-loaded wc_order_attribution.getAttributionData()
+  helper, falling back to window.wp.data.select('wc/store/checkout')
+  .getExtensionData()['woocommerce/order-attribution'] - and sends it as
+  order_attribution in the blocks_data payload. Checkout_Handler::
+  capture_order_attribution_from_blocks() stashes it the same way (fields
+  arrive already unprefixed, e.g. 'source_type' not
+  'wc_order_attribution_source_type').
+- Apply: Checkout_Handler::apply_order_attribution_to_order() writes
+  whichever path captured data onto the order using WooCommerce's own meta
+  key naming (_wc_order_attribution_source_type,
+  _wc_order_attribution_utm_source, etc.) once the order is actually created,
+  right before it's saved.
+- Admin-created orders (Hosted Payment Pages, "Add order" screen) already
+  show "Web admin" correctly with no help from this plugin - WooCommerce's
+  own OrderAttributionController sets that natively based on is_admin(),
+  independent of created_via.
+
+--------------------------------------------------------------------------------
+9. HOSTED PAYMENT PAGES
+--------------------------------------------------------------------------------
+Lets a merchant build an order in the WooCommerce admin and create a
+Briqpay-hosted payment link for it, without routing the customer through the
+storefront checkout.
+
+- Enable under: WooCommerce > Settings > Payments > Briqpay > Hosted Payment
+  Pages. Configure a default flow (pre-selection only), hosted page title,
+  logo URL and show-cart preference.
+- Flow: POST /v3/session is created first (decision is always disabled -
+  nothing calls the decision endpoint for a hosted page, and the WooCommerce
+  order already exists), then POST /v3/hosted-page using that sessionId.
+- Line item/fee references sent to Briqpay are frozen onto the order's items
+  as `_briqpay_item_reference` / `_briqpay_fee_reference` at creation time, so
+  a later SKU rename cannot break captures/refunds for that order.
+- The order's billing/shipping address and company are prefilled; for the
+  Business - Full Checkout flow, whatever Briqpay confirms is written back
+  onto the order once the payment webhook arrives.
+- Implemented in `includes/class-hosted-payment-page.php`
+  (`Briqpay\WooCommerce\Hosted_Payment_Page`).
+
+--------------------------------------------------------------------------------
+10. DEVELOPER HOOKS (ACTIONS & FILTERS)
 --------------------------------------------------------------------------------
 Integrators can customize the plugin behavior using the following hooks:
 
@@ -95,16 +163,28 @@ FILTERS:
 - `briqpay_cart_items`: (array) Filter the cart items list before it is mapped 
   to the Briqpay format.
 - `briqpay_is_available`: (bool) Programmatically enable/disable the gateway.
-- `briqpay_order_metadata`: (array) Add custom metadata to the WC Order when 
+- `briqpay_order_metadata`: (array) Add custom metadata to the WC Order when
   created via Briqpay.
+- `briqpay_hpp_session_data`: (array, order, flow) Modify the /v3/session
+  payload used to back a hosted payment page.
+- `briqpay_hpp_config`: (array) Modify the /v3/hosted-page config
+  (pageTitle, logoUrl, showCart).
+- `briqpay_hpp_billing_address` / `briqpay_hpp_shipping_address`: (array, order)
+  Modify the address blocks derived from the order for a hosted payment page.
+- `briqpay_hpp_locale`: (string) Modify the locale sent for a hosted payment
+  page session.
 
 ACTIONS:
 - `briqpay_before_create_session`: (array) Runs before the API call.
 - `briqpay_after_create_session`: (result, array) Runs after session creation.
-- `briqpay_webhook_received`: (data, session, order) Triggered when a 
-  validated webhook event is processed.
-- `briqpay_payment_complete`: (order, session) Runs when the payment is 
+- `briqpay_webhook_received`: (data, session, order) Triggered when a
+  validated webhook event is processed (session/order-status fall-through only).
+- `briqpay_webhook_session_verified`: (data, session, order) Triggered for
+  EVERY verified webhook, including capture_status/refund_status/order_status.
+- `briqpay_payment_complete`: (order, session) Runs when the payment is
   fully verified at the return handler.
+- `briqpay_hpp_before_create` / `briqpay_hpp_created`: (order, flow, ...)
+  Run before/after a hosted payment page is created.
 
 --------------------------------------------------------------------------------
 CODE EXAMPLE: MANIPULATING THE SESSION PAYLOAD

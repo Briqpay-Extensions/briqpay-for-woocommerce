@@ -83,4 +83,36 @@ class OrderStatusManagerTest extends TestCase
 
         $osm->janitor_cleanup_task();
     }
+
+    /**
+     * A hosted payment page link a merchant emailed to a customer may sit
+     * unopened for hours - the Briqpay session stays 'pending' (not one of the
+     * cancellable terminal states) the whole time. The janitor must leave that
+     * order alone rather than cancelling it out from under the customer.
+     */
+    public function testJanitorDoesNotCancelAnHostedPageOrderWithALiveSession()
+    {
+        $osm = new Order_Status_Manager();
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('get_id')->andReturn(999);
+        $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_hpp_1');
+        $order->shouldReceive('update_status')->never();
+
+        WP_Mock::userFunction('wc_get_orders', array(
+            'return' => array($order)
+        ));
+
+        WP_Mock::userFunction('get_option', array(
+            'args' => array('woocommerce_briqpay_settings'),
+            'return' => array('merchant_id' => 'mid', 'shared_secret' => 'secret', 'testmode' => 'yes')
+        ));
+
+        $api = Mockery::mock('overload:Briqpay\WooCommerce\API');
+        $api->shouldReceive('get_session')->with('sess_hpp_1')->andReturn(array('status' => 'pending'));
+
+        WP_Mock::userFunction('__', array('return_arg' => 0));
+
+        $osm->janitor_cleanup_task();
+    }
 }

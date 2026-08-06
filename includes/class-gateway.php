@@ -107,6 +107,52 @@ class Gateway extends \WC_Payment_Gateway
                 'default' => 'yes',
                 'desc_tip' => true,
             ),
+            'hpp_section' => array(
+                'title' => __('Hosted Payment Pages', 'briqpay-for-woocommerce'),
+                'type' => 'title',
+                'description' => __('Create a Briqpay hosted payment page for an order you have built in the WooCommerce admin, then send the link to your customer.', 'briqpay-for-woocommerce'),
+            ),
+            'hpp_enabled' => array(
+                'title' => __('Enable Hosted Payment Pages', 'briqpay-for-woocommerce'),
+                'label' => __('Enable Hosted Payment Pages', 'briqpay-for-woocommerce'),
+                'type' => 'checkbox',
+                'description' => __('Adds a "Briqpay Hosted Payment Page" box to the order edit screen.', 'briqpay-for-woocommerce'),
+                'default' => 'no',
+                'desc_tip' => true,
+            ),
+            'hpp_default_flow' => array(
+                'title' => __('Default flow', 'briqpay-for-woocommerce'),
+                'type' => 'select',
+                'class' => 'wc-enhanced-select',
+                'description' => __('Pre-selected on the order screen. You can always pick a different flow when creating the page.', 'briqpay-for-woocommerce'),
+                'default' => 'b2c',
+                'desc_tip' => true,
+                'options' => array(
+                    'b2c' => __('Consumer', 'briqpay-for-woocommerce'),
+                    'b2b_payment_module' => __('Business - Payment Methods Only', 'briqpay-for-woocommerce'),
+                    'b2b_checkout' => __('Business - Full Checkout', 'briqpay-for-woocommerce'),
+                ),
+            ),
+            'hpp_page_title' => array(
+                'title' => __('Hosted page title', 'briqpay-for-woocommerce'),
+                'type' => 'text',
+                'description' => __('Short text shown to the customer beneath your logo. Between 3 and 256 characters; leave empty to omit.', 'briqpay-for-woocommerce'),
+                'default' => '',
+                'desc_tip' => true,
+            ),
+            'hpp_logo_url' => array(
+                'title' => __('Hosted page logo URL', 'briqpay-for-woocommerce'),
+                'type' => 'text',
+                'description' => __('Absolute URL to a PNG, JPG, JPEG or SVG image (max 512 characters). Leave empty to omit.', 'briqpay-for-woocommerce'),
+                'default' => '',
+                'desc_tip' => true,
+            ),
+            'hpp_show_cart' => array(
+                'title' => __('Show cart on hosted page', 'briqpay-for-woocommerce'),
+                'label' => __('Display the order lines above the payment section', 'briqpay-for-woocommerce'),
+                'type' => 'checkbox',
+                'default' => 'yes',
+            ),
             'logging' => array(
                 'title' => __('Logging', 'briqpay-for-woocommerce'),
                 'label' => __('Log Briqpay events', 'briqpay-for-woocommerce'),
@@ -254,5 +300,25 @@ class Gateway extends \WC_Payment_Gateway
 
         // Logic handled in Briqpay_Order_Management
         return apply_filters('briqpay_process_refund', false, $order_id, $amount, $reason);
+    }
+
+    /**
+     * Validate the hosted page title setting field.
+     */
+    public function validate_hpp_page_title_field($key, $value)
+    {
+        return Hosted_Payment_Page::sanitize_page_title($value);
+    }
+
+    /**
+     * Validate the hosted page logo URL setting field.
+     */
+    public function validate_hpp_logo_url_field($key, $value)
+    {
+        $sanitized = Hosted_Payment_Page::sanitize_logo_url($value);
+        if ('' === $sanitized && '' !== trim((string) $value)) {
+            \WC_Admin_Settings::add_error(__('Briqpay: the hosted page logo URL must be an absolute URL ending in .png, .jpg, .jpeg or .svg, and at most 512 characters.', 'briqpay-for-woocommerce'));
+        }
+        return $sanitized;
     }
 }

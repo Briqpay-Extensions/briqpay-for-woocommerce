@@ -34,6 +34,26 @@ class Session_Manager
     }
 
     /**
+     * Top-level session config sent when creating a session (config.*, not
+     * to be confused with modules.config which configures individual
+     * modules like payment.decision). realTimeProcessing delivers webhooks
+     * and status updates immediately instead of in batches, for faster
+     * notifications - only valid at session creation.
+     *
+     * Shared between Session_Manager (storefront checkout) and
+     * Hosted_Payment_Page (hosted payment pages), which each independently
+     * build a create-session payload.
+     *
+     * @return array
+     */
+    public static function get_realtime_session_config()
+    {
+        return array(
+            'realTimeProcessing' => true,
+        );
+    }
+
+    /**
      * Get Briqpay Session ID from WC Session
      */
     public static function get_session_id()
@@ -342,6 +362,11 @@ class Session_Manager
                         )
                     )
                 );
+
+                // Top-level session config (distinct from modules.config above).
+                // Like the decision config, this is only valid at session
+                // creation - PATCH does not accept it.
+                $data['config'] = self::get_realtime_session_config();
             }
 
             Logger::log('get_session_data() completed.');
@@ -844,8 +869,12 @@ class Session_Manager
 
     /**
      * Get Webhooks
+     *
+     * Public: also used by Hosted_Payment_Page::build_session_payload() so
+     * hosted payment page sessions subscribe to exactly the same webhook
+     * events as the storefront checkout flow.
      */
-    private function get_webhooks()
+    public function get_webhooks()
     {
         $url = home_url('/wc-api/briqpay_webhook');
         return array(

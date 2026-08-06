@@ -171,4 +171,15 @@ class API
     {
         return $this->request('POST', '/v3/session/' . $session_id . '/order/cancel');
     }
+
+    /**
+     * Create Hosted Payment Page
+     *
+     * Requires a session to already exist; $data must contain 'sessionId'
+     * and may contain 'config' (pageTitle, logoUrl, showCart).
+     */
+    public function create_hosted_page($data)
+    {
+        return $this->request('POST', '/v3/hosted-page', $data);
+    }
 }

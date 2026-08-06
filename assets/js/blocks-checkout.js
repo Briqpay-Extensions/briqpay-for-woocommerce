@@ -5,6 +5,43 @@ const { decodeEntities } = window.wp.htmlEntities;
 const { __ } = window.wp.i18n;
 
 /**
+ * Read WooCommerce's own Order Attribution data (Sourcebuster-derived:
+ * source_type, utm_source, etc.) so it can be forwarded to our own order
+ * creation flow. Blocks checkout never reaches WooCommerce's native
+ * checkout submission (we intercept payment before that), so nothing else
+ * would ever pick this up and the order's admin "Origin" column would show
+ * "Unknown" otherwise.
+ *
+ * Prefers WC's own already-loaded helper (avoids duplicating its field map);
+ * falls back to reading what order-attribution.js already pushed into the
+ * Blocks checkout store.
+ *
+ * Exposed on window (rather than a plain function declaration) so it's
+ * independently reachable from tests regardless of how this script was
+ * evaluated.
+ */
+window.briqpayReadOrderAttribution = function readOrderAttribution() {
+    if (window.wc_order_attribution && typeof window.wc_order_attribution.getAttributionData === 'function') {
+        try {
+            return window.wc_order_attribution.getAttributionData() || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    if (window.wp && window.wp.data && typeof window.wp.data.select === 'function') {
+        try {
+            var ext = window.wp.data.select('wc/store/checkout').getExtensionData();
+            return (ext && ext['woocommerce/order-attribution']) || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    return {};
+}
+
+/**
  * Briqpay Content Component for WooCommerce Blocks Checkout
  */
 const BriqpayContent = (props) => {
@@ -149,7 +186,8 @@ const BriqpayContent = (props) => {
                     shipping_address: shippingAddress,
                     shipping_rates: selectedShippingMethods,
                     cart_totals: cartTotals || cartData || cart,
-                    company_required: companyRequired
+                    company_required: companyRequired,
+                    order_attribution: window.briqpayReadOrderAttribution()
                 });
             } else {
                 setTimeout(triggerSync, 200);

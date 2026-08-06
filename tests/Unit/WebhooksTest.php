@@ -331,6 +331,8 @@ class WebhooksTest extends TestCase
         // Also expect payment method title details to be updated in handle_order_status
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_os_123');
         $order->shouldReceive('set_payment_method_title')->with('TestPSP')->once();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_psp_name', 'TestPSP')->once();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_auto_capture_enabled', 'no')->once();
         $order->shouldReceive('update_meta_data')->with('_briqpay_client_token', 'token_abc')->once();
         $order->shouldReceive('update_meta_data')->with('_briqpay_psp_integration_name', 'integration_abc')->once();
         $order->shouldReceive('update_meta_data')->with('_briqpay_reservation_id', 'res_123')->once();
@@ -346,5 +348,64 @@ class WebhooksTest extends TestCase
         );
 
         $webhooks->process_webhook_callback($data);
+    }
+
+    /**
+     * When any transaction on the session has autoCaptureEnabled, the order
+     * meta the admin box reads to decide whether to show the "Manual Capture"
+     * button must be set to 'yes'.
+     */
+    public function testUpdatePaymentMethodTitleSetsAutoCaptureEnabledMetaWhenTransactionHasIt()
+    {
+        $webhooks = new Webhooks();
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('update_meta_data')->andReturn(null)->byDefault();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_auto_capture_enabled', 'yes')->once();
+        $order->shouldReceive('set_payment_method_title')->andReturn(null);
+        $order->shouldReceive('save')->andReturn(null);
+
+        WP_Mock::userFunction('is_wp_error', array('return' => false));
+
+        $session = array(
+            'paymentMethod' => array('name' => 'Invoice'),
+            'data' => array(
+                'transactions' => array(
+                    array('pspDisplayName' => 'Invoice', 'autoCaptureEnabled' => true),
+                ),
+            ),
+        );
+
+        $reflection = new \ReflectionClass(Webhooks::class);
+        $method = $reflection->getMethod('update_payment_method_title');
+        $method->setAccessible(true);
+        $method->invoke($webhooks, $order, $session);
+    }
+
+    public function testUpdatePaymentMethodTitleSetsAutoCaptureDisabledMetaWhenNoTransactionHasIt()
+    {
+        $webhooks = new Webhooks();
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('update_meta_data')->andReturn(null)->byDefault();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_auto_capture_enabled', 'no')->once();
+        $order->shouldReceive('set_payment_method_title')->andReturn(null);
+        $order->shouldReceive('save')->andReturn(null);
+
+        WP_Mock::userFunction('is_wp_error', array('return' => false));
+
+        $session = array(
+            'paymentMethod' => array('name' => 'Card'),
+            'data' => array(
+                'transactions' => array(
+                    array('pspDisplayName' => 'Card', 'autoCaptureEnabled' => false),
+                ),
+            ),
+        );
+
+        $reflection = new \ReflectionClass(Webhooks::class);
+        $method = $reflection->getMethod('update_payment_method_title');
+        $method->setAccessible(true);
+        $method->invoke($webhooks, $order, $session);
     }
 }

@@ -1003,6 +1003,34 @@ class Order_Management
     }
 
     /**
+     * Whether a Briqpay session indicates the payment method used has
+     * auto-capture enabled (data.transactions[].autoCaptureEnabled). When
+     * true, Briqpay captures the order automatically and merchants should
+     * not be offered a manual capture button.
+     *
+     * Shared between Webhooks and Checkout_Handler, which each independently
+     * parse session/transaction data at their own points of contact with the
+     * Briqpay API.
+     *
+     * @param array $session Briqpay session data (from get_session() or a webhook payload).
+     * @return bool
+     */
+    public static function session_has_auto_capture_enabled($session)
+    {
+        if (empty($session['data']['transactions'])) {
+            return false;
+        }
+
+        foreach ($session['data']['transactions'] as $transaction) {
+            if (!empty($transaction['autoCaptureEnabled'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Get remaining items to capture
      */
     private function get_remaining_items_to_capture($order)
@@ -1156,8 +1184,13 @@ class Order_Management
 
     /**
      * Map Order items to Briqpay cart format
+     *
+     * Public: also used by Hosted_Payment_Page::build_session_payload() so that
+     * hosted payment page sessions use the exact same reference derivation
+     * (_briqpay_item_reference / _briqpay_fee_reference / SKU / ID) that
+     * captures and refunds later rely on.
      */
-    private function get_order_cart($order)
+    public function get_order_cart($order)
     {
         $items = array();
         $is_us = 'US' === $order->get_billing_country();

@@ -320,4 +320,41 @@ class OrderManagementTest extends TestCase
         $product->shouldReceive('get_tax_class')->andReturn('');
         return $product;
     }
+
+    // -----------------------------------------------------------------
+    // session_has_auto_capture_enabled()
+    // -----------------------------------------------------------------
+
+    public function testSessionHasAutoCaptureEnabledTrueWhenAnyTransactionHasIt()
+    {
+        $session = array(
+            'data' => array(
+                'transactions' => array(
+                    array('pspDisplayName' => 'Card', 'autoCaptureEnabled' => false),
+                    array('pspDisplayName' => 'Invoice', 'autoCaptureEnabled' => true),
+                ),
+            ),
+        );
+
+        $this->assertTrue(Order_Management::session_has_auto_capture_enabled($session));
+    }
+
+    public function testSessionHasAutoCaptureEnabledFalseWhenNoTransactionHasIt()
+    {
+        $session = array(
+            'data' => array(
+                'transactions' => array(
+                    array('pspDisplayName' => 'Card', 'autoCaptureEnabled' => false),
+                ),
+            ),
+        );
+
+        $this->assertFalse(Order_Management::session_has_auto_capture_enabled($session));
+    }
+
+    public function testSessionHasAutoCaptureEnabledFalseWhenTransactionsMissing()
+    {
+        $this->assertFalse(Order_Management::session_has_auto_capture_enabled(array()));
+        $this->assertFalse(Order_Management::session_has_auto_capture_enabled(array('data' => array())));
+    }
 }

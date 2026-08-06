@@ -298,6 +298,11 @@ class Checkout_Handler
             $order->update_meta_data('_briqpay_reservation_id', $session['data']['transactions'][0]['reservationId']);
         }
 
+        $order->update_meta_data(
+            '_briqpay_auto_capture_enabled',
+            Order_Management::session_has_auto_capture_enabled($session) ? 'yes' : 'no'
+        );
+
         $order->save();
 
         // If already upgraded to pending, run cleanup and redirect
@@ -549,6 +554,13 @@ class Checkout_Handler
                     Logger::log('Setting chosen shipping methods from BLOCKS, count: ' . count($chosen_methods));
                     WC()->session->set('chosen_shipping_methods', $chosen_methods);
                 }
+
+                // Capture WooCommerce's native Order Attribution data (see
+                // capture_order_attribution_from_blocks() for why Blocks needs
+                // its own path - it never reaches the classic checkout form).
+                if (isset($blocks_data['order_attribution']) && is_array($blocks_data['order_attribution'])) {
+                    $this->capture_order_attribution_from_blocks($blocks_data['order_attribution']);
+                }
             }
         }
 
@@ -562,6 +574,15 @@ class Checkout_Handler
                 // Recursively sanitize checkout_data
                 $checkout_data = $this->sanitize_recursive($checkout_data);
                 Logger::log('Updating WC Customer from sanitized checkout data.');
+
+                // WooCommerce's own Order Attribution feature stamps hidden
+                // wc_order_attribution_* inputs into the checkout form and reads
+                // them back in WC_Checkout::process_checkout() - which our decision
+                // flow never calls. Since this full form serialization is the only
+                // place those fields ever reach us, capture them here (they don't
+                // change meaningfully between requests) and apply them to the order
+                // once it actually exists, in apply_order_attribution_to_order().
+                $this->capture_order_attribution($checkout_data);
             } else {
                 Logger::log('checkout_data found but is empty.');
             }
@@ -859,6 +880,8 @@ class Checkout_Handler
                 $order->set_shipping_state($s['region'] ?? '');
                 $order->set_shipping_country($s['country'] ?? '');
             }
+
+            $this->apply_order_attribution_to_order($order);
 
             $order->save();
 
@@ -1304,6 +1327,11 @@ class Checkout_Handler
             $order->update_meta_data('_briqpay_reservation_id', $session['data']['transactions'][0]['reservationId']);
         }
 
+        $order->update_meta_data(
+            '_briqpay_auto_capture_enabled',
+            Order_Management::session_has_auto_capture_enabled($session) ? 'yes' : 'no'
+        );
+
         // 4. Map billing/shipping from session
         $b = $session['data']['billing'] ?? array();
         if (!empty($b)) {
@@ -1686,6 +1714,143 @@ class Checkout_Handler
             $data = sanitize_text_field($data);
         }
         return $data;
+    }
+
+    /**
+     * WooCommerce's own Order Attribution field names, without the
+     * wc_order_attribution_ POST-field prefix or the leading underscore its
+     * order meta keys use (e.g. 'source_type' -> POST field
+     * 'wc_order_attribution_source_type' -> order meta
+     * '_wc_order_attribution_source_type').
+     *
+     * @var string[]
+     */
+    private static $order_attribution_fields = array(
+        'source_type',
+        'referrer',
+        'utm_campaign',
+        'utm_source',
+        'utm_medium',
+        'utm_content',
+        'utm_id',
+        'utm_term',
+        'utm_source_platform',
+        'utm_creative_format',
+        'utm_marketing_tactic',
+        'session_entry',
+        'session_start_time',
+        'session_pages',
+        'session_count',
+        'user_agent',
+    );
+
+    /**
+     * Capture WooCommerce's native Order Attribution fields from parsed
+     * classic-checkout form data (prefixed wc_order_attribution_* keys, as
+     * they appear in the serialized 'checkout_data') and stash them in the
+     * WC session, to be applied to the order once it actually exists
+     * (create_order_at_decision() runs on a separate AJAX request that
+     * never resends the checkout form).
+     *
+     * Without this, orders created through this plugin's decision flow never
+     * go through WC_Checkout::process_checkout() - the only place WooCommerce
+     * itself captures this data - and show as "Unknown" in the admin Origin
+     * column instead of Organic/Direct/Referral/UTM/etc.
+     *
+     * @param array $source Parsed, sanitized checkout form data (e.g. from
+     *                       parse_str() on the serialized 'checkout_data').
+     */
+    private function capture_order_attribution(array $source)
+    {
+        $fields = array();
+
+        foreach (self::$order_attribution_fields as $field) {
+            $key = 'wc_order_attribution_' . $field;
+            if (isset($source[$key])) {
+                $fields[$field] = $source[$key];
+            }
+        }
+
+        $this->store_order_attribution($fields);
+    }
+
+    /**
+     * Same as capture_order_attribution(), for Blocks checkout. WooCommerce
+     * Blocks stores this data in the Checkout block's own extension data
+     * rather than hidden form fields, so our own JS (readOrderAttribution()
+     * in blocks-checkout.js) reads it client-side - via WC's own
+     * wc_order_attribution.getAttributionData() helper, or by reading what
+     * order-attribution.js already pushed into the 'wc/store/checkout' data
+     * store - and sends it here already unprefixed (e.g. 'source_type', not
+     * 'wc_order_attribution_source_type').
+     *
+     * @param array $fields Unprefixed field => value pairs.
+     */
+    private function capture_order_attribution_from_blocks(array $fields)
+    {
+        $this->store_order_attribution($fields);
+    }
+
+    /**
+     * Shared by capture_order_attribution() and
+     * capture_order_attribution_from_blocks(): drop empty/placeholder values
+     * and stash whatever's left in the WC session.
+     *
+     * @param array $fields Unprefixed field => value pairs.
+     */
+    private function store_order_attribution(array $fields)
+    {
+        $attribution = array();
+
+        foreach (self::$order_attribution_fields as $field) {
+            // WooCommerce's own hidden inputs (and the Blocks helper) use the
+            // literal string '(none)' as a placeholder for "not detected" -
+            // treat it the same as absent.
+            if (isset($fields[$field]) && '' !== $fields[$field] && '(none)' !== $fields[$field]) {
+                $attribution[$field] = $fields[$field];
+            }
+        }
+
+        if (empty($attribution)) {
+            return;
+        }
+
+        if (null !== WC() && null !== WC()->session) {
+            WC()->session->set('briqpay_order_attribution', $attribution);
+        }
+    }
+
+    /**
+     * Apply previously-captured Order Attribution fields to a newly created
+     * order, using WooCommerce's own order meta key naming
+     * (_wc_order_attribution_*) so its native admin "Origin" column displays
+     * correctly, exactly as if WC_Checkout::process_checkout() had captured
+     * it directly.
+     *
+     * @param \WC_Order $order
+     */
+    private function apply_order_attribution_to_order($order)
+    {
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        $attribution = WC()->session->get('briqpay_order_attribution');
+        if (empty($attribution) || !is_array($attribution)) {
+            return;
+        }
+
+        // Don't overwrite attribution the order may already have (e.g. a
+        // reused draft order that was already attributed some other way).
+        if ($order->get_meta('_wc_order_attribution_source_type')) {
+            return;
+        }
+
+        foreach (self::$order_attribution_fields as $field) {
+            if (isset($attribution[$field])) {
+                $order->update_meta_data('_wc_order_attribution_' . $field, sanitize_text_field($attribution[$field]));
+            }
+        }
     }
     /**
      * Render Briqpay Iframe Shortcode

@@ -18,6 +18,32 @@ class Admin_Order_Meta_Box
         add_action('add_meta_boxes', array($this, 'add_briqpay_meta_box'));
         add_action('wp_ajax_briqpay_capture_items', array($this, 'ajax_capture_items'));
         add_action('admin_enqueue_scripts', array($this, 'admin_scripts'));
+        add_filter('woocommerce_hidden_order_itemmeta', array($this, 'hide_internal_item_meta'));
+    }
+
+    /**
+     * Get Briqpay Settings
+     */
+    protected function get_settings()
+    {
+        $settings = get_option('woocommerce_briqpay_settings');
+        return is_array($settings) ? $settings : array();
+    }
+
+    /**
+     * Hide internal Briqpay item/fee reference meta from the order items
+     * table (admin order screen, emails, order-received page). These keys
+     * are used internally to pin captures/refunds to a stable reference and
+     * are not meant to be customer- or merchant-facing data.
+     *
+     * @param array $hidden Existing hidden order item meta keys.
+     * @return array
+     */
+    public function hide_internal_item_meta($hidden)
+    {
+        $hidden[] = '_briqpay_item_reference';
+        $hidden[] = '_briqpay_fee_reference';
+        return $hidden;
     }
 
     /**
@@ -170,7 +196,7 @@ class Admin_Order_Meta_Box
      */
     private function render_capture_form($order)
     {
-        $settings = get_option('woocommerce_briqpay_settings');
+        $settings = $this->get_settings();
         if ('yes' !== ($settings['order_management_enabled'] ?? 'no')) {
             return;
         }
@@ -178,6 +204,14 @@ class Admin_Order_Meta_Box
         $remaining = $this->get_remaining_items($order);
         if (empty($remaining)) {
             echo '<p><span class="dashicons dashicons-yes-alt"></span> ' . esc_html__('Fully captured.', 'briqpay-for-woocommerce') . '</p>';
+            return;
+        }
+
+        // The payment method used for this order auto-captures on Briqpay's
+        // side - offering a manual capture button here would be misleading
+        // (and could double-capture once Briqpay's own capture lands).
+        if ('yes' === $order->get_meta('_briqpay_auto_capture_enabled')) {
+            echo '<p><span class="dashicons dashicons-update"></span> ' . esc_html__('Auto capture in progress.', 'briqpay-for-woocommerce') . '</p>';
             return;
         }
 
@@ -422,7 +456,7 @@ class Admin_Order_Meta_Box
             return '';
         }
 
-        $settings = get_option('woocommerce_briqpay_settings');
+        $settings = $this->get_settings();
         $testmode = ('yes' === ($settings['testmode'] ?? 'no')) ? '1' : '0';
 
         return sprintf(

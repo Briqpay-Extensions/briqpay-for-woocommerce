@@ -77,4 +77,49 @@ describe('Briqpay Blocks Checkout JS', () => {
         // but we can verify the logic if we extract the component or test its side effects.
         // For now, verifying the registration is already a good step.
     });
+
+    describe('window.briqpayReadOrderAttribution', () => {
+        test('prefers wc_order_attribution.getAttributionData() when present', () => {
+            window.wc_order_attribution = {
+                getAttributionData: jest.fn(() => ({ source_type: 'organic', utm_source: 'google' }))
+            };
+            window.wp.data = { select: jest.fn() };
+
+            const result = window.briqpayReadOrderAttribution();
+
+            expect(result).toEqual({ source_type: 'organic', utm_source: 'google' });
+            expect(window.wp.data.select).not.toHaveBeenCalled();
+        });
+
+        test('falls back to the wc/store/checkout extension data when the WC helper is absent', () => {
+            delete window.wc_order_attribution;
+            const getExtensionData = jest.fn(() => ({
+                'woocommerce/order-attribution': { source_type: 'referral', utm_source: 'partner-network' },
+                'some-other-extension': { foo: 'bar' }
+            }));
+            window.wp.data = { select: jest.fn(() => ({ getExtensionData })) };
+
+            const result = window.briqpayReadOrderAttribution();
+
+            expect(window.wp.data.select).toHaveBeenCalledWith('wc/store/checkout');
+            expect(result).toEqual({ source_type: 'referral', utm_source: 'partner-network' });
+        });
+
+        test('returns an empty object when neither source is available', () => {
+            delete window.wc_order_attribution;
+            delete window.wp.data;
+
+            expect(window.briqpayReadOrderAttribution()).toEqual({});
+        });
+
+        test('returns an empty object instead of throwing when the WC helper itself throws', () => {
+            window.wc_order_attribution = {
+                getAttributionData: jest.fn(() => {
+                    throw new Error('boom');
+                })
+            };
+
+            expect(window.briqpayReadOrderAttribution()).toEqual({});
+        });
+    });
 });

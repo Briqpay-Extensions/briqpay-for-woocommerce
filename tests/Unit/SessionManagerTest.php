@@ -272,4 +272,18 @@ class SessionManagerTest extends TestCase
         $product->shouldReceive('get_tax_class')->andReturn('');
         return $product;
     }
+
+    /**
+     * config.realTimeProcessing (top-level, distinct from modules.config)
+     * delivers webhooks/status updates immediately instead of in batches.
+     * Shared by Session_Manager and Hosted_Payment_Page, both of which only
+     * ever call this at session creation time.
+     */
+    public function testGetRealtimeSessionConfigEnablesRealTimeProcessing()
+    {
+        $this->assertEquals(
+            array('realTimeProcessing' => true),
+            Session_Manager::get_realtime_session_config()
+        );
+    }
 }

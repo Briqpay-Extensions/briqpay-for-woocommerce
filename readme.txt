@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.1.1
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -34,6 +34,7 @@ Briqpay supports payment setups for all your customer types: B2C, D2C, and B2B.
 * **Built-in analytics and insights:** Analyze conversion, payment method performance, and customer payment behavior across markets in one interface.
 * **Consistent payment flow:** Capture, refund, and order handling works the same for every payment method.
 * **Blocks Support:** Full support for the newer WooCommerce Checkout Block and classic shortcodes.
+* **Hosted Payment Pages:** Create a Briqpay-hosted payment link straight from a WooCommerce order in the admin — ideal for phone, email and quote orders.
 
 == External services ==
 
@@ -69,6 +70,19 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.1 =
+* Added: Hosted Payment Pages. Build an order in the WooCommerce admin and create a Briqpay-hosted payment link for it directly from the order screen.
+* Added: Hosted Payment Pages settings section (WooCommerce > Settings > Payments > Briqpay) to enable the feature and pre-select a default flow (Consumer, Business - Payment Methods Only, or Business - Full Checkout), plus hosted page title, logo URL and show-cart preferences. The section folds until enabled to keep the settings screen tidy.
+* Added: Customer billing/shipping address and company details already on the order are prefilled into the hosted page session.
+* Added: For the Business - Full Checkout flow, the company and addresses confirmed on the hosted page are written back onto the WooCommerce order once payment completes.
+* Added: Regenerating a hosted payment page creates a new Briqpay session and invalidates the previous link; blocked once an order is already paid (the dead link is no longer shown for paid/refunded/cancelled orders).
+* Added: The Hosted Payment Page box only appears for orders created manually in the WooCommerce admin, not for regular customer/checkout orders.
+* Fix: The "Briqpay Payment Details" meta box's PSP Name now populates from the webhook, not only from the storefront return redirect.
+* Fix: Internal Briqpay item/fee reference metadata no longer shows up in the order line items table.
+* Added: When the payment method used auto-captures on Briqpay's side, the order's "Manual Capture" button is replaced with an "Auto capture in progress" notice.
+* Added: All new Briqpay sessions now enable real-time processing (config.realTimeProcessing), so webhooks and status updates are delivered immediately instead of in batches.
+* Fix: Orders placed through Briqpay now populate WooCommerce's native Order Attribution data (the "Origin" column in WooCommerce > Orders), instead of always showing "Unknown". Covers both classic (shortcode) and Blocks checkout.
 
 = 1.1.0 =
 * Fix: Scoped payment gateway hiding rules strictly to `body.briqpay-selected` to prevent hiding other payment options.

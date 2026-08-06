@@ -79,6 +79,12 @@ class Blocks_Integration extends AbstractPaymentMethodType
                 'wp-element',
                 'wp-html-entities',
                 'wp-i18n',
+                // WooCommerce's own order-attribution.js doesn't declare wp-data as
+                // a hard dependency either (it can't, conditionally) - it just
+                // guards every access. We declare it explicitly since we build our
+                // own dependency array anyway, so window.wp.data.select() is
+                // reliably present when readOrderAttribution() runs.
+                'wp-data',
                 'briqpay-checkout',
             ),
             BRIQPAY_WC_VERSION,

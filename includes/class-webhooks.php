@@ -122,6 +122,18 @@ class Webhooks
             return;
         }
 
+        /**
+         * Fires for every verified Briqpay webhook, before event routing.
+         * Unlike briqpay_webhook_received (which only fires on the fall-through
+         * session/order-status branch below), this fires for ALL subscribed
+         * event types (order_status, capture_status, refund_status included).
+         *
+         * @param array     $data    Sanitized webhook payload.
+         * @param array     $session Authoritative session fetched from the Briqpay API.
+         * @param \WC_Order $order   The matched WooCommerce order.
+         */
+        do_action('briqpay_webhook_session_verified', $data, $session, $order);
+
         // Route based on action or event
         if ('capture' === $action || 'capture_status' === $action) {
             $this->handle_capture_status($order, $data['status'] ?? '', $data, $session);
@@ -319,6 +331,13 @@ class Webhooks
             $order->set_payment_method_title($method_name);
 
             // Extended metadata for Admin Box
+            // '_briqpay_psp_name' is what the "Briqpay Payment Details" meta box
+            // reads (Admin_Order_Meta_Box::render_meta_box()). Checkout_Handler
+            // also writes it, but only on the storefront iframe return - orders
+            // that only ever go through the webhook path (e.g. hosted payment
+            // pages) would otherwise show "PSP Name: N/A" forever.
+            $order->update_meta_data('_briqpay_psp_name', $method_name);
+
             if (!empty($session['clientToken'])) {
                 $order->update_meta_data('_briqpay_client_token', $session['clientToken']);
             }
@@ -334,6 +353,11 @@ class Webhooks
             } elseif (!empty($session['data']['transactions'][0]['reservationId'])) {
                 $order->update_meta_data('_briqpay_reservation_id', $session['data']['transactions'][0]['reservationId']);
             }
+
+            $order->update_meta_data(
+                '_briqpay_auto_capture_enabled',
+                Order_Management::session_has_auto_capture_enabled($session) ? 'yes' : 'no'
+            );
 
             $order->save();
         }
