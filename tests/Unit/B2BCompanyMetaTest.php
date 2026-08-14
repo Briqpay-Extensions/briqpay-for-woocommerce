@@ -270,6 +270,7 @@ class B2BCompanyMetaTest extends TestCase
         $order = Mockery::mock('WC_Order');
         $order->shouldReceive('get_meta')->with('_briqpay_company_name')->andReturn('Name Only AB');
         $order->shouldReceive('get_meta')->with('_briqpay_company_cin')->andReturn('');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('');
 
         ob_start();
         $this->b2b->display_company_in_admin($order);
@@ -287,11 +288,33 @@ class B2BCompanyMetaTest extends TestCase
         $order = Mockery::mock('WC_Order');
         $order->shouldReceive('get_meta')->with('_briqpay_company_name')->andReturn('');
         $order->shouldReceive('get_meta')->with('_briqpay_company_cin')->andReturn('');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('');
 
         ob_start();
         $this->b2b->display_company_in_admin($order);
         $html = ob_get_clean();
 
         $this->assertSame('', $html, 'No output expected when company meta is empty');
+    }
+
+    /**
+     * When the legacy B2B meta mapping toggle is enabled, Legacy_B2b_Meta
+     * renders its own "Billing Organization Number" field for this order, so
+     * this box must be a no-op to avoid showing the CIN twice.
+     */
+    public function testDisplayCompanyInAdminIsNoOpWhenLegacyMappingEnabled(): void
+    {
+        $order = Mockery::mock('WC_Order');
+        $order->shouldNotReceive('get_meta');
+
+        // get_option() is hard-defined once by tests/bootstrap.php and can't
+        // be overridden per-test (see LegacyB2bMetaTest), so the "enabled"
+        // state is passed via the test seam instead of toggling the real
+        // setting.
+        ob_start();
+        $this->b2b->display_company_in_admin($order, true);
+        $html = ob_get_clean();
+
+        $this->assertSame('', $html, 'No output expected when legacy mapping owns the display');
     }
 }

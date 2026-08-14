@@ -303,6 +303,8 @@ class Checkout_Handler
             Order_Management::session_has_auto_capture_enabled($session) ? 'yes' : 'no'
         );
 
+        Legacy_B2b_Meta::apply($order, $session);
+
         $order->save();
 
         // If already upgraded to pending, run cleanup and redirect
@@ -1380,6 +1382,8 @@ class Checkout_Handler
         foreach ($extra_meta as $key => $value) {
             $order->update_meta_data($key, $value);
         }
+
+        Legacy_B2b_Meta::apply($order, $session);
 
         $order->save();
 

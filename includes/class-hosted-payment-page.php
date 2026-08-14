@@ -505,6 +505,8 @@ class Hosted_Payment_Page
         $shipping = isset($session_data['shipping']) ? $session_data['shipping'] : array();
         $this->apply_address_to_order($order, $shipping, 'shipping');
 
+        Legacy_B2b_Meta::apply($order, $session);
+
         $order->save();
     }
 
@@ -902,7 +904,7 @@ class Hosted_Payment_Page
 
         $company = array('name' => $name);
 
-        $cin = $order->get_meta('_briqpay_company_cin');
+        $cin = Legacy_B2b_Meta::get_company_cin($order);
         if (!empty($cin)) {
             $company['cin'] = $cin;
         }

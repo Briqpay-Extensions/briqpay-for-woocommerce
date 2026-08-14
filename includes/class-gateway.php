@@ -167,6 +167,19 @@ class Gateway extends \WC_Payment_Gateway
                 'description' => __('Include detailed trace messages like availability checks and cart processing.', 'briqpay-for-woocommerce'),
                 'default' => 'no',
             ),
+            'legacy_section' => array(
+                'title' => __('Migration / legacy compatibility', 'briqpay-for-woocommerce'),
+                'type' => 'title',
+                'description' => __('Options for stores migrating from the previous Briqpay for WooCommerce plugin.', 'briqpay-for-woocommerce'),
+            ),
+            'legacy_b2b_meta_mapping' => array(
+                'title' => __('Legacy B2B order meta mapping', 'briqpay-for-woocommerce'),
+                'label' => __('Also store B2B order data using the previous plugin\'s meta keys', 'briqpay-for-woocommerce'),
+                'type' => 'checkbox',
+                'description' => __('For stores migrating from the previous Briqpay plugin. B2B orders additionally store the organisation number in <code>_billing_org_nr</code> and the shipping email in <code>_shipping_email</code>, so existing ERP exports and integrations keep working. Current meta keys are always written as well.', 'briqpay-for-woocommerce'),
+                'default' => 'no',
+                'desc_tip' => false,
+            ),
         );
     }
 

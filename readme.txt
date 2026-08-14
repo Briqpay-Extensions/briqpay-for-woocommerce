@@ -3,9 +3,9 @@ Contributors: briqpay
 Donate link: https://briqpay.com
 Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.1
+Stable tag: 1.1.2
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,32 @@ Briqpay supports payment setups for all your customer types: B2C, D2C, and B2B.
 * **Consistent payment flow:** Capture, refund, and order handling works the same for every payment method.
 * **Blocks Support:** Full support for the newer WooCommerce Checkout Block and classic shortcodes.
 * **Hosted Payment Pages:** Create a Briqpay-hosted payment link straight from a WooCommerce order in the admin — ideal for phone, email and quote orders.
+* **Migration-friendly B2B order data:** Stores migrating from the previous Briqpay for WooCommerce plugin can keep using its B2B order meta keys (organisation number, shipping email, and related fields), so existing ERP exports and integrations keep working unchanged.
+
+== Migrating from the previous Briqpay plugin ==
+
+If you're moving from the previous "Briqpay for WooCommerce" plugin (the one hosted at
+github.com/krokedil/briqpay-for-woocommerce), B2B orders can keep using that plugin's order meta
+keys so existing ERP exports and integrations that read them keep working.
+
+Enable **"Legacy B2B order meta mapping"** under WooCommerce > Settings > Payments > Briqpay >
+Migration / legacy compatibility. With it enabled, B2B orders additionally store:
+
+* `_billing_org_nr` — the company's organisation/CIN number.
+* `_shipping_email` — the shipping contact email.
+* `_briqpay_payment_method` — the resolved payment method name.
+* `_briqpay_autocapture` — a truthy/empty flag mirroring autocapture status.
+* `_briqpay_rules_result` — kept for structural parity; the underlying feature was deprecated in
+  Briqpay's v3 API, so this is always an empty JSON array.
+
+This is in addition to, not instead of, the meta keys this plugin already writes (for example
+`_briqpay_company_cin` and `_briqpay_company_name`) — other features in this plugin depend on
+those. The setting is off by default and only affects B2B orders; consumer (B2C) orders are never
+touched by it.
+
+The order edit screen's company CIN display, and hosted payment pages built from B2B orders, will
+also read from the legacy `_billing_org_nr` key if the newer key is absent — so orders you've
+already imported from the old plugin display correctly whether or not the setting is enabled.
 
 == External services ==
 
@@ -70,6 +96,11 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.2 =
+* Added: "Legacy B2B order meta mapping" setting (WooCommerce > Settings > Payments > Briqpay > Migration / legacy compatibility) for stores migrating from the previous Briqpay for WooCommerce plugin. When enabled, B2B orders additionally store the organisation number in `_billing_org_nr`, the shipping email in `_shipping_email`, and mirror the payment method/autocapture meta the previous plugin used, alongside the meta this plugin already writes. Disabled by default; existing installs are unaffected.
+* Added: The order edit screen shows the legacy "Billing Organization Number" field and shipping email when the setting above is enabled, matching the previous plugin's admin screen.
+* Fix: The company CIN shown on the order edit screen and used for hosted payment pages now falls back to `_billing_org_nr` when the newer `_briqpay_company_cin` meta is absent, so orders imported from the previous plugin display correctly regardless of the setting.
 
 = 1.1.1 =
 * Added: Hosted Payment Pages. Build an order in the WooCommerce admin and create a Briqpay-hosted payment link for it directly from the order screen.

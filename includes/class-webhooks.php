@@ -359,6 +359,8 @@ class Webhooks
                 Order_Management::session_has_auto_capture_enabled($session) ? 'yes' : 'no'
             );
 
+            Legacy_B2b_Meta::apply($order, $session);
+
             $order->save();
         }
     }

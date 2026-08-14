@@ -625,12 +625,29 @@ class B2b_Checkout
      * Hooked to `woocommerce_admin_order_data_after_billing_address`.
      * Only shown when company name or CIN is present (i.e. B2B orders).
      *
-     * @param \WC_Order $order The WooCommerce order.
+     * @param \WC_Order $order   The WooCommerce order.
+     * @param bool|null $enabled Internal test seam - defaults to
+     *                           Legacy_B2b_Meta::is_enabled(). See the note
+     *                           on Legacy_B2b_Meta::apply() for why. WP never
+     *                           supplies this (the hook is registered with 1
+     *                           arg), so production behaviour is unaffected.
      */
-    public function display_company_in_admin($order)
+    public function display_company_in_admin($order, $enabled = null)
     {
+        if (null === $enabled) {
+            $enabled = Legacy_B2b_Meta::is_enabled();
+        }
+
+        // When legacy meta mapping is on, Legacy_B2b_Meta renders its own
+        // "Billing Organization Number" field for this order instead, to
+        // match the previous plugin's admin screen. Avoid showing the CIN
+        // twice.
+        if ($enabled) {
+            return;
+        }
+
         $company_name = $order->get_meta('_briqpay_company_name');
-        $company_cin = $order->get_meta('_briqpay_company_cin');
+        $company_cin = Legacy_B2b_Meta::get_company_cin($order);
 
         if (empty($company_name) && empty($company_cin)) {
             return;

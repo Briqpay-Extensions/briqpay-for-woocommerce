@@ -187,6 +187,78 @@ ACTIONS:
   Run before/after a hosted payment page is created.
 
 --------------------------------------------------------------------------------
+11. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
+--------------------------------------------------------------------------------
+For stores migrating from the previous "Briqpay for WooCommerce" plugin
+(github.com/krokedil/briqpay-for-woocommerce, v1 API), B2B orders can
+additionally be stored using that plugin's order meta keys, so existing
+ERP exports/integrations built against those keys keep working unchanged.
+
+- Setting: WooCommerce > Settings > Payments > Briqpay > Migration / legacy
+  compatibility > "Legacy B2B order meta mapping". Off by default.
+- Implemented in `includes/class-legacy-b2b-meta.php`
+  (`Briqpay\WooCommerce\Legacy_B2b_Meta`), a static utility with no init()
+  dependency for its core logic - only its admin-display hooks are
+  registered via `Legacy_B2b_Meta::init()`, called from
+  `on_plugins_loaded()` alongside the other components.
+- This is additive, not a replacement: this plugin's own current meta keys
+  (`_briqpay_company_cin`, `_briqpay_company_name`, `_briqpay_psp_name`,
+  `_briqpay_auto_capture_enabled`, ...) are always written regardless of the
+  setting, because Hosted_Payment_Page and B2b_Checkout's admin box read them.
+  When the setting is on, the legacy keys below are written on top.
+- B2B detection (`Legacy_B2b_Meta::is_b2b_session()`) is derived purely from
+  the Briqpay session payload (top-level or nested `customerType ===
+  'business'`, falling back to a non-empty `data.company.cin`/`name`) - it
+  cannot use B2b_Checkout::is_b2b_active()'s WC session/cookie logic, because
+  the webhook and Hosted Payment Page call sites run with neither available.
+
+Meta key mapping (legacy key -> source):
+  _billing_org_nr                       <- data.company.cin
+  _shipping_email                       <- data.shipping.email, falls back to
+                                            data.billing.email
+  (shipping phone, via set_shipping_phone()) <- data.shipping.phoneNumber,
+                                            falls back to data.billing.phoneNumber
+                                            (guarded with is_callable(), method
+                                            is WC 5.6+; skipped on older WC)
+  _briqpay_payment_method               <- order's `_briqpay_psp_name` meta,
+                                            falls back to
+                                            get_payment_method_title()
+  _briqpay_autocapture                  <- 1 or '' (legacy stored a raw
+                                            truthy/empty value), mirroring
+                                            Order_Management::
+                                            session_has_auto_capture_enabled()
+  _briqpay_rules_result                 <- always '[]'; the underlying
+                                            feature was deprecated in the v3
+                                            API, kept only for shape parity
+  _briqpay_psp_update_order_supported   <- only written when
+                                            data.transactions[0].
+                                            pspSupportedOrderOperations.
+                                            updateOrderSupported === true
+
+Call sites writing legacy meta (`Legacy_B2b_Meta::apply($order, $session)`,
+called right before each `$order->save()`):
+  - Checkout_Handler::create_order_at_decision() (main storefront path)
+  - Checkout_Handler's iframe-return handler
+  - Webhooks (no WC session available - relies on payload-only B2B detection)
+  - Hosted_Payment_Page::maybe_sync_from_session() (Business - Full Checkout)
+
+Read-side fallback (ungated, works regardless of the setting):
+  - `Legacy_B2b_Meta::get_company_cin($order)` reads `_briqpay_company_cin`,
+    falling back to `_billing_org_nr`. Used by Hosted_Payment_Page::
+    get_company() and B2b_Checkout::display_company_in_admin(), so an order
+    imported from the old plugin (which only ever set `_billing_org_nr`)
+    still resolves correctly.
+  - When the setting is on, B2b_Checkout::display_company_in_admin() is a
+    no-op - Legacy_B2b_Meta renders its own "Billing Organization Number"
+    field on the order screen instead, matching the previous plugin's UI,
+    to avoid showing the CIN twice.
+
+Explicitly out of scope: `_capture_id_` (the old plugin's capture-completed
+marker; this plugin uses `_briqpay_captures`/`_briqpay_capture_history`
+instead) is not mirrored, since only the stored B2B fields feed the
+customer's ERP, not the capture bookkeeping keys.
+
+--------------------------------------------------------------------------------
 CODE EXAMPLE: MANIPULATING THE SESSION PAYLOAD
 --------------------------------------------------------------------------------
 Add this to your theme's functions.php or a custom plugin:
