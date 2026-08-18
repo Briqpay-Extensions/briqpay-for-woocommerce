@@ -75,6 +75,19 @@ and to prevent timeouts during complex order operations.
 - Force SSL: Ensure your checkout page is served over HTTPS; otherwise, 
   the Briqpay iFrame may be blocked by modern browsers.
 - HPOS: This plugin is fully compatible with High-Performance Order Storage.
+- Terms & Conditions: If a WooCommerce "Terms and conditions" page is configured,
+  Checkout_Handler::validate_data_integrity() rejects the purchase unless the
+  buyer ticked the native checkbox. The checkbox state is captured in
+  ajax_get_session() (the only request that carries the submitted checkout form)
+  and stashed in the 'briqpay_terms_accepted' WC session key, because
+  ajax_make_decision() only ever posts a sessionId. A never-set flag (e.g. Blocks
+  checkout, which submits no classic serialized form) does NOT block.
+  Opt out via WooCommerce > Settings > Payments > Briqpay > "Validate Terms &
+  Conditions" (setting key 'terms_validation_enabled', read through
+  Checkout_Handler::terms_validation_enabled(), which defaults to enabled when
+  the key is absent). Turn it off when consent is collected elsewhere - Briqpay's
+  own terms module, or a third-party consent plugin - so the buyer is not asked
+  twice.
 
 --------------------------------------------------------------------------------
 7. THEME & DESIGN INTEGRATION

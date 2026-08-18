@@ -1488,6 +1488,29 @@ class Checkout_Handler
     }
 
     /**
+     * Is the WooCommerce Terms & Conditions validation enabled?
+     *
+     * Merchants who collect consent through Briqpay's own terms module or a
+     * third-party consent plugin can switch this off so the customer is not
+     * asked to accept twice.
+     *
+     * Defaults to enabled: the setting is absent on installs that upgraded from
+     * a version predating it, and silently dropping a purchase guard on upgrade
+     * would be the wrong default.
+     *
+     * @return bool
+     */
+    public static function terms_validation_enabled()
+    {
+        $settings = get_option('woocommerce_briqpay_settings', array());
+        if (!is_array($settings) || !isset($settings['terms_validation_enabled'])) {
+            return true;
+        }
+
+        return 'yes' === $settings['terms_validation_enabled'];
+    }
+
+    /**
      * Validate Data Integrity
      */
     private function validate_data_integrity($session)
@@ -1590,11 +1613,18 @@ class Checkout_Handler
         // checkout, which doesn't submit a classic serialized form), we don't block -
         // there is no reliable signal to check here, and rejecting unconditionally is
         // exactly the bug this replaces.
-        if (wc_terms_and_conditions_checkbox_enabled()) {
+        //
+        // Merchants who collect consent elsewhere (Briqpay's own terms module, a
+        // third-party consent plugin) can opt out of this check entirely via
+        // WooCommerce > Settings > Payments > Briqpay > "Validate Terms &
+        // Conditions".
+        if (self::terms_validation_enabled() && wc_terms_and_conditions_checkbox_enabled()) {
             $terms_accepted = (null !== WC() && null !== WC()->session) ? WC()->session->get('briqpay_terms_accepted') : null;
             if (false === $terms_accepted) {
                 $errors[] = __('You must accept our Terms & Conditions to complete your purchase.', 'briqpay-for-woocommerce');
             }
+        } elseif (!self::terms_validation_enabled()) {
+            Logger::log('Terms & Conditions validation skipped: disabled in gateway settings.');
         }
 
         // Validate Address Fields

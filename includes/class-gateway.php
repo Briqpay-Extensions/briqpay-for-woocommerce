@@ -107,6 +107,14 @@ class Gateway extends \WC_Payment_Gateway
                 'default' => 'yes',
                 'desc_tip' => true,
             ),
+            'terms_validation_enabled' => array(
+                'title' => __('Validate Terms & Conditions', 'briqpay-for-woocommerce'),
+                'label' => __('Require the WooCommerce Terms & Conditions checkbox', 'briqpay-for-woocommerce'),
+                'type' => 'checkbox',
+                'description' => __('When enabled, a purchase is rejected at the payment decision unless the customer ticked WooCommerce\'s native Terms & Conditions checkbox. Disable this if you collect consent elsewhere - for example with Briqpay\'s own terms module, or a third-party consent plugin - to avoid asking the customer twice. Has no effect when WooCommerce has no Terms and conditions page configured.', 'briqpay-for-woocommerce'),
+                'default' => 'yes',
+                'desc_tip' => false,
+            ),
             'hpp_section' => array(
                 'title' => __('Hosted Payment Pages', 'briqpay-for-woocommerce'),
                 'type' => 'title',

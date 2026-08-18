@@ -12,6 +12,7 @@ A professional, high-performance payment gateway for Briqpay V3 in WooCommerce.
 - **Order Management:** Automated captures and refunds directly from the WooCommerce Admin, with auto-capturing payment methods detected and handled automatically.
 - **Hosted Payment Pages:** Create a Briqpay-hosted payment link for an order you built in the WooCommerce admin — ideal for phone, email and quote orders.
 - **Order Attribution:** Populates WooCommerce's native "Origin" column (Organic, Direct, Referral, UTM, etc.) for orders placed through Briqpay, for both classic and Blocks checkout.
+- **Terms & Conditions validation:** Purchases are rejected unless the customer accepted WooCommerce's native Terms & Conditions checkbox. Can be switched off in the gateway settings when consent is collected elsewhere (Briqpay's terms module, a consent plugin).
 - **Standardized Logging:** Uses standard WooCommerce logging for easy diagnostics.
 
 ## Prerequisites
