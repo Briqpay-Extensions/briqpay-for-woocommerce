@@ -165,7 +165,41 @@ storefront checkout.
   (`Briqpay\WooCommerce\Hosted_Payment_Page`).
 
 --------------------------------------------------------------------------------
-10. DEVELOPER HOOKS (ACTIONS & FILTERS)
+10. CART SYNC FAILURE FLAG (out-of-sync protection)
+--------------------------------------------------------------------------------
+Syncing the cart and making the payment decision happen in two different
+requests, so a sync failure has to be remembered between them. That is what the
+WC session flag Session_Manager::SYNC_FAILED_KEY ('briqpay_sync_failed') is for.
+Checkout_Handler::validate_data_integrity() refuses the purchase with "We were
+unable to synchronize your cart with the payment provider" while it is set.
+
+Read and write it only through Session_Manager::has_sync_failed() /
+::set_sync_failed(), never the raw session key.
+
+Who owns it:
+- A successful PATCH in get_or_create_session() clears it.
+- create_session() owns it on every other path: a session built from the current
+  cart is in sync by construction, so a successful create CLEARS it, and a create
+  that errors or returns an unexpected shape SETS it (a stale session id may
+  still be cached, and authorizing against that is worse than blocking).
+- get_or_create_session() deliberately does NOT set it when a PATCH fails - the
+  recovery create_session() immediately after decides. Setting it there would
+  survive the successful recovery and refuse the customer's next payment attempt
+  even though nothing was out of sync.
+- Checkout_Handler::clear_customer_data_after_purchase() and
+  Session_Reset_Handler::process_scheduled_session_reset() clear it, so a failure
+  from one order or one login context cannot leak into the next checkout.
+
+Debugging a merchant report of that error message: the message is produced by the
+decision request, but it is DECIDED by an earlier request. Look further back in
+WooCommerce > Status > Logs for 'Direct update failed: <reason>' (debug level) and
+'API Error (<code>)' (error level - present even with "Logging" off). A PATCH that
+fails while creation succeeds usually means a create-only field (customerType,
+modules, country, locale) is reaching the update payload from a merchant filter;
+see section 11.
+
+--------------------------------------------------------------------------------
+11. DEVELOPER HOOKS (ACTIONS & FILTERS)
 --------------------------------------------------------------------------------
 Integrators can customize the plugin behavior using the following hooks:
 
@@ -200,7 +234,7 @@ ACTIONS:
   Run before/after a hosted payment page is created.
 
 --------------------------------------------------------------------------------
-11. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
+12. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
 --------------------------------------------------------------------------------
 For stores migrating from the previous "Briqpay for WooCommerce" plugin
 (github.com/krokedil/briqpay-for-woocommerce, v1 API), B2B orders can

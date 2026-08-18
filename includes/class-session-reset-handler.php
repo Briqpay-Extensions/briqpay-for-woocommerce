@@ -65,6 +65,10 @@ class Session_Reset_Handler
             WC()->session->set('briqpay_prev_b2b_active', null);
         }
 
+        // The next request creates a brand-new session, so a sync failure
+        // recorded against the discarded one must not block that checkout.
+        Session_Manager::set_sync_failed(false);
+
         // Force clear the session cookie too
         if (isset($_COOKIE['briqpay_session_id'])) {
             setcookie('briqpay_session_id', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);

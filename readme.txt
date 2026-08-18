@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.3
+Stable tag: 1.1.4
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -97,8 +97,10 @@ The use of this service is governed by Briqpay's legal documentation:
 
 == Changelog ==
 
-= 1.1.3 =
+= 1.1.4 =
 * Added: "Validate Terms & Conditions" setting (WooCommerce > Settings > Payments > Briqpay). When enabled, a purchase is rejected at the payment decision unless the customer ticked WooCommerce's native Terms & Conditions checkbox. Disable it if you collect consent elsewhere - for example with Briqpay's own terms module or a third-party consent plugin - so the customer is not asked to accept twice. Enabled by default, so existing installs keep the current behaviour.
+* Fix: Checkout could be blocked by a stale "We were unable to synchronize your cart with the payment provider" error even though the cart and the Briqpay session matched. When a session update failed, the plugin recorded the failure and then created a replacement session built from the current cart - but the recorded failure was never cleared, so the next payment attempt was refused. A successful session creation now clears it, and a failed one sets it, so the flag always reflects the last known state.
+* Fix: The same stale flag could survive into a later checkout, because neither the post-purchase cleanup nor the login session reset cleared it. Both now do.
 
 = 1.1.2 =
 * Added: "Legacy B2B order meta mapping" setting (WooCommerce > Settings > Payments > Briqpay > Migration / legacy compatibility) for stores migrating from the previous Briqpay for WooCommerce plugin. When enabled, B2B orders additionally store the organisation number in `_billing_org_nr`, the shipping email in `_shipping_email`, and mirror the payment method/autocapture meta the previous plugin used, alongside the meta this plugin already writes. Disabled by default; existing installs are unaffected.

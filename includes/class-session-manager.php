@@ -11,6 +11,11 @@ if (!defined('ABSPATH')) {
 class Session_Manager
 {
     /**
+     * WC session key holding the "WooCommerce and Briqpay are out of sync" flag.
+     */
+    const SYNC_FAILED_KEY = 'briqpay_sync_failed';
+
+    /**
      * Cache for product image URLs.
      *
      * @var array
@@ -85,6 +90,50 @@ class Session_Manager
     }
 
     /**
+     * Flag whether WooCommerce and Briqpay are known to be out of sync.
+     *
+     * Read at the payment decision by
+     * Checkout_Handler::validate_data_integrity(), which refuses the purchase
+     * while it is set. It is deliberately sticky across requests: the request
+     * that syncs the cart and the request that makes the decision are different,
+     * so a failure has to be remembered.
+     *
+     * @param bool $failed True to block the next decision, false to clear.
+     * @return void
+     */
+    public static function set_sync_failed($failed)
+    {
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        $failed = (bool) $failed;
+        $previous = (bool) WC()->session->get(self::SYNC_FAILED_KEY);
+
+        WC()->session->set(self::SYNC_FAILED_KEY, $failed);
+
+        if ($previous !== $failed) {
+            Logger::log($failed
+                ? 'Cart sync marked as FAILED - the next payment decision will be refused.'
+                : 'Cart sync failure flag CLEARED - WooCommerce and Briqpay are back in sync.');
+        }
+    }
+
+    /**
+     * Is WooCommerce known to be out of sync with Briqpay?
+     *
+     * @return bool
+     */
+    public static function has_sync_failed()
+    {
+        if (null === WC() || null === WC()->session) {
+            return false;
+        }
+
+        return (bool) WC()->session->get(self::SYNC_FAILED_KEY);
+    }
+
+    /**
      * Create or Update Briqpay Session
      */
     public function get_or_create_session()
@@ -122,24 +171,22 @@ class Session_Manager
         // Attempt the PATCH directly and handle errors (e.g. 404/410/etc.) by creating a new session.
         $updated_session = $this->update_session($session_id);
         if (!is_wp_error($updated_session) && !empty($updated_session['sessionId']) && ($updated_session['status'] ?? '') !== 'completed') {
-            if (null !== WC() && null !== WC()->session) {
-                WC()->session->set('briqpay_sync_failed', false);
-            }
+            self::set_sync_failed(false);
             return $updated_session;
         }
 
         if (is_wp_error($updated_session)) {
             Logger::log('Direct update failed: ' . $updated_session->get_error_message() . '. Creating a new session.');
-            if (null !== WC() && null !== WC()->session) {
-                WC()->session->set('briqpay_sync_failed', true);
-            }
         } else {
             Logger::log('Session already completed or invalid. Creating a new session.');
-            if (null !== WC() && null !== WC()->session) {
-                WC()->session->set('briqpay_sync_failed', false);
-            }
         }
 
+        // Deliberately NOT marking the sync as failed here. The recovery
+        // create_session() below owns the flag: a session built from the current
+        // cart is in sync by construction, so a successful create clears it and
+        // only a failed create leaves it set. Setting it here instead would
+        // survive the successful recovery and refuse the customer's next payment
+        // decision even though nothing was actually out of sync.
         return $this->create_session();
     }
 
@@ -170,9 +217,16 @@ class Session_Manager
 
         if (is_wp_error($session)) {
             Logger::log('Error creating session: ' . $session->get_error_message());
+            // No usable session, and a previous session id may still be cached -
+            // block the decision rather than authorizing against a stale session.
+            self::set_sync_failed(true);
         } elseif (!empty($session['sessionId'])) {
             Logger::log('Session created: ' . $session['sessionId']);
             self::set_session_id($session['sessionId']);
+
+            // This session was just built from the current cart, so WooCommerce
+            // and Briqpay are in sync. Clear any flag a failed PATCH left behind.
+            self::set_sync_failed(false);
 
             /**
              * Action after a new Briqpay session is created.
@@ -183,6 +237,7 @@ class Session_Manager
             do_action('briqpay_after_create_session', $session, $data);
         } else {
             Logger::log('Session creation returned unexpected data.');
+            self::set_sync_failed(true);
         }
 
         return $session;

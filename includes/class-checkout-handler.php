@@ -441,6 +441,10 @@ class Checkout_Handler
             WC()->session->set('briqpay_customer_type', null);
             WC()->session->set('briqpay_prev_b2b_active', null);
         }
+
+        // The purchase is done - never carry a stale sync failure from this
+        // order into the customer's next checkout.
+        Session_Manager::set_sync_failed(false);
         setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
 
         // Only clear stored customer address if guest user to avoid corrupting registered user details
@@ -1575,7 +1579,7 @@ class Checkout_Handler
         }
 
         // Check if there was a previous session update sync failure
-        if (null !== WC() && null !== WC()->session && WC()->session->get('briqpay_sync_failed')) {
+        if (Session_Manager::has_sync_failed()) {
             $errors[] = __('We were unable to synchronize your cart with the payment provider. Please reload the page and try again.', 'briqpay-for-woocommerce');
         }
 
