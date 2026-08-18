@@ -115,6 +115,14 @@ class Gateway extends \WC_Payment_Gateway
                 'default' => 'yes',
                 'desc_tip' => false,
             ),
+            'checkout_hooks_enabled' => array(
+                'title' => __('WooCommerce checkout actions', 'briqpay-for-woocommerce'),
+                'label' => __('Fire WooCommerce\'s standard checkout actions', 'briqpay-for-woocommerce'),
+                'type' => 'checkbox',
+                'description' => __('Lets third-party plugins (custom checkout fields, ERP and invoicing connectors, delivery-date pickers) receive Briqpay orders the same way they receive orders paid with other methods. <strong>Before enabling, check any custom code you added to compensate for these actions being missing</strong> - for example on <code>briqpay_after_create_order</code> - because it will now run alongside the plugins it was standing in for. Existing stores keep this off until you turn it on.', 'briqpay-for-woocommerce'),
+                'default' => 'yes',
+                'desc_tip' => false,
+            ),
             'hpp_section' => array(
                 'title' => __('Hosted Payment Pages', 'briqpay-for-woocommerce'),
                 'type' => 'title',
@@ -263,6 +271,32 @@ class Gateway extends \WC_Payment_Gateway
             return false;
         }
 
+        // Every amount this plugin sends is converted to minor units assuming two
+        // decimal places. On a store configured otherwise those amounts are wrong
+        // by a factor of ten or more, so refuse to offer the gateway rather than
+        // taking payments for the wrong sum. Overridable for a merchant who has
+        // verified their own setup.
+        if (!Money::is_supported_precision()) {
+            $allow = (bool) apply_filters('briqpay_allow_unsupported_currency_precision', false, Money::decimals());
+
+            if (!$allow) {
+                Logger::error(sprintf(
+                    'Briqpay hidden at checkout: the store is configured for %d decimal places, '
+                    . 'but Briqpay amount conversion supports 2. Amounts would be sent incorrectly. '
+                    . 'Set WooCommerce > Settings > Products > Number of decimals to 2, or override '
+                    . 'with the briqpay_allow_unsupported_currency_precision filter if your setup is verified.',
+                    Money::decimals()
+                ));
+                return false;
+            }
+
+            Logger::error(sprintf(
+                'Briqpay running with %d decimal places via '
+                . 'briqpay_allow_unsupported_currency_precision. Amounts may be sent incorrectly.',
+                Money::decimals()
+            ));
+        }
+
         /**
          * Filter whether the Briqpay payment gateway is available.
          *
@@ -298,16 +332,100 @@ class Gateway extends \WC_Payment_Gateway
      */
     public function process_payment($order_id)
     {
-        // This is usually called when the native WC "Place Order" button is pressed.
-        // However, Briqpay overrides the checkout and uses its own button in the iframe.
-        // If we reach here, it means the native button was visible and clicked.
-        // We block this to prevent bypassing Briqpay.
+        $order = wc_get_order($order_id);
+
+        // Normally the Briqpay iframe owns the purchase and its own button drives
+        // the decision flow, so reaching here means WooCommerce's native Place
+        // Order button was used. That is not automatically an error: the customer
+        // may have completed payment inside the iframe and then submitted the
+        // native form, in which case failing would strand a paid order.
+        //
+        // So: succeed only when Briqpay itself confirms the session is paid. The
+        // check is an API call against the same standard the return handler uses -
+        // never a local flag, and never an assumption - because returning success
+        // for an unpaid order is the worst failure mode a gateway has.
+        if ($order && $this->session_is_paid_for_order($order)) {
+            Logger::log(sprintf(
+                'process_payment(): Briqpay session for order %s is confirmed paid. '
+                . 'Completing through WooCommerce\'s pipeline.',
+                $order_id
+            ));
+
+            $session_id = Session_Manager::get_session_id();
+            if ($session_id) {
+                $order->update_meta_data('_briqpay_session_id', $session_id);
+                $order->save();
+            }
+
+            return array(
+                'result' => 'success',
+                'redirect' => add_query_arg('briqpay_return', '1', $order->get_checkout_payment_url(true)),
+            );
+        }
+
+        // Not paid: block, so the native button cannot bypass the Briqpay flow.
+        Logger::log(sprintf(
+            'process_payment(): no confirmed Briqpay payment for order %s - directing '
+            . 'the customer back to the Briqpay checkout.',
+            $order_id
+        ));
+
         wc_add_notice(__('Please complete your payment using the Briqpay checkout.', 'briqpay-for-woocommerce'), 'error');
 
         return array(
             'result' => 'failure',
             'reload' => true,
         );
+    }
+
+    /**
+     * Has Briqpay confirmed payment for this order's session?
+     *
+     * Deliberately strict. Anything other than an explicit paid status from the
+     * API - a missing session, an API error, an unexpected shape - reads as "not
+     * paid", so a transient network failure can never be mistaken for a payment.
+     *
+     * @param \WC_Order $order The order.
+     * @return bool
+     */
+    private function session_is_paid_for_order($order)
+    {
+        $session_id = $order->get_meta('_briqpay_session_id');
+        if (!$session_id) {
+            $session_id = Session_Manager::get_session_id();
+        }
+
+        if (!$session_id) {
+            return false;
+        }
+
+        $api = new API($this->merchant_id, $this->shared_secret, 'yes' === $this->testmode);
+        $session = $api->get_session($session_id);
+
+        if (is_wp_error($session) || !is_array($session)) {
+            Logger::log('process_payment(): could not verify the Briqpay session - treating as unpaid.');
+            return false;
+        }
+
+        // A session or order status alone is not proof of payment - the
+        // transaction underneath can be pending or rejected. Refuse outright when
+        // the payload shows no approved transaction.
+        if ('unapproved' === Order_Management::transaction_approval_state($session)) {
+            Logger::log('process_payment(): session carries no approved transaction - treating as unpaid.');
+            return false;
+        }
+
+        // Same statuses the return handler and webhooks treat as money secured.
+        $paid_statuses = array('completed', 'order_approved_not_captured', 'captured');
+        $status = $session['status'] ?? '';
+
+        if (in_array($status, $paid_statuses, true)) {
+            return true;
+        }
+
+        $order_status = $session['data']['order']['status'] ?? '';
+
+        return in_array($order_status, $paid_statuses, true);
     }
 
     /**

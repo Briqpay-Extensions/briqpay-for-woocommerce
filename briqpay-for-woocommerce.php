@@ -3,7 +3,7 @@
  * Plugin Name: Briqpay for WooCommerce
  * Plugin URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Description: Briqpay connects multiple payment providers like Adyen, Stripe, PayPal, and Klarna in one integration.
- * Version: 1.1.4
+ * Version: 1.1.5
  * Author: Briqpay
  * Author URI: https://briqpay.com
  * Text Domain: briqpay-for-woocommerce
@@ -22,7 +22,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('BRIQPAY_WC_VERSION', '1.1.4');
+define('BRIQPAY_WC_VERSION', '1.1.5');
 define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
 define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
 define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
@@ -165,6 +165,9 @@ if (!class_exists('Briqpay_WooCommerce')) {
             }
 
             // Initialize components
+            // Upgrade first: it stamps settings defaults that the components
+            // below read, so it must not run after they have been asked.
+            (new \Briqpay\WooCommerce\Upgrade())->init();
             (new \Briqpay\WooCommerce\Order_Status_Manager())->init();
             (new \Briqpay\WooCommerce\Checkout_Handler())->init();
             (new \Briqpay\WooCommerce\B2b_Checkout())->init();

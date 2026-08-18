@@ -59,14 +59,22 @@ class OrderStatusManagerTest extends TestCase
         $osm->janitor_cleanup_task();
     }
 
-    public function testJanitorCleanupTaskRecovery()
+    /**
+     * A completed session WITH an approved transaction is a real payment, so the
+     * janitor records it through payment_complete() - which sets date_paid,
+     * reduces stock and fires WooCommerce's payment hooks - rather than nudging
+     * the status directly.
+     */
+    public function testJanitorRecordsPaymentWhenATransactionIsApproved()
     {
         $osm = new Order_Status_Manager();
         $order = Mockery::mock('WC_Order');
 
         $order->shouldReceive('get_id')->andReturn(789);
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_rec');
-        $order->shouldReceive('update_status')->with('processing', Mockery::any())->once();
+        $order->shouldReceive('payment_complete')->with('sess_rec')->once();
+        $order->shouldReceive('add_order_note')->once();
+        $order->shouldReceive('update_status')->never();
 
         WP_Mock::userFunction('wc_get_orders', array(
             'return' => array($order)
@@ -77,9 +85,120 @@ class OrderStatusManagerTest extends TestCase
             'return' => array('merchant_id' => 'mid', 'shared_secret' => 'secret', 'testmode' => 'yes')
         ));
 
-        // Use the same overloaded mock
+        $api = Mockery::mock('overload:Briqpay\WooCommerce\API');
+        $api->shouldReceive('get_session')->andReturn(array(
+            'status' => 'completed',
+            'data' => array(
+                'transactions' => array(
+                    array('status' => 'approved_not_captured'),
+                ),
+            ),
+        ));
+
+        $osm->janitor_cleanup_task();
+    }
+
+    /**
+     * The bug this replaces: a 'completed' session only means the customer
+     * finished the checkout. The transaction underneath can still be pending or
+     * rejected, and the janitor used to mark such orders 'processing' - reporting
+     * unpaid orders as paid. It must now leave them for the webhook to resolve.
+     */
+    public function testJanitorDoesNotRecordPaymentWhenNoTransactionIsApproved()
+    {
+        $osm = new Order_Status_Manager();
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('get_id')->andReturn(790);
+        $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_pending_tx');
+        $order->shouldReceive('payment_complete')->never();
+        $order->shouldReceive('update_status')->never();
+        $order->shouldReceive('add_order_note')->never();
+
+        WP_Mock::userFunction('wc_get_orders', array(
+            'return' => array($order)
+        ));
+
+        WP_Mock::userFunction('get_option', array(
+            'args' => array('woocommerce_briqpay_settings'),
+            'return' => array('merchant_id' => 'mid', 'shared_secret' => 'secret', 'testmode' => 'yes')
+        ));
+
+        $api = Mockery::mock('overload:Briqpay\WooCommerce\API');
+        $api->shouldReceive('get_session')->andReturn(array(
+            'status' => 'completed',
+            'data' => array(
+                'transactions' => array(
+                    array('status' => 'pending'),
+                ),
+            ),
+        ));
+
+        $osm->janitor_cleanup_task();
+    }
+
+    /**
+     * No transactions at all on a completed session is also not payment.
+     */
+    public function testJanitorDoesNotRecordPaymentWithoutAnyTransactions()
+    {
+        $osm = new Order_Status_Manager();
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('get_id')->andReturn(791);
+        $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_no_tx');
+        $order->shouldReceive('payment_complete')->never();
+        $order->shouldReceive('update_status')->never();
+        $order->shouldReceive('add_order_note')->never();
+
+        WP_Mock::userFunction('wc_get_orders', array(
+            'return' => array($order)
+        ));
+
+        WP_Mock::userFunction('get_option', array(
+            'args' => array('woocommerce_briqpay_settings'),
+            'return' => array('merchant_id' => 'mid', 'shared_secret' => 'secret', 'testmode' => 'yes')
+        ));
+
         $api = Mockery::mock('overload:Briqpay\WooCommerce\API');
         $api->shouldReceive('get_session')->andReturn(array('status' => 'completed'));
+
+        $osm->janitor_cleanup_task();
+    }
+
+    /**
+     * An unrecognized transaction status must read as not approved, so a new
+     * Briqpay state can never be mistaken for secured payment.
+     */
+    public function testJanitorTreatsUnknownTransactionStatusAsUnapproved()
+    {
+        $osm = new Order_Status_Manager();
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('get_id')->andReturn(792);
+        $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_future');
+        $order->shouldReceive('payment_complete')->never();
+        $order->shouldReceive('update_status')->never();
+        $order->shouldReceive('add_order_note')->never();
+
+        WP_Mock::userFunction('wc_get_orders', array(
+            'return' => array($order)
+        ));
+
+        WP_Mock::userFunction('get_option', array(
+            'args' => array('woocommerce_briqpay_settings'),
+            'return' => array('merchant_id' => 'mid', 'shared_secret' => 'secret', 'testmode' => 'yes')
+        ));
+
+        $api = Mockery::mock('overload:Briqpay\WooCommerce\API');
+        $api->shouldReceive('get_session')->andReturn(array(
+            'status' => 'completed',
+            'data' => array(
+                'transactions' => array(
+                    array('status' => 'some_new_briqpay_state'),
+                ),
+            ),
+        ));
 
         $osm->janitor_cleanup_task();
     }

@@ -195,6 +195,18 @@ class Session_Manager
      */
     private function create_session()
     {
+        // An empty cart cannot produce a valid session - Briqpay rejects it with
+        // "cart has less items than allowed" - so the request is pure noise, and
+        // the resulting failure used to mark the cart as out of sync and log an
+        // alarming error for what is simply an empty basket.
+        if (null !== WC() && null !== WC()->cart && WC()->cart->is_empty()) {
+            Logger::log('Skipping session creation: the cart is empty.');
+            return new \WP_Error(
+                'briqpay_empty_cart',
+                __('Your cart is empty.', 'briqpay-for-woocommerce')
+            );
+        }
+
         Logger::log('Creating new session...');
         $api = $this->get_api();
         $data = $this->get_session_data();

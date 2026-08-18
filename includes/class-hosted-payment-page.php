@@ -460,7 +460,22 @@ class Hosted_Payment_Page
             wp_send_json_error(array('message' => __('Order not found.', 'briqpay-for-woocommerce')));
         }
 
-        $result = $this->create($order, $flow);
+        // One hosted page creation at a time per order. Two rapid clicks on the
+        // "Create" button would otherwise each create a Briqpay session and the
+        // second would silently invalidate the first link, which may already have
+        // been sent to the customer.
+        $lock = 'briqpay_hpp_' . $order_id;
+        if (!Lock::acquire($lock, 60)) {
+            wp_send_json_error(array(
+                'message' => __('A hosted payment page is already being created for this order. Please wait a moment and reload.', 'briqpay-for-woocommerce'),
+            ));
+        }
+
+        try {
+            $result = $this->create($order, $flow);
+        } finally {
+            Lock::release($lock);
+        }
 
         if (is_wp_error($result)) {
             wp_send_json_error(array('message' => $result->get_error_message()));

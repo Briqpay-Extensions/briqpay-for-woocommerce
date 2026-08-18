@@ -1,6 +1,6 @@
 {
   "name": "briqpay-for-woocommerce",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "Briqpay for WooCommerce",
   "scripts": {
     "test": "jest"

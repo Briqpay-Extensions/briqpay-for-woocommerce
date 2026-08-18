@@ -154,6 +154,38 @@ class SyncFailedFlagTest extends TestCase
         );
     }
 
+    /**
+     * An empty cart is not an out-of-sync cart.
+     *
+     * Observed in live testing: loading a checkout with an empty basket produced a
+     * guaranteed 400 from Briqpay ("cart has less items than allowed"), which then
+     * marked the cart as failed to sync and logged an error. Bailing before the
+     * request keeps the flag - and the log - honest.
+     */
+    public function testEmptyCartSkipsSessionCreationEntirely(): void
+    {
+        $body = $this->methodBody('create_session');
+
+        $this->assertStringContainsString(
+            'WC()->cart->is_empty()',
+            $body,
+            'Session creation must bail on an empty cart.'
+        );
+
+        $bail_pos = strpos($body, 'is_empty()');
+        $request_pos = strpos($body, '$api->create_session($data)');
+        $failed_pos = strpos($body, 'set_sync_failed(true)');
+
+        $this->assertNotFalse($bail_pos);
+        $this->assertNotFalse($request_pos);
+        $this->assertLessThan($request_pos, $bail_pos, 'The bail must precede the API call.');
+        $this->assertLessThan(
+            $failed_pos,
+            $bail_pos,
+            'And precede any sync-failure marking, so an empty basket is never reported as out of sync.'
+        );
+    }
+
     public function testCreateSessionClearsTheFlagOnSuccess(): void
     {
         $this->assertTrue(

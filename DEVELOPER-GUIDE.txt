@@ -196,10 +196,276 @@ WooCommerce > Status > Logs for 'Direct update failed: <reason>' (debug level) a
 'API Error (<code>)' (error level - present even with "Logging" off). A PATCH that
 fails while creation succeeds usually means a create-only field (customerType,
 modules, country, locale) is reaching the update payload from a merchant filter;
-see section 11.
+see section 13.
 
 --------------------------------------------------------------------------------
-11. DEVELOPER HOOKS (ACTIONS & FILTERS)
+11. WOOCOMMERCE CHECKOUT ACTION PARITY
+--------------------------------------------------------------------------------
+Storefront orders are created in Checkout_Handler::create_order_at_decision(),
+not by WC_Checkout::process_checkout(), so WooCommerce's standard checkout
+actions only fire where this plugin fires them by hand. Without them, plugins
+that add data at checkout (custom fields, ERP/invoicing connectors, delivery-date
+pickers, shipping brokers) silently drop their data on Briqpay orders while
+working on every other payment method.
+
+OPT-IN, AND WHY
+- Setting: WooCommerce > Settings > Payments > Briqpay > "WooCommerce checkout
+  actions" (key 'checkout_hooks_enabled').
+- Existing installs are stamped 'no' by Upgrade::maybe_migrate() and opt in
+  deliberately; fresh installs default to 'yes'. An existing install is one that
+  already has a merchant_id configured.
+- Reason it is not simply on: these actions run third-party code during Briqpay
+  checkouts where none ran before. In particular, merchants who wrote custom code
+  to compensate for the missing actions (typically on briqpay_after_create_order)
+  would get both their workaround and the plugins it stood in for - duplicate ERP
+  exports, duplicate invoices, duplicate fees.
+- register_activation_hook() does NOT fire on plugin updates, which is why the
+  migration runs from admin_init keyed on the 'briqpay_wc_version' option.
+
+TWO GROUPS, TWO CALL SITES
+The actions split by what they mean, and the split decides where they fire.
+
+  Data hooks - populate the order. Fired in ajax_make_decision() after
+  validation has passed and before the decision is sent, which is the last
+  moment WooCommerce still has the cart they read from (the return handler
+  empties it). Deliberately after validation: this flow creates the order
+  BEFORE it validates (the order ID is pushed to Briqpay as reference1), so a
+  rejected purchase already has an order row, and firing before validation
+  would run plugin code for purchases about to be refused.
+    woocommerce_checkout_create_order                ($order, $data)
+    woocommerce_checkout_update_order_meta           ($order_id, $data)
+    woocommerce_checkout_create_order_line_item_object  (filter, at construction)
+    woocommerce_store_api_checkout_update_order_meta ($order)  [Blocks only]
+
+  Commit hooks - signal that a purchase happened. Primary site is
+  handle_briqpay_return() beside briqpay_payment_complete: payment is verified
+  and the WC session, the posted-data stash and the logged-in user are all still
+  present. Webhooks::fire_commit_hooks_fallback() calls the same entry point as
+  a FALLBACK for the customer who pays and closes the browser without
+  returning; fire_once() means whichever arrives first is the only one that
+  runs.
+    woocommerce_checkout_order_created               ($order)
+    woocommerce_checkout_order_processed             ($order_id, $data, $order)
+    woocommerce_store_api_checkout_order_processed   ($order)  [Blocks only]
+
+  Already fired before this feature and NOT gated (they shipped unconditional
+  and must stay that way):
+    woocommerce_checkout_create_order_line_item
+    woocommerce_checkout_create_order_shipping_item
+    woocommerce_checkout_create_order_fee_item
+    woocommerce_checkout_create_order_coupon_item
+
+THE $data ARGUMENT
+Our decision request posts only a sessionId, so there is no submitted form to
+pass. ajax_get_session() receives the whole serialized checkout form on every
+sync, so it is stashed in the WC session ('briqpay_posted_data') and replayed
+when the hooks fire - the same pattern store_order_attribution() already uses for
+Order Attribution. Nonces are stripped; the stash is overwritten (never merged)
+so a cleared field cannot be replayed as still set; it is cleared by the
+post-purchase cleanup and the login reset.
+
+Blocks sends nested address objects, so normalise_blocks_data() maps them to
+WooCommerce's flat billing_*/shipping_* keys. Note core WooCommerce Blocks does
+NOT fire the classic woocommerce_checkout_update_order_meta - this plugin
+deliberately does, because a merchant running Blocks with a classic-hook plugin
+is equally broken either way and this plugin is not the Store API.
+
+Many plugins read $_POST directly inside these hooks rather than using $data, so
+with_posted_data() superimposes the stash on $_POST and $_REQUEST for the
+duration of the do_action() calls only, restoring in a finally. Real request
+values win over stashed ones. Disable with the briqpay_superimpose_post_data
+filter if it ever causes trouble.
+
+LIMITATION: DATA, NOT AMOUNTS
+A plugin can add a fee on woocommerce_checkout_create_order. In core that is safe
+because the order is built before payment is authorized. Here the authorized
+amount came from the Briqpay session, PATCHed from the cart earlier, so an added
+amount makes the WooCommerce total exceed what was authorized and the gap
+surfaces at capture. warn_on_total_drift() logs an error naming both amounts when
+this happens. It is detection only - silently "correcting" the order would hide a
+real configuration problem.
+
+BRIQPAY_PAYMENT_COMPLETE NOW ACTUALLY FIRES
+This is the plugin's own action, documented as running when payment is verified at
+the return handler. It used to sit only inside the status-upgrade branch of
+handle_briqpay_return(). Orders are created as 'pending' at the decision point, so
+on a normal storefront purchase that branch is never reached - meaning the action
+never fired at all, while the WooCommerce checkout actions beside it did. It now
+fires on both return paths, once per order (fire_once group 'verified').
+
+  IF YOU BUILT A WORKAROUND: code you moved to briqpay_after_create_order or a
+  webhook hook after discovering this action was dead will now run alongside the
+  briqpay_payment_complete listener it replaced. Remove one, or suppress the action
+  with the 'briqpay_fire_payment_complete' filter.
+
+Deliberately NOT gated behind the "WooCommerce checkout actions" setting: that gate
+exists to stop third-party plugin code running unexpectedly, whereas anything
+listening on a Briqpay-specific action is code the merchant wrote themselves.
+
+Also deliberately NOT fired from the webhook. Its meaning is "the customer came
+back and we verified the session", not "the money is secured". For the latter use
+WooCommerce's own woocommerce_payment_complete, or the order-status transitions -
+both already triggered from the webhook via $order->payment_complete(), and both
+fire even when the customer never returns. That is the hook an ERP or fulfilment
+integration should be on.
+
+OTHER THINGS TO KNOW
+- created_via follows the gate: 'checkout' when enabled (a number of plugins gate
+  on created_via === 'checkout'), the historical 'Briqpay' when not. Override
+  with the briqpay_order_created_via filter. Neither value affects
+  Hosted_Payment_Page::is_admin_created_order(), which treats only '' and 'admin'
+  as admin-created.
+- Hosted Payment Page orders never fire any of these: they are built by an admin
+  and have no cart and no checkout form. This is correct, not an oversight.
+- Latency: an ERP connector making outbound HTTP calls on
+  woocommerce_checkout_order_processed now runs inside the return request, adding
+  its round-trip to the customer's wait.
+- Idempotency: fire_once() persists '_briqpay_hooks_data' /
+  '_briqpay_hooks_commit' order meta BEFORE running the callback, so third-party
+  code that fatals cannot earn a second attempt at the same side effects, and a
+  customer retrying after a rejected decision does not re-run them.
+- Everything is wrapped in catch (\Throwable): these hooks run third-party code
+  inside our AJAX handler and the Action Scheduler worker, and an uncaught
+  throwable would break the decision response.
+- woocommerce_checkout_process (the validation hook) is deliberately NOT fired.
+  It belongs in validate_data_integrity() and would hand third-party code a new
+  way to block Briqpay checkouts; treat it as a separate decision.
+- woocommerce_checkout_create_order_tax_item IS fired, but with a divergence:
+  core fires it during construction, before the tax item is added to the order,
+  whereas tax lines here come from $order->calculate_totals(true) (core's own
+  path) and therefore already exist. fire_tax_item_hooks() offers the action for
+  each existing tax line afterwards. A plugin that reads or annotates the item
+  works; one that expects to substitute the object does not.
+
+WHAT ELSE WC_CHECKOUT DOES THAT THIS FLOW NOW MATCHES
+These are defect fixes, not new third-party behaviour, so they apply regardless
+of the setting:
+- Line items record the product's tax class. Without it a later recalculation in
+  the admin taxes a reduced-rate product at the standard rate.
+- Shipping items copy the rate's tax_status and its own metadata
+  ($rate->get_meta_data()). Table-rate, pickup-point and broker plugins store the
+  customer's chosen service there.
+- Coupon items store the 'coupon_info' snapshot, so an order still renders its
+  discounts after the coupon is edited or deleted.
+- apply_native_order_properties() sets the cart hash and the customer note. The
+  note comes from the stashed form: 'order_comments' on classic, 'customer_note'
+  on Blocks. An existing note is never overwritten.
+
+Behind the setting, because they change behaviour:
+- reserve_stock() calls wc_reserve_stock_for_order() at the decision, so a
+  purchase in flight cannot be oversold to the next customer. A reservation
+  failure is logged, never thrown - by that point Briqpay is about to authorize
+  and refusing would be worse. release_stock() runs on the validation-failed
+  branch so a refused purchase does not hold stock until the reservation expires.
+- recalculate_cogs() calls calculate_cogs_total_value() on WooCommerce 9.5+.
+- woocommerce_checkout_order_exception fires from ajax_make_decision()'s catch,
+  wrapped so a listener cannot mask the original error from the customer.
+
+NATIVE CHECKOUT ENTRY POINTS
+- Gateway::process_payment() no longer returns failure unconditionally. It
+  succeeds ONLY when session_is_paid_for_order() confirms payment by calling the
+  Briqpay API - never from local meta, and treating a missing session, an API
+  error or an unexpected response shape as unpaid. Anything unconfirmed keeps the
+  previous behaviour of blocking, so the native button cannot bypass payment.
+- Checkout_Handler::handle_checkout_order_processed() is hooked to
+  woocommerce_checkout_order_processed. It existed for a long time but was never
+  registered, so orders created by WooCommerce's own pipeline never had their
+  Briqpay session attached. It carries three guards, all load-bearing:
+    1. If '_briqpay_hooks_commit' is already set we are the source of the action
+       (fire_once() stamps before its callback) and there is nothing to do.
+    2. Otherwise WooCommerce fired it and every listener has already run, so the
+       flag is stamped to stop fire_commit_hooks() firing them again. This is how
+       "do not fire manually when native checkout already did" is enforced.
+    3. Status is promoted from a draft state only. The original method set
+       'pending' unconditionally; with the action now also firing from the webhook
+       fallback that would have downgraded an order already at 'processing'.
+
+STILL NOT COVERED
+Deliberately out of scope - they need matching release-on-failure logic or a
+larger change to how orders are created:
+- Coupon usage holds (wc_get_coupon_held_keys and their release).
+- Submitting the storefront purchase through WC_Checkout::process_checkout()
+  itself, and submitting Blocks through the Store API Checkout route instead of
+  hiding the Place Order button. That is the structurally correct end state and
+  would make most of this section unnecessary, but it is a rewrite of the
+  checkout flow rather than an addition to it.
+
+--------------------------------------------------------------------------------
+12. CONCURRENCY, IDEMPOTENCY AND MONEY
+--------------------------------------------------------------------------------
+ATOMIC LOCKS (Briqpay\WooCommerce\Lock)
+The plugin previously guarded critical sections with:
+
+    if (get_transient($key)) { bail; }
+    set_transient($key, 1, 30);
+
+That is a check-then-set race: two concurrent requests can both pass the read
+before either writes. Consequences were real - two decision requests for one
+session creating two WooCommerce orders, one webhook delivery processed twice.
+
+Lock uses add_option(), which is a single INSERT against a uniquely-indexed
+column, so exactly one concurrent caller can succeed and the database itself
+arbitrates. wp_cache_add() is deliberately NOT used: it is only atomic when a
+persistent object cache is installed and degrades silently to per-request memory
+when one is not. Locks are stored with autoload off and carry an expiry, so a
+request that dies mid-flight cannot wedge a session permanently.
+
+    Lock::acquire($key, $ttl)  - mutual exclusion; release when done
+    Lock::release($key)
+    Lock::claim_once($key, $ttl) - idempotency marker, never released
+    Lock::is_held($key)        - informational only, never branch on it
+
+Where locks are held:
+  - ajax_make_decision()                  'briqpay_decision_lock_<session>'
+  - Webhooks::handle_webhook()            per-event dedup via claim_once()
+  - Order_Management::capture_order()     'briqpay_capture_<order>'
+  - Order_Management::refund_order()      'briqpay_refund_<order>'
+  - Hosted_Payment_Page::ajax_create...() 'briqpay_hpp_<order>'
+
+Captures, refunds and hosted page creation previously had no lock at all, so two
+rapid admin clicks could double-capture, over-refund, or invalidate a hosted page
+link already emailed to the customer.
+
+ACTION SCHEDULER ENQUEUE RESULT
+as_enqueue_async_action() returns 0 when it could not schedule. That return used
+to be ignored, so the webhook was dropped - and because the dedup marker was
+already claimed, Briqpay's retry was discarded as a duplicate and the event was
+lost entirely. The result is now checked and the payload processed inline instead.
+
+MONEY (Briqpay\WooCommerce\Money)
+Briqpay amounts are integers in the currency's minor unit. This plugin has
+historically hard-coded that as x100 / /100 at every call site, which is correct
+only for two-decimal currencies. A zero-decimal currency (JPY, ISK, KRW) would be
+sent 100x too large, a three-decimal one (KWD, BHD) 10x too small.
+
+Money is now the single definition of that conversion:
+    Money::to_minor($amount) / Money::from_minor($minor)
+    Money::decimals()   - wc_get_price_decimals(), filterable via
+                          'briqpay_money_decimals'
+    Money::multiplier()
+    Money::is_supported_precision() - true only at 2 decimals
+
+Gateway::is_available() returns false when precision is unsupported, so the
+gateway hides itself rather than taking payment for the wrong sum. Override with
+'briqpay_allow_unsupported_currency_precision' if a setup has been verified.
+
+The remaining x100 call sites throughout the plugin are equivalent to to_minor()
+while that guard pins precision at two decimals. Migrating them is follow-up work;
+doing it before the guard existed would only have moved the bug around.
+
+AMOUNT-ONLY REFUNDS
+A refund entered as an amount rather than per item cannot be attributed to
+specific captured lines. It used to divide by 1.25 - a hard-coded 25% Swedish VAT
+- and send a fictional 'physical' product called "refund".
+derive_order_tax_rate_bps() now takes the rate from the order itself: the order's
+tax total over its net (the blended rate the customer actually paid), falling back
+to the highest line-item rate, falling back to zero. Never a guess - inventing tax
+that was never charged is not recoverable. The line is sent as productType
+'adjustment' carrying the refund reason. Allocating across real captured
+references is left to the 'briqpay_amount_only_refund_items' filter.
+
+--------------------------------------------------------------------------------
+13. DEVELOPER HOOKS (ACTIONS & FILTERS)
 --------------------------------------------------------------------------------
 Integrators can customize the plugin behavior using the following hooks:
 
@@ -220,6 +486,20 @@ FILTERS:
   Modify the address blocks derived from the order for a hosted payment page.
 - `briqpay_hpp_locale`: (string) Modify the locale sent for a hosted payment
   page session.
+- `briqpay_fire_checkout_hook`: (bool, string) Disable one specific WooCommerce
+  checkout action while leaving the others enabled. See section 11.
+- `briqpay_superimpose_post_data`: (bool, array) Disable superimposing the
+  stashed checkout form on $_POST while the checkout actions fire, passing it
+  only as the hook argument. See section 11.
+- `briqpay_order_created_via`: (string) Override the created_via value stamped on
+  storefront Briqpay orders ('checkout' or 'Briqpay'). See section 11.
+- `briqpay_money_decimals`: (int) Decimal precision used for minor-unit
+  conversion. See section 12.
+- `briqpay_allow_unsupported_currency_precision`: (bool, int) Allow the gateway to
+  run on a store whose precision is not 2 decimals. See section 12.
+- `briqpay_amount_only_refund_items`: (array, float, order) Replace the single
+  adjustment line used for an amount-only refund, e.g. to allocate across the
+  actual captured references. See section 12.
 
 ACTIONS:
 - `briqpay_before_create_session`: (array) Runs before the API call.
@@ -228,13 +508,16 @@ ACTIONS:
   validated webhook event is processed (session/order-status fall-through only).
 - `briqpay_webhook_session_verified`: (data, session, order) Triggered for
   EVERY verified webhook, including capture_status/refund_status/order_status.
+- `briqpay_fire_payment_complete`: (bool, order) Suppress
+  `briqpay_payment_complete`. Only needed if you built a workaround while that
+  action was unreachable - see section 11.
 - `briqpay_payment_complete`: (order, session) Runs when the payment is
   fully verified at the return handler.
 - `briqpay_hpp_before_create` / `briqpay_hpp_created`: (order, flow, ...)
   Run before/after a hosted payment page is created.
 
 --------------------------------------------------------------------------------
-12. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
+14. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
 --------------------------------------------------------------------------------
 For stores migrating from the previous "Briqpay for WooCommerce" plugin
 (github.com/krokedil/briqpay-for-woocommerce, v1 API), B2B orders can

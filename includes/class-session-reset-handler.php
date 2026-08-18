@@ -69,6 +69,10 @@ class Session_Reset_Handler
         // recorded against the discarded one must not block that checkout.
         Session_Manager::set_sync_failed(false);
 
+        // The stashed checkout form belonged to the pre-login (often guest)
+        // context and must not be replayed into the new one.
+        Checkout_Handler::clear_stashed_posted_data();
+
         // Force clear the session cookie too
         if (isset($_COOKIE['briqpay_session_id'])) {
             setcookie('briqpay_session_id', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);

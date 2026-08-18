@@ -72,19 +72,31 @@ class Webhooks
         $event_id = $data['captureId'] ?? ($data['refundId'] ?? ($data['id'] ?? ''));
         $dedup_key = 'briqpay_wh_' . md5($session_id . '|' . $action . '|' . $status . '|' . $event_id);
 
-        if (get_transient($dedup_key)) {
+        // Atomic claim. The previous get_transient()/set_transient() pair was a
+        // check-then-set race: two concurrent deliveries of the same event could
+        // both pass the read before either wrote, and both got processed.
+        if (!Lock::claim_once($dedup_key, 5 * MINUTE_IN_SECONDS)) {
             Logger::log('Webhook duplicate skipped for session: ' . $session_id);
             wp_send_json_success(array('message' => 'Duplicate webhook ignored'));
         }
 
-        set_transient($dedup_key, 1, 5 * MINUTE_IN_SECONDS);
-
         // Enqueue async action for background processing
+        $enqueued = false;
         if (function_exists('as_enqueue_async_action')) {
-            as_enqueue_async_action('briqpay_v3_process_webhook_callback', array('payload' => $data), 'briqpay');
+            $action_id = as_enqueue_async_action('briqpay_v3_process_webhook_callback', array('payload' => $data), 'briqpay');
+            // Action Scheduler returns 0 when it could not schedule. Treating that
+            // as success would silently drop the event, and because the dedup
+            // marker is already claimed a Briqpay retry would be discarded as a
+            // duplicate - losing the event entirely.
+            $enqueued = !empty($action_id);
+            if (!$enqueued) {
+                Logger::error('Action Scheduler did not enqueue the webhook (returned empty). Processing inline instead.');
+            }
         } else {
-            // Fallback for older Action Scheduler or if not present
             Logger::log('Action Scheduler not found. Processing immediately.');
+        }
+
+        if (!$enqueued) {
             $this->process_webhook_callback($data);
         }
 
@@ -180,6 +192,23 @@ class Webhooks
                     return;
                 }
 
+                // A 'completed' session says the customer finished the checkout, not
+                // that the money is secured. Block when the payload actively shows
+                // no approved transaction (pending bank transfer, rejected card).
+                // 'unknown' - no transactions in the payload - deliberately still
+                // proceeds: refusing it would stop legitimately paid orders
+                // completing on any flow whose payload omits transactions, which
+                // would be a far worse regression than the case being guarded.
+                if ('unapproved' === Order_Management::transaction_approval_state($session)) {
+                    Logger::error(sprintf(
+                        'Session %s is completed but no transaction is approved. Not marking order %s as paid; '
+                        . 'awaiting an approving event.',
+                        $session_id,
+                        $order->get_id()
+                    ));
+                    return;
+                }
+
                 // Use payment_complete() to trigger WooCommerce analytics hooks,
                 // set date_paid, reduce stock, and fire woocommerce_payment_complete.
                 $this->update_payment_method_title($order, $session);
@@ -259,7 +288,47 @@ class Webhooks
     }
 
     /**
-     * Handle Order Status
+     * Fire WooCommerce's "checkout completed" actions as a webhook fallback.
+     */
+    private function fire_commit_hooks_fallback($order)
+    {
+        // Fallback only. The storefront return handler is the primary site for
+        // WooCommerce's "checkout completed" actions, because it still has the WC
+        // session, the stashed checkout form and the logged-in user. This covers
+        // the customer who pays and closes the browser without ever returning.
+        //
+        // Checkout_Handler::fire_once() means whichever path arrives first is the
+        // only one that runs, so a normal purchase never fires these twice.
+        //
+        // Not tied to the order_approved_not_captured event specifically: that
+        // event is skipped when the order is already further along, and
+        // auto-capturing methods reach a paid state through the capture webhook
+        // instead. It is called from the approved-status transition so it follows
+        // the status, not one event name.
+        //
+        // Context here is degraded - a webhook is server-to-server, processed by
+        // Action Scheduler, with no WC session, no cart and no current user. The
+        // hooks receive an empty $data. Plugins that read only the order are
+        // unaffected; ones expecting checkout context will no-op.
+        // Check the gate before touching the order at all, so a disabled store
+        // does no work here and the catch below never has to depend on the order
+        // object still answering calls. fire_commit_hooks() re-checks; that is
+        // cheap and keeps this path explicit.
+        if (!Checkout_Handler::checkout_hooks_enabled()) {
+            return;
+        }
+
+        try {
+            (new Checkout_Handler())->fire_commit_hooks($order);
+        } catch (\Throwable $e) {
+            // The order id is already logged by fire_once(); keep this message
+            // free of any further calls on the order.
+            Logger::error('Commit hook webhook fallback failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Handle Order Status Webhook
      */
     private function handle_order_status($order, $status, $data)
     {
@@ -282,6 +351,14 @@ class Webhooks
                 $order->update_status('pending', __('Briqpay: Order pending.', 'briqpay-for-woocommerce'));
                 break;
             case 'order_approved_not_captured':
+                // Briqpay has approved the order, which is what the commit hooks
+                // care about - so attempt them BEFORE the rank check below. That
+                // check exists to avoid moving the WooCommerce status backwards,
+                // but an order already advanced to 'processing' (e.g. by a capture
+                // that arrived first) still needs its commit hooks if no earlier
+                // path fired them. fire_once() makes this safe to attempt here.
+                $this->fire_commit_hooks_fallback($order);
+
                 if ($current_rank >= 3) {
                     Logger::log(sprintf('Ignoring order_approved_not_captured webhook for order %s because current status is %s', $order->get_id(), $current_status));
                     return;
@@ -443,6 +520,12 @@ class Webhooks
 
                 Logger::log('Order is in unpaid status. Calling payment_complete() via capture webhook.');
                 $order->payment_complete($capture_id);
+
+                // A capture can be the first thing that takes an order to paid,
+                // arriving before or instead of an order_status webhook. Without
+                // this, an order that reached paid purely through capture never
+                // gets its commit hooks.
+                $this->fire_commit_hooks_fallback($order);
             }
         }
     }

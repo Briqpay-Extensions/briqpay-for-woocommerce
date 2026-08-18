@@ -21,6 +21,12 @@ class Checkout_Handler
         add_action('wp_ajax_briqpay_make_decision', array($this, 'ajax_make_decision'));
         add_action('wp_ajax_nopriv_briqpay_make_decision', array($this, 'ajax_make_decision'));
 
+        // Native WooCommerce checkout path. Previously this handler existed but
+        // was never registered, so an order created by WooCommerce's own pipeline
+        // never had its Briqpay session attached. See the method for why it is
+        // safe to register now that we fire this action ourselves.
+        add_action('woocommerce_checkout_order_processed', array($this, 'handle_checkout_order_processed'), 10, 3);
+
         add_action('template_redirect', array($this, 'handle_briqpay_return'), 5);
         add_action('woocommerce_thankyou', array($this, 'clear_customer_data_after_purchase'), 10, 1);
         add_filter('body_class', array($this, 'add_body_class'));
@@ -190,21 +196,71 @@ class Checkout_Handler
 
 
     /**
-     * Handle WC Checkout Order Processed
-     * This handles the case where the native WC checkout button is used.
+     * Handle an order WooCommerce's own checkout pipeline processed.
+     *
+     * Hooked to woocommerce_checkout_order_processed. Covers the case where the
+     * native Place Order button produced the order rather than our decision flow,
+     * attaching the Briqpay session so the return handler and webhooks can find
+     * it.
+     *
+     * Three guards matter here, because this plugin now fires that same action
+     * itself from fire_commit_hooks():
+     *
+     *  1. If '_briqpay_hooks_commit' is already set, WE are the source - fire_once()
+     *     stamps it before running its callback - so there is nothing to do and
+     *     re-entering would be pointless work.
+     *  2. If we are NOT the source, WooCommerce's pipeline fired this action and
+     *     every listener has already run. Stamping the flag stops
+     *     fire_commit_hooks() firing them a second time later, which is what
+     *     "do not fire these manually when native checkout already did" requires.
+     *  3. Status is only ever promoted from a draft state. The original version of
+     *     this method set 'pending' unconditionally; with the action now also
+     *     firing from the webhook fallback, that would have downgraded an order
+     *     already advanced to 'processing'.
+     *
+     * @param int       $order_id    Order ID.
+     * @param array     $posted_data Posted checkout data.
+     * @param \WC_Order $order       The order.
+     * @return void
      */
     public function handle_checkout_order_processed($order_id, $posted_data, $order)
     {
-        if ($order->get_payment_method() !== 'briqpay') {
+        if (!$order || !is_callable(array($order, 'get_payment_method'))) {
             return;
         }
 
-        $session_id = Session_Manager::get_session_id();
-        if ($session_id) {
-            $order->update_meta_data('_briqpay_session_id', $session_id);
-            $order->set_status('pending', __('Order created via native checkout. Awaiting Briqpay decision.', 'briqpay-for-woocommerce'));
-            $order->save();
+        if ('briqpay' !== $order->get_payment_method()) {
+            return;
         }
+
+        // Guard 1 - our own fire_commit_hooks() is the source.
+        if ($order->get_meta('_briqpay_hooks_commit')) {
+            return;
+        }
+
+        Logger::log(sprintf(
+            'Order %s reached woocommerce_checkout_order_processed via WooCommerce\'s own '
+            . 'pipeline. Attaching session and suppressing our duplicate commit hooks.',
+            $order->get_id()
+        ));
+
+        // Guard 2 - do not fire the commit hooks again for this order.
+        $order->update_meta_data('_briqpay_hooks_commit', current_time('mysql'));
+
+        $session_id = Session_Manager::get_session_id();
+        if ($session_id && !$order->get_meta('_briqpay_session_id')) {
+            $order->update_meta_data('_briqpay_session_id', $session_id);
+        }
+
+        // Guard 3 - promote from a draft state only, never move backwards.
+        if ($session_id && $order->has_status(array('checkout-draft', 'draft', 'auto-draft'))) {
+            $order->set_status(
+                'pending',
+                __('Order created via native checkout. Awaiting Briqpay decision.', 'briqpay-for-woocommerce')
+            );
+        }
+
+        $order->save();
     }
 
     /**
@@ -310,6 +366,16 @@ class Checkout_Handler
         // If already upgraded to pending, run cleanup and redirect
         if ($order->has_status(array('pending', 'processing', 'completed'))) {
             Logger::log('Order already processed. Running cleanup before redirect.');
+
+            // This is the path a normal purchase actually takes: the order was
+            // created as 'pending' at the decision point, so by the time the
+            // customer returns it already has that status. The commit hooks must
+            // fire here too, or the only site left is the webhook - which runs
+            // with no WC session, no stash and no user. fire_once() keeps it to a
+            // single run across both paths.
+            $this->fire_payment_complete($order, $session);
+            $this->fire_commit_hooks($order);
+
             // Idempotent cart and session cleanup
             if (null !== WC()->cart && !WC()->cart->is_empty()) {
                 WC()->cart->empty_cart();
@@ -389,13 +455,14 @@ class Checkout_Handler
             $order->save();
             Logger::log('Order upgraded to pending: ' . $order->get_id());
 
-            /**
-             * Action after payment is verified and order upgraded.
-             *
-             * @param WC_Order $order   The WooCommerce order.
-             * @param array    $session Briqpay session from API.
-             */
-            do_action('briqpay_payment_complete', $order, $session);
+            $this->fire_payment_complete($order, $session);
+
+            // Payment is verified and we still have the WC session, the stashed
+            // form data and the logged-in user - the best context available for
+            // WooCommerce's "checkout completed" actions. Webhooks::
+            // handle_order_status() calls this too, as a fallback for a customer
+            // who pays and never returns; fire_once() keeps it to one run.
+            $this->fire_commit_hooks($order);
         }
 
         // Clear session data after successful placement to ensure second purchase starts fresh
@@ -445,6 +512,9 @@ class Checkout_Handler
         // The purchase is done - never carry a stale sync failure from this
         // order into the customer's next checkout.
         Session_Manager::set_sync_failed(false);
+
+        // Likewise the replayed checkout form: it belongs to this purchase only.
+        self::clear_stashed_posted_data();
         setcookie('briqpay_b2b_active', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
 
         // Only clear stored customer address if guest user to avoid corrupting registered user details
@@ -567,6 +637,10 @@ class Checkout_Handler
                 if (isset($blocks_data['order_attribution']) && is_array($blocks_data['order_attribution'])) {
                     $this->capture_order_attribution_from_blocks($blocks_data['order_attribution']);
                 }
+
+                // Keep the payload for replay into the WooCommerce checkout
+                // actions at decision time, which has no form data of its own.
+                $this->stash_posted_data($blocks_data, 'blocks');
             }
         }
 
@@ -589,6 +663,12 @@ class Checkout_Handler
                 // change meaningfully between requests) and apply them to the order
                 // once it actually exists, in apply_order_attribution_to_order().
                 $this->capture_order_attribution($checkout_data);
+
+                // Same reasoning as Order Attribution above, for the same
+                // reason: this serialization is the only place the submitted
+                // checkout form ever reaches us, and the WooCommerce checkout
+                // actions expect to receive it.
+                $this->stash_posted_data($checkout_data, 'classic');
             } else {
                 Logger::log('checkout_data found but is empty.');
             }
@@ -777,12 +857,14 @@ class Checkout_Handler
             wp_send_json_error(array('message' => 'Unauthorized session ID'));
         }
 
+        // Atomic claim, so two concurrent decision requests for one session
+        // cannot both proceed and create two WooCommerce orders. The previous
+        // get_transient()/set_transient() pair could be passed by both.
         $lock_key = 'briqpay_decision_lock_' . $session_id;
-        if (get_transient($lock_key)) {
+        if (!Lock::acquire($lock_key, 30)) {
             Logger::log('Decision already in progress for session: ' . $session_id);
             wp_send_json_error(array('message' => 'Decision in progress'));
         }
-        set_transient($lock_key, 1, 30);
 
         Logger::log('ajax_make_decision() triggered for session: ' . $session_id);
 
@@ -792,7 +874,10 @@ class Checkout_Handler
         $session = $api->get_session($session_id);
 
         if (is_wp_error($session)) {
-            delete_transient($lock_key);
+            // Lock::acquire() stores a prefixed option, not a transient, so
+            // delete_transient() here left the lock held for its full TTL and
+            // blocked the customer's immediate retry after a transient API glitch.
+            Lock::release($lock_key);
             Logger::log('Error retrieving session: ' . $session->get_error_message());
             wp_send_json_error(array('message' => 'Could not retrieve session'));
         }
@@ -948,6 +1033,8 @@ class Checkout_Handler
 
             if (!$validation['valid']) {
                 Logger::log('Validation failed: ' . implode(', ', $validation['errors']));
+                // Do not hold stock for a purchase we are about to refuse.
+                $this->release_stock($order);
                 $initial_decision = array(
                     'decision' => 'reject',
                     'rejectionType' => 'notify_user',
@@ -974,6 +1061,15 @@ class Checkout_Handler
                 }
             }
 
+            // Fire WooCommerce's order-populating checkout actions now: validation
+            // has passed, the order exists, and the cart these hooks read from is
+            // still intact (the return handler empties it). Deliberately after
+            // validation so a rejected attempt never runs third-party code, and
+            // before the decision so the order is complete when it is authorized.
+            if ($validation['valid']) {
+                $this->fire_checkout_data_hooks($order);
+            }
+
             $decision = apply_filters('briqpay_decision_value', $initial_decision, $session_id, $session);
 
             // Handle reject decision with softErrors
@@ -991,7 +1087,7 @@ class Checkout_Handler
                 $decision_result = $api->make_decision($session_id, 'allow');
             }
 
-            delete_transient('briqpay_decision_lock_' . $session_id);
+            Lock::release('briqpay_decision_lock_' . $session_id);
 
             if (is_wp_error($decision_result)) {
                 Logger::log('Decision API error: ' . $decision_result->get_error_message());
@@ -1017,8 +1113,21 @@ class Checkout_Handler
                 'redirect_url' => add_query_arg('briqpay_return', '1', $this->get_current_url())
             ));
         } catch (\Exception $e) {
-            delete_transient('briqpay_decision_lock_' . $session_id);
+            Lock::release('briqpay_decision_lock_' . $session_id);
             Logger::log('Error creating order: ' . $e->getMessage());
+
+            // Core fires this from WC_Checkout::process_checkout()'s catch, and
+            // error-reporting plugins listen for it. Guarded by the same gate as
+            // the other checkout actions, and never allowed to mask the original
+            // failure - the customer still gets the real error.
+            if (self::hook_enabled('woocommerce_checkout_order_exception')) {
+                try {
+                    do_action('woocommerce_checkout_order_exception', $e);
+                } catch (\Throwable $hook_error) {
+                    Logger::error('woocommerce_checkout_order_exception listener threw: ' . $hook_error->getMessage());
+                }
+            }
+
             wp_send_json_error(array('message' => $e->getMessage()));
         }
     }
@@ -1175,10 +1284,26 @@ class Checkout_Handler
         // 3. Create new order if none found
         if (!$order) {
             Logger::log('Creating new manual order at decision point.');
+            // 'checkout' when the WooCommerce checkout actions are enabled: a
+            // number of plugins gate on created_via === 'checkout' and would stay
+            // dormant otherwise, and with the actions firing these orders really
+            // are checkout orders. Stores that have not opted in keep the
+            // historical 'Briqpay' value so nothing about them changes.
+            // Note Hosted_Payment_Page::is_admin_created() treats only '' and
+            // 'admin' as admin-created, so neither value affects that gate.
+            $created_via = self::checkout_hooks_enabled() ? 'checkout' : 'Briqpay';
+
+            /**
+             * Filter the created_via value stamped on storefront Briqpay orders.
+             *
+             * @param string $created_via Either 'checkout' or 'Briqpay'.
+             */
+            $created_via = apply_filters('briqpay_order_created_via', $created_via);
+
             $order = wc_create_order(array(
                 'customer_id' => get_current_user_id() ?: 0,
                 'status' => 'pending',
-                'created_via' => 'Briqpay',
+                'created_via' => $created_via,
             ));
 
             if (is_wp_error($order)) {
@@ -1201,7 +1326,26 @@ class Checkout_Handler
                 /** @var \WC_Product $product */
                 $product = $values['data'];
 
-                $item = new \WC_Order_Item_Product();
+                // Standard filter letting plugins substitute their own line-item
+                // class. Type-checked because core does not: a plugin returning
+                // something unexpected would otherwise fatal inside our AJAX
+                // handler rather than merely misbehaving during checkout.
+                if (self::hook_enabled('woocommerce_checkout_create_order_line_item_object')) {
+                    $item = apply_filters(
+                        'woocommerce_checkout_create_order_line_item_object',
+                        new \WC_Order_Item_Product(),
+                        $cart_item_key,
+                        $values,
+                        $order
+                    );
+                    if (!$item instanceof \WC_Order_Item_Product) {
+                        Logger::error('woocommerce_checkout_create_order_line_item_object returned an unusable value - falling back to a standard line item.');
+                        $item = new \WC_Order_Item_Product();
+                    }
+                } else {
+                    $item = new \WC_Order_Item_Product();
+                }
+
                 $item->set_name($product->get_name());
 
                 // Correctly set parent product ID and variation ID
@@ -1219,6 +1363,12 @@ class Checkout_Handler
                 $item->set_subtotal_tax($values['line_subtotal_tax']);
                 $item->set_total_tax($values['line_tax']);
                 $item->set_taxes($values['line_tax_data']);
+
+                // Mirror WC_Checkout::create_order_line_items(). Without the tax
+                // class the item records no rate, so a later recalculation in the
+                // admin taxes a reduced-rate product at the standard rate.
+                $item->set_tax_class($product->get_tax_class());
+
                 $item->set_backorder_meta();
 
                 $sku = $product->get_sku();
@@ -1372,6 +1522,11 @@ class Checkout_Handler
             $order->set_shipping_country($s['country'] ?? '');
         }
 
+        // Cart hash and customer note, both of which WC_Checkout sets and this
+        // flow previously dropped. Unconditional: neither runs third-party code,
+        // and losing a note the customer typed is simply a defect.
+        $this->apply_native_order_properties($order);
+
         // Calculate totals with tax AFTER addresses are set so tax rules resolve correctly
         $order->calculate_totals(true);
 
@@ -1417,13 +1572,31 @@ class Checkout_Handler
             if (isset($chosen_methods[$i], $package['rates'][$chosen_methods[$i]])) {
                 $rate = $package['rates'][$chosen_methods[$i]];
                 $item = new \WC_Order_Item_Shipping();
-                $item->set_props(array(
+                $props = array(
                     'method_title' => $rate->label,
                     'method_id' => $rate->method_id,
                     'instance_id' => $rate->instance_id,
                     'total' => wc_format_decimal($rate->cost),
                     'taxes' => array('total' => $rate->taxes),
-                ));
+                );
+
+                // tax_status is a WC 3.x+ shipping-rate property. Guarded because
+                // the plugin supports older WooCommerce than that.
+                if (isset($rate->tax_status)) {
+                    $props['tax_status'] = $rate->tax_status;
+                }
+
+                $item->set_props($props);
+
+                // Copy the rate's own metadata, as WC_Checkout::
+                // create_order_shipping_lines() does. Table-rate and
+                // broker/pickup-point plugins put their selection here, so
+                // dropping it loses the chosen service or pickup location.
+                if (is_callable(array($rate, 'get_meta_data'))) {
+                    foreach ($rate->get_meta_data() as $key => $value) {
+                        $item->add_meta_data($key, $value, true);
+                    }
+                }
 
                 // Allow plugins to modify shipping item
                 do_action('woocommerce_checkout_create_order_shipping_item', $item, $i, $package, $order);
@@ -1485,10 +1658,699 @@ class Checkout_Handler
             $item->set_discount(WC()->cart->get_coupon_discount_amount($code));
             $item->set_discount_tax(WC()->cart->get_coupon_discount_tax_amount($code));
 
+            // WC_Checkout::create_order_coupon_lines() stores a snapshot of the
+            // coupon so the order still renders correctly after the coupon is
+            // edited or deleted. Guarded: get_short_info() is WC 3.7+.
+            if (is_callable(array($coupon, 'get_short_info'))) {
+                $item->add_meta_data('coupon_info', $coupon->get_short_info(), true);
+            }
+
             do_action('woocommerce_checkout_create_order_coupon_item', $item, $code, $coupon, $order);
 
             $order->add_item($item);
         }
+    }
+
+    /**
+     * WC session key holding the replayed checkout form data.
+     */
+    const POSTED_DATA_KEY = 'briqpay_posted_data';
+
+    /**
+     * WC session key recording which checkout produced the stashed data.
+     */
+    const POSTED_DATA_SOURCE_KEY = 'briqpay_posted_data_source';
+
+    /**
+     * Form fields never worth replaying into a checkout hook.
+     *
+     * Nonces are request-scoped and would be stale by the time we replay them;
+     * a plugin re-verifying one against the decision request would fail.
+     *
+     * @var string[]
+     */
+    private static $posted_data_exclude = array(
+        'security',
+        'nonce',
+        '_wpnonce',
+        '_wp_http_referer',
+        'woocommerce-process-checkout-nonce',
+    );
+
+    /**
+     * Is firing WooCommerce's standard checkout actions enabled?
+     *
+     * Defaults to enabled when the key is absent, which is only the case before
+     * Upgrade::maybe_migrate() has run. That migration stamps 'no' for stores
+     * that already have credentials configured, so a live store upgrading never
+     * silently starts running third-party checkout code.
+     *
+     * @return bool
+     */
+    public static function checkout_hooks_enabled()
+    {
+        $settings = get_option('woocommerce_briqpay_settings', array());
+
+        if (!is_array($settings) || !isset($settings['checkout_hooks_enabled'])) {
+            return true;
+        }
+
+        return 'yes' === $settings['checkout_hooks_enabled'];
+    }
+
+    /**
+     * Should this specific checkout action be fired?
+     *
+     * The setting is the master switch; the filter is a per-hook escape hatch so
+     * an integrator who hits one badly behaved plugin can silence that single
+     * action instead of losing the whole feature.
+     *
+     * @param string $hook Hook name being considered.
+     * @return bool
+     */
+    public static function hook_enabled($hook)
+    {
+        if (!self::checkout_hooks_enabled()) {
+            return false;
+        }
+
+        /**
+         * Filter whether one specific WooCommerce checkout action is fired.
+         *
+         * @param bool   $enabled Whether to fire it.
+         * @param string $hook    Hook name, e.g. 'woocommerce_checkout_create_order'.
+         */
+        return (bool) apply_filters('briqpay_fire_checkout_hook', true, $hook);
+    }
+
+    /**
+     * Stash the submitted checkout form so it can be replayed later.
+     *
+     * WooCommerce passes the posted checkout data to
+     * woocommerce_checkout_create_order, ..._update_order_meta and
+     * ..._order_processed. Our decision request has none of it - it posts only a
+     * session ID - but ajax_get_session() receives the whole serialized form on
+     * every sync. Capture it here and replay it when the hooks fire, the same
+     * way store_order_attribution() already handles Order Attribution.
+     *
+     * Overwrites rather than merges so a field the customer cleared does not
+     * linger from an earlier sync.
+     *
+     * @param array  $data   Already-sanitized form data.
+     * @param string $source 'classic' or 'blocks'.
+     * @return void
+     */
+    private function stash_posted_data(array $data, $source)
+    {
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        $data = array_diff_key($data, array_flip(self::$posted_data_exclude));
+
+        // Both intake branches run in a single ajax_get_session() request: Blocks
+        // posts 'blocks_data' AND an empty 'checkout_data'. Since a stash
+        // deliberately overwrites rather than merges, an empty second write would
+        // wipe the payload the first one captured and flip the source to
+        // 'classic'. Nothing useful is ever stashed from an empty form, so skip.
+        if (empty($data)) {
+            Logger::log(sprintf('Nothing to stash from the %s checkout (no fields) - keeping any existing stash.', $source));
+            return;
+        }
+
+        WC()->session->set(self::POSTED_DATA_KEY, $data);
+        WC()->session->set(self::POSTED_DATA_SOURCE_KEY, $source);
+
+        Logger::log(sprintf(
+            'Stashed %d %s checkout fields for replay into checkout hooks.',
+            count($data),
+            $source
+        ));
+    }
+
+    /**
+     * The stashed checkout form data, in WooCommerce's classic posted shape.
+     *
+     * @return array Empty when nothing was captured (e.g. webhook context,
+     *               which has no WC session at all).
+     */
+    public static function get_stashed_posted_data()
+    {
+        if (null === WC() || null === WC()->session) {
+            return array();
+        }
+
+        $data = WC()->session->get(self::POSTED_DATA_KEY);
+
+        return is_array($data) ? $data : array();
+    }
+
+    /**
+     * Which checkout the stashed data came from.
+     *
+     * @return string 'classic', 'blocks', or '' when nothing is stashed.
+     */
+    public static function get_stashed_posted_data_source()
+    {
+        if (null === WC() || null === WC()->session) {
+            return '';
+        }
+
+        $source = WC()->session->get(self::POSTED_DATA_SOURCE_KEY);
+
+        return is_string($source) ? $source : '';
+    }
+
+    /**
+     * Forget the stashed checkout form data.
+     *
+     * @return void
+     */
+    public static function clear_stashed_posted_data()
+    {
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        WC()->session->set(self::POSTED_DATA_KEY, null);
+        WC()->session->set(self::POSTED_DATA_SOURCE_KEY, null);
+    }
+
+    /**
+     * Translate Blocks checkout data into WooCommerce's classic posted keys.
+     *
+     * Blocks sends nested address objects ('billing_address' => ['first_name'
+     * => ...]) while the classic hooks receive flat 'billing_first_name' keys.
+     * Plugins reading $data['billing_first_name'] would find nothing without
+     * this. Mapping is explicit rather than derived so an unexpected Blocks
+     * field can never silently become a WooCommerce field name.
+     *
+     * Empty values are dropped rather than mapped: a plugin that treats a
+     * present-but-empty key as "clear this" would otherwise blank good data.
+     *
+     * @param array $blocks_data Sanitized Blocks payload.
+     * @return array Classic-shaped posted data.
+     */
+    public static function normalise_blocks_data(array $blocks_data)
+    {
+        $map = array(
+            'first_name' => 'first_name',
+            'last_name' => 'last_name',
+            'company' => 'company',
+            'address_1' => 'address_1',
+            'address_2' => 'address_2',
+            'city' => 'city',
+            'state' => 'state',
+            'postcode' => 'postcode',
+            'country' => 'country',
+            'email' => 'email',
+            'phone' => 'phone',
+        );
+
+        $normalised = array();
+
+        foreach (array('billing', 'shipping') as $group) {
+            $source = $blocks_data[$group . '_address'] ?? array();
+            if (!is_array($source)) {
+                continue;
+            }
+
+            foreach ($map as $from => $to) {
+                if (isset($source[$from]) && '' !== $source[$from]) {
+                    $normalised[$group . '_' . $to] = $source[$from];
+                }
+            }
+        }
+
+        // Anything that is not an address block passes through untouched -
+        // custom Blocks extension data uses its own key names and a plugin
+        // reading it expects exactly what it sent.
+        foreach ($blocks_data as $key => $value) {
+            if ('billing_address' === $key || 'shipping_address' === $key) {
+                continue;
+            }
+            if (!isset($normalised[$key])) {
+                $normalised[$key] = $value;
+            }
+        }
+
+        return $normalised;
+    }
+
+    /**
+     * Run a callback with the stashed checkout data superimposed on $_POST.
+     *
+     * Many plugins read $_POST directly inside the checkout hooks rather than
+     * using the $data argument. Passing $data alone would leave them reading an
+     * empty form, and some of them write what they read - blanking values that
+     * were already correct. So the stash is merged in for the duration of the
+     * hooks only.
+     *
+     * Real request values win over stashed ones, so the current request is never
+     * misrepresented, and the restore runs in a finally so a throwing hook
+     * cannot leak a mutated superglobal into the rest of the request.
+     *
+     * @param array    $data Data to superimpose.
+     * @param callable $fn   Callback to run.
+     * @return void
+     */
+    private function with_posted_data(array $data, callable $fn)
+    {
+        /**
+         * Filter whether the stashed checkout data is superimposed on $_POST
+         * while checkout actions fire. Disable to pass it only as the hook
+         * argument.
+         *
+         * @param bool  $enabled Whether to superimpose.
+         * @param array $data    The data that would be superimposed.
+         */
+        if (empty($data) || !apply_filters('briqpay_superimpose_post_data', true, $data)) {
+            $fn();
+            return;
+        }
+
+        $original_post = $_POST;
+        $original_request = $_REQUEST;
+
+        try {
+            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- replaying already-sanitized data captured from a nonce-verified request.
+            $_POST = array_merge($data, $_POST);
+            $_REQUEST = array_merge($data, $_REQUEST);
+            $fn();
+        } finally {
+            $_POST = $original_post;
+            $_REQUEST = $original_request;
+        }
+    }
+
+    /**
+     * Run a callback at most once per order, per group.
+     *
+     * create_order_at_decision() is not a pure create: it reuses the WC session
+     * draft, reuses Store API drafts, searches the database for recent drafts,
+     * and can be re-entered when a customer retries after a rejected decision.
+     * The commit hooks additionally have two possible call sites (the return
+     * handler and, as a fallback, the webhook). Plugins that append on these
+     * hooks - a fee, an order note, an ERP queue row - must not append twice.
+     *
+     * The flag is persisted BEFORE the callback runs, deliberately: if
+     * third-party code fatals, a retry must not get a second attempt at the same
+     * side effects.
+     *
+     * @param \WC_Order $order The order.
+     * @param string    $group 'data' or 'commit'.
+     * @param callable  $fn    Callback to run once.
+     * @return bool Whether the callback ran.
+     */
+    private function fire_once($order, $group, callable $fn)
+    {
+        $meta_key = '_briqpay_hooks_' . $group;
+
+        if ($order->get_meta($meta_key)) {
+            Logger::log(sprintf(
+                'Checkout %s hooks already fired for order %s - skipping.',
+                $group,
+                $order->get_id()
+            ));
+            return false;
+        }
+
+        $order->update_meta_data($meta_key, current_time('mysql'));
+        $order->save();
+
+        try {
+            $fn();
+        } catch (\Throwable $e) {
+            // These hooks run third-party code inside our AJAX handler (or the
+            // webhook worker). An uncaught throwable would break the response
+            // and strand the customer on a paid-but-unconfirmed order.
+            Logger::error(sprintf(
+                'Third-party code on the checkout %s hooks threw for order %s: %s',
+                $group,
+                $order->get_id(),
+                $e->getMessage()
+            ));
+        }
+
+        return true;
+    }
+
+    /**
+     * Set the order properties WC_Checkout sets that this flow used to drop.
+     *
+     * Neither of these runs third-party code, so both apply regardless of the
+     * "WooCommerce checkout actions" setting - they are defects being fixed, not
+     * new behaviour being introduced.
+     *
+     *  - cart_hash: WooCommerce and several plugins use it to tell whether an
+     *    order still matches the cart it came from.
+     *  - customer_note: the order comments field. The customer types it into the
+     *    checkout form, which this flow never read, so it was silently discarded
+     *    on every Briqpay order.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    private function apply_native_order_properties($order)
+    {
+        if (null !== WC() && null !== WC()->cart && is_callable(array($order, 'set_cart_hash'))) {
+            $order->set_cart_hash(WC()->cart->get_cart_hash());
+        }
+
+        // Only fill an empty note: a reused draft may already carry one from the
+        // Store API, and the customer's own text must win over a stale replay.
+        if ('' !== (string) $order->get_customer_note()) {
+            return;
+        }
+
+        $posted = self::get_stashed_posted_data();
+
+        if ('blocks' === self::get_stashed_posted_data_source()) {
+            // Blocks sends the note as customer_note rather than order_comments.
+            $note = $posted['customer_note'] ?? '';
+        } else {
+            $note = $posted['order_comments'] ?? '';
+        }
+
+        if ('' !== (string) $note) {
+            $order->set_customer_note(sanitize_textarea_field($note));
+            Logger::log('Applied customer note from the checkout form to order ' . $order->get_id() . '.');
+        }
+    }
+
+    /**
+     * Fire the checkout actions that populate an order.
+     *
+     * Called once validation has passed and before the decision is sent, which
+     * is the last moment WooCommerce still has the cart these hooks read from.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    private function fire_checkout_data_hooks($order)
+    {
+        if (!self::checkout_hooks_enabled()) {
+            return;
+        }
+
+        $this->fire_once($order, 'data', function () use ($order) {
+            $data = $this->get_hook_data();
+            $total_before = (float) $order->get_total();
+
+            Logger::log(sprintf(
+                'Firing checkout data hooks for order %s with %d posted field(s) from the %s checkout.',
+                $order->get_id(),
+                count($data),
+                self::get_stashed_posted_data_source() ?: 'unknown'
+            ));
+
+            $this->with_posted_data($data, function () use ($order, $data) {
+                if (self::hook_enabled('woocommerce_checkout_create_order')) {
+                    do_action('woocommerce_checkout_create_order', $order, $data);
+                    $order->save();
+                }
+
+                if (self::hook_enabled('woocommerce_checkout_update_order_meta')) {
+                    do_action('woocommerce_checkout_update_order_meta', $order->get_id(), $data);
+                }
+
+                if ('blocks' === self::get_stashed_posted_data_source()
+                    && self::hook_enabled('woocommerce_store_api_checkout_update_order_meta')) {
+                    do_action('woocommerce_store_api_checkout_update_order_meta', $order);
+                }
+            });
+
+            // Tax lines exist by now (calculate_totals() built them via core's own
+            // path). Core fires this during construction, before the item is
+            // added; we can only offer it afterwards, so a plugin that reads or
+            // annotates works while one that expects to swap the object does not.
+            // Documented divergence - firing it is still better than never
+            // giving plugins the hook at all.
+            $this->fire_tax_item_hooks($order);
+
+            $this->reserve_stock($order);
+            $this->recalculate_cogs($order);
+
+            $order->save();
+
+            $this->warn_on_total_drift($order, $total_before);
+        });
+    }
+
+    /**
+     * Offer woocommerce_checkout_create_order_tax_item for each tax line.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    private function fire_tax_item_hooks($order)
+    {
+        if (!self::hook_enabled('woocommerce_checkout_create_order_tax_item')) {
+            return;
+        }
+
+        foreach ($order->get_items('tax') as $item) {
+            $rate_id = is_callable(array($item, 'get_rate_id')) ? $item->get_rate_id() : 0;
+            do_action('woocommerce_checkout_create_order_tax_item', $item, $rate_id, $order);
+        }
+    }
+
+    /**
+     * Reserve stock for the order, as WC_Checkout::process_checkout() does.
+     *
+     * Value here is for OTHER customers: the reservation is what stops the next
+     * shopper buying the last unit while this purchase is between authorization
+     * and capture. validate_data_integrity() already checks availability for this
+     * order, so a failure to reserve is logged rather than blocking - by this
+     * point Briqpay is about to authorize and refusing would be worse than a
+     * possible oversell the merchant can see in the log.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    private function reserve_stock($order)
+    {
+        if (!function_exists('wc_reserve_stock_for_order')) {
+            return;
+        }
+
+        try {
+            wc_reserve_stock_for_order($order);
+        } catch (\Throwable $e) {
+            Logger::error(sprintf(
+                'Could not reserve stock for order %s: %s',
+                $order->get_id(),
+                $e->getMessage()
+            ));
+        }
+    }
+
+    /**
+     * Release a stock reservation this flow took.
+     *
+     * Called when the decision comes back rejected, so a refused purchase does
+     * not hold stock until the reservation expires.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    private function release_stock($order)
+    {
+        if (!function_exists('wc_release_stock_for_order')) {
+            return;
+        }
+
+        try {
+            wc_release_stock_for_order($order);
+            Logger::log('Released stock reservation for rejected order ' . $order->get_id() . '.');
+        } catch (\Throwable $e) {
+            Logger::error('Could not release stock for order ' . $order->get_id() . ': ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Recalculate Cost of Goods Sold, which WooCommerce 9.5+ maintains.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    private function recalculate_cogs($order)
+    {
+        if (!is_callable(array($order, 'calculate_cogs_total_value'))) {
+            return;
+        }
+
+        try {
+            $order->calculate_cogs_total_value();
+        } catch (\Throwable $e) {
+            Logger::error('Could not calculate COGS for order ' . $order->get_id() . ': ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Fire this plugin's own briqpay_payment_complete action.
+     *
+     * The action is documented as "runs when the payment is verified at the
+     * return handler", but it used to sit only inside the status-upgrade branch of
+     * handle_briqpay_return(). Orders are created as 'pending' at the decision
+     * point, so on a normal storefront purchase that branch is never taken and the
+     * action never fired at all - while the WooCommerce checkout actions beside it
+     * did. A documented hook that never fires is worse than either firing it or
+     * removing it, so it now fires on both return paths, once per order.
+     *
+     * Scope is deliberately unchanged in one respect: this stays a RETURN-time
+     * signal and is not fired from the webhook. Its meaning is "the customer came
+     * back and we verified the session", not "the money is secured". Integrators
+     * who want the latter should use WooCommerce's own woocommerce_payment_complete
+     * or the order-status transitions, both of which this plugin already triggers
+     * from the webhook via $order->payment_complete() - and which fire even when
+     * the customer never returns.
+     *
+     * Not gated behind the "WooCommerce checkout actions" setting: that gate exists
+     * to keep third-party plugin code from running unexpectedly, whereas anything
+     * listening here is code the merchant wrote for this plugin themselves.
+     *
+     * @param \WC_Order $order   The order.
+     * @param array     $session Briqpay session from the API.
+     * @return void
+     */
+    private function fire_payment_complete($order, $session)
+    {
+        /**
+         * Filter whether briqpay_payment_complete is fired.
+         *
+         * Provided for merchants who built a workaround while the action was
+         * unreachable and want to keep it rather than migrate.
+         *
+         * @param bool      $enabled Whether to fire it.
+         * @param \WC_Order $order   The order.
+         */
+        if (!apply_filters('briqpay_fire_payment_complete', true, $order)) {
+            return;
+        }
+
+        $this->fire_once($order, 'verified', function () use ($order, $session) {
+            Logger::log('Firing briqpay_payment_complete for order ' . $order->get_id() . '.');
+
+            /**
+             * Action after payment is verified at the return handler.
+             *
+             * @param WC_Order $order   The WooCommerce order.
+             * @param array    $session Briqpay session from API.
+             */
+            do_action('briqpay_payment_complete', $order, $session);
+        });
+    }
+
+    /**
+     * Fire the checkout actions that signal a completed purchase.
+     *
+     * Primary call site is the return handler, where the payment is verified and
+     * the WC session, the stash and the logged-in user are all still available.
+     * The webhook calls this too, as a fallback for the customer who pays and
+     * closes the browser without returning - fire_once() makes whichever arrives
+     * first the only one that runs.
+     *
+     * @param \WC_Order $order The order.
+     * @return void
+     */
+    public function fire_commit_hooks($order)
+    {
+        if (!self::checkout_hooks_enabled()) {
+            return;
+        }
+
+        $this->fire_once($order, 'commit', function () use ($order) {
+            $data = $this->get_hook_data();
+
+            // Logged on BOTH paths, not just the degraded one. When only the empty
+            // case logged, a successful good-context firing left no trace at all,
+            // which made verifying the commit-hook placement from a log
+            // guesswork - the exact problem that hid two earlier bugs.
+            if (empty($data)) {
+                // Expected in webhook context: no WC session, so no stash.
+                Logger::log(sprintf(
+                    'Firing commit hooks for order %s with no posted data '
+                    . '(degraded context - plugins reading only $order are unaffected).',
+                    $order->get_id()
+                ));
+            } else {
+                Logger::log(sprintf(
+                    'Firing commit hooks for order %s with %d posted field(s) from the %s checkout.',
+                    $order->get_id(),
+                    count($data),
+                    self::get_stashed_posted_data_source() ?: 'unknown'
+                ));
+            }
+
+            $this->with_posted_data($data, function () use ($order, $data) {
+                if (self::hook_enabled('woocommerce_checkout_order_created')) {
+                    do_action('woocommerce_checkout_order_created', $order);
+                }
+
+                if (self::hook_enabled('woocommerce_checkout_order_processed')) {
+                    do_action('woocommerce_checkout_order_processed', $order->get_id(), $data, $order);
+                }
+
+                if ('blocks' === self::get_stashed_posted_data_source()
+                    && self::hook_enabled('woocommerce_store_api_checkout_order_processed')) {
+                    do_action('woocommerce_store_api_checkout_order_processed', $order);
+                }
+            });
+        });
+    }
+
+    /**
+     * The $data argument for the checkout hooks, in classic posted shape.
+     *
+     * @return array
+     */
+    private function get_hook_data()
+    {
+        $data = self::get_stashed_posted_data();
+
+        if ('blocks' === self::get_stashed_posted_data_source()) {
+            $data = self::normalise_blocks_data($data);
+        }
+
+        return $data;
+    }
+
+    /**
+     * Log loudly when a checkout hook changed the order total.
+     *
+     * These hooks can add data but not amounts. In core WooCommerce a plugin
+     * adding a fee here is harmless because the order is built before payment is
+     * authorized. In our flow the authorized amount came from the Briqpay
+     * session, PATCHed from the cart earlier, so an added fee makes the
+     * WooCommerce total exceed what was authorized and the gap surfaces later at
+     * capture.
+     *
+     * Detection only - silently "correcting" the order would hide a real
+     * configuration problem from the merchant.
+     *
+     * @param \WC_Order $order        The order.
+     * @param float     $total_before Total before the hooks ran.
+     * @return void
+     */
+    private function warn_on_total_drift($order, $total_before)
+    {
+        $total_after = (float) $order->get_total();
+
+        if (abs($total_after - $total_before) <= 0.01) {
+            return;
+        }
+
+        Logger::error(sprintf(
+            'Order %s total changed from %s to %s inside the WooCommerce checkout '
+            . 'actions. The amount authorized with Briqpay is unchanged, so capture '
+            . 'will mismatch. A plugin is adding an amount on '
+            . 'woocommerce_checkout_create_order or ..._update_order_meta; these '
+            . 'hooks can add data but not amounts.',
+            $order->get_id(),
+            $total_before,
+            $total_after
+        ));
     }
 
     /**

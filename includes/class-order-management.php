@@ -42,6 +42,34 @@ class Order_Management
             return;
         }
 
+        // One capture at a time per order. Without this, two concurrent triggers
+        // (an admin clicking twice, or a status transition racing a webhook) can
+        // each read the same capture history and both capture the same items.
+        $lock = 'briqpay_capture_' . $order_id;
+        if (!Lock::acquire($lock, 120)) {
+            Logger::log('Capture already in progress for order ' . $order_id . ' - skipping this attempt.');
+            return;
+        }
+
+        try {
+            $this->capture_order_locked($order, $session_id, $order_id);
+        } finally {
+            Lock::release($lock);
+        }
+    }
+
+    /**
+     * Capture body, running under the per-order capture lock.
+     *
+     * @param \WC_Order $order      The order.
+     * @param string    $session_id Briqpay session ID.
+     * @param int       $order_id   The order ID. Passed explicitly rather than
+     *                              read from $order so the Action Scheduler retry
+     *                              below always has a usable value.
+     * @return void
+     */
+    private function capture_order_locked($order, $session_id, $order_id)
+    {
         // Calculate missing items for full capture
         $remaining_items = $this->get_remaining_items_to_capture($order);
         if (empty($remaining_items)) {
@@ -140,6 +168,37 @@ class Order_Management
             return new \WP_Error('no_session', __('No Briqpay session found.', 'briqpay-for-woocommerce'));
         }
 
+        // Same per-order lock capture_order() takes, and the same key, so an
+        // automatic capture and an admin-triggered one cannot run concurrently.
+        // Balance calculations below read the capture history, so two parallel
+        // requests would each compute against the same starting point and could
+        // double-capture with the PSP.
+        $lock = 'briqpay_capture_' . $order->get_id();
+        if (!Lock::acquire($lock, 120)) {
+            Logger::log('Manual capture refused for order ' . $order->get_id() . ': a capture is already in progress.');
+            return new \WP_Error(
+                'capture_in_progress',
+                __('A capture is already in progress for this order. Please wait a moment and reload.', 'briqpay-for-woocommerce')
+            );
+        }
+
+        try {
+            return $this->manual_capture_locked($order, $session_id, $items_to_capture);
+        } finally {
+            Lock::release($lock);
+        }
+    }
+
+    /**
+     * Manual capture body, running under the per-order capture lock.
+     *
+     * @param \WC_Order $order            The order.
+     * @param string    $session_id       Briqpay session ID.
+     * @param array     $items_to_capture Items the admin selected.
+     * @return mixed
+     */
+    private function manual_capture_locked($order, $session_id, $items_to_capture)
+    {
         // Map the manual input to the detailed format needed for capture
         $detailed_items = array();
         $is_us = 'US' === $order->get_billing_country();
@@ -341,6 +400,37 @@ class Order_Management
         }
 
         $order = wc_get_order($order_id);
+        if (!$order) {
+            Logger::log('Refund aborted: order not found.');
+            return false;
+        }
+
+        // Serialize refunds per order. Refund amounts are derived from the stored
+        // capture and refund history, so two concurrent refunds can each read the
+        // same history and over-refund.
+        $lock = 'briqpay_refund_' . $order_id;
+        if (!Lock::acquire($lock, 120)) {
+            Logger::log('Refund already in progress for order ' . $order_id . ' - refusing this attempt.');
+            return false;
+        }
+
+        try {
+            return $this->refund_order_locked($order, $amount, $reason);
+        } finally {
+            Lock::release($lock);
+        }
+    }
+
+    /**
+     * Refund body, running under the per-order refund lock.
+     *
+     * @param \WC_Order   $order  The order.
+     * @param float|null  $amount Amount requested.
+     * @param string      $reason Reason text.
+     * @return bool
+     */
+    private function refund_order_locked($order, $amount, $reason)
+    {
         $session_id = $order->get_meta('_briqpay_session_id');
         $capture_history = $order->get_meta('_briqpay_capture_history') ?: array();
         $refund_history = $order->get_meta('_briqpay_refund_history') ?: array();
@@ -378,7 +468,7 @@ class Order_Management
         if (empty($refund_items)) {
             Logger::log('Generic amount refund. Mapping to latest capture.');
             $target_capture = end($capture_history);
-            return $this->execute_single_refund($order, $session_id, $target_capture['captureId'], $this->get_order_cart($order), $amount);
+            return $this->execute_single_refund($order, $session_id, $target_capture['captureId'], $this->get_order_cart($order), $amount, null, $reason);
         }
 
         // Calculate unrefunded quantities per capture
@@ -476,7 +566,7 @@ class Order_Management
 
         // Execute API calls
         foreach ($refunds_to_execute as $capture_id => $items) {
-            $res = $this->execute_single_refund($order, $session_id, $capture_id, $items, null, $amount);
+            $res = $this->execute_single_refund($order, $session_id, $capture_id, $items, null, $amount, $reason);
             if (is_wp_error($res)) {
                 return $res;
             }
@@ -599,7 +689,7 @@ class Order_Management
     /**
      * Execute a single refund request to Briqpay
      */
-    private function execute_single_refund($order, $session_id, $capture_id, $items, $override_amount = null, $target_amount = null)
+    private function execute_single_refund($order, $session_id, $capture_id, $items, $override_amount = null, $target_amount = null, $reason = '')
     {
         // 1. Sync with session first
         $session = $this->sync_with_briqpay_session($order);
@@ -616,25 +706,47 @@ class Order_Management
         $cart_for_api = array();
 
         if ($override_amount !== null) {
-            $amount_inc_vat = (int) round($override_amount * 100);
-            // Rough ex-vat estimate if only amount provided
-            $amount_ex_vat = $is_us ? $amount_inc_vat : (int) round($amount_inc_vat / 1.25);
+            $amount_inc_vat = Money::to_minor($override_amount);
 
-            // Re-map items to a single generic refund item to ensure it matches the override amount
+            // The tax rate is derived from THIS order, not assumed. The previous
+            // implementation divided by 1.25 - a hard-coded 25% Swedish VAT - which
+            // silently misreported tax on every order at any other rate, and on
+            // tax-exempt orders.
+            $tax_rate_bps = $is_us ? 0 : $this->derive_order_tax_rate_bps($order);
+            $amount_ex_vat = (int) round($amount_inc_vat / (1 + ($tax_rate_bps / 10000)));
+
+            // Describe the refund as an adjustment rather than inventing a
+            // 'physical' product called "refund", which polluted the merchant's
+            // Briqpay order lines with a product that never existed.
             $items = array(
                 array(
-                    'productType' => 'physical',
-                    'reference' => 'refund',
-                    'name' => __('Refund', 'briqpay-for-woocommerce'),
+                    'productType' => 'adjustment',
+                    'reference' => 'refund-adjustment',
+                    'name' => '' !== (string) $reason
+                        ? $reason
+                        : __('Refund adjustment', 'briqpay-for-woocommerce'),
                     'quantity' => 1,
                     'quantityUnit' => 'pc',
                     'unitPrice' => $amount_ex_vat,
                     'unitPriceIncVat' => $amount_inc_vat,
-                    'taxRate' => (!$is_us && $amount_ex_vat > 0) ? (int) round((($amount_inc_vat - $amount_ex_vat) / $amount_ex_vat) * 10000) : 0,
+                    'taxRate' => $tax_rate_bps,
                     'totalAmount' => $amount_inc_vat,
                     'totalVatAmount' => $is_us ? 0 : ($amount_inc_vat - $amount_ex_vat),
                 )
             );
+
+            /**
+             * Filter the single line used for an amount-only refund.
+             *
+             * Allocating across the actual captured references is more faithful
+             * still; this filter lets an integrator do that for their own tax
+             * setup without forking the plugin.
+             *
+             * @param array     $items          The one-line adjustment.
+             * @param float     $override_amount Requested refund amount.
+             * @param \WC_Order $order          The order.
+             */
+            $items = apply_filters('briqpay_amount_only_refund_items', $items, $override_amount, $order);
         }
 
         // Consolidate items by reference before processing
@@ -1028,6 +1140,115 @@ class Order_Management
         }
 
         return false;
+    }
+
+    /**
+     * Effective tax rate for an order, in basis points (2500 = 25%).
+     *
+     * Derived from what the order actually charged, so an amount-only refund
+     * carries this order's real tax treatment rather than an assumed rate:
+     *
+     *  1. The order's own tax total against its net - correct for mixed-rate
+     *     orders, because it is the blended rate the customer actually paid.
+     *  2. Failing that (a zero-total order, or no tax lines), the rate recorded
+     *     on the line items.
+     *  3. Failing that, zero - never a guess. Under-reporting tax on a refund is
+     *     recoverable; inventing tax that was never charged is not.
+     *
+     * @param \WC_Order $order The order.
+     * @return int Basis points.
+     */
+    private function derive_order_tax_rate_bps($order)
+    {
+        $tax_total = (float) $order->get_total_tax();
+        $net = (float) $order->get_total() - $tax_total;
+
+        if ($net > 0 && $tax_total > 0) {
+            return (int) round(($tax_total / $net) * 10000);
+        }
+
+        // No usable totals - fall back to the highest rate on the line items, which
+        // is what a partial refund of those items would have carried.
+        $rate = 0;
+        foreach ($order->get_items() as $item) {
+            $item_total = (float) $item->get_total();
+            $item_tax = (float) $item->get_total_tax();
+            if ($item_total > 0 && $item_tax > 0) {
+                $rate = max($rate, (int) round(($item_tax / $item_total) * 10000));
+            }
+        }
+
+        if (0 === $rate) {
+            Logger::log(sprintf(
+                'Amount-only refund on order %s: no tax could be derived, sending the refund as tax-free.',
+                $order->get_id()
+            ));
+        }
+
+        return $rate;
+    }
+
+    /**
+     * How far has Briqpay actually got with the money on this session?
+     *
+     * A session status of 'completed' only means the customer reached the end of
+     * the checkout. The authoritative signal is the transaction state, so this
+     * reports three outcomes rather than a boolean:
+     *
+     *   'approved'   - at least one transaction is in an approved state.
+     *   'unapproved' - transactions are present and none of them is approved
+     *                  (pending bank transfer, rejected card, ...).
+     *   'unknown'    - the payload carries no transactions at all.
+     *
+     * The distinction matters because callers must treat absence differently from
+     * a negative. A recovery path (the janitor) should act only on 'approved'. A
+     * path that already marks orders paid today must block only on 'unapproved' -
+     * treating 'unknown' as a refusal would stop legitimately paid orders being
+     * completed on any flow whose payload omits transactions.
+     *
+     * The approved list is an allowlist, so a new Briqpay state is never mistaken
+     * for secured payment.
+     *
+     * @param array $session Session payload from the Briqpay API.
+     * @return string 'approved'|'unapproved'|'unknown'
+     */
+    public static function transaction_approval_state($session)
+    {
+        $transactions = $session['data']['transactions'] ?? array();
+
+        if (empty($transactions) || !is_array($transactions)) {
+            return 'unknown';
+        }
+
+        $approved = array(
+            'approved',
+            'approved_not_captured',
+            'order_approved_not_captured',
+            'captured',
+            'completed',
+        );
+
+        $saw_a_status = false;
+
+        foreach ($transactions as $transaction) {
+            if (!is_array($transaction)) {
+                continue;
+            }
+
+            foreach (array('status', 'state', 'transactionStatus') as $key) {
+                if (!isset($transaction[$key])) {
+                    continue;
+                }
+                $saw_a_status = true;
+                if (in_array($transaction[$key], $approved, true)) {
+                    return 'approved';
+                }
+            }
+        }
+
+        // Transactions present but none carried a status field we recognise - no
+        // more informative than having no transactions at all.
+        return $saw_a_status ? 'unapproved' : 'unknown';
     }
 
     /**

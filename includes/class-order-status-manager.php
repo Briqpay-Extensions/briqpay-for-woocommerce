@@ -177,9 +177,23 @@ class Order_Status_Manager
 
             $status = $session['status'] ?? '';
 
+            // A 'completed' session means the customer finished the checkout, NOT
+            // that the money is secured - the underlying transaction can still be
+            // pending or rejected. Promoting on the session status alone marked
+            // unpaid orders as processing, so require an approved transaction and
+            // then let WooCommerce record the payment properly.
             if ($status === 'completed') {
-                Logger::log('Janitor: Session actually completed. Moving to processing instead of cancelling.');
-                $order->update_status('processing', __('Briqpay Janitor: Recovered completed session.', 'briqpay-for-woocommerce'));
+                // Strictest of the three call sites: this is a recovery path, so
+                // only an explicitly approved transaction justifies acting. No
+                // transaction data means no signal, and the webhook is better
+                // placed to resolve it.
+                if ('approved' === Order_Management::transaction_approval_state($session)) {
+                    Logger::log('Janitor: Session completed with an approved transaction. Recording payment.');
+                    $order->payment_complete($session_id);
+                    $order->add_order_note(__('Briqpay Janitor: Recovered completed session with an approved transaction.', 'briqpay-for-woocommerce'));
+                } else {
+                    Logger::log('Janitor: Session is completed but no transaction is approved. Leaving the order as-is for the webhook to resolve.');
+                }
                 continue;
             }
 

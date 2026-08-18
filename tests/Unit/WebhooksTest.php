@@ -302,6 +302,10 @@ class WebhooksTest extends TestCase
                 'merchant_id' => 'test_mid',
                 'shared_secret' => 'test_secret',
                 'testmode' => 'yes',
+                // This test covers status routing only. The commit-hook fallback
+                // that the approved transition also triggers is gated off here and
+                // exercised on its own in CheckoutHookFallbackTest.
+                'checkout_hooks_enabled' => 'no',
             )
         ));
         WP_Mock::userFunction('__', array('return_arg' => 0));
