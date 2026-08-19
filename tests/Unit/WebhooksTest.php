@@ -183,6 +183,11 @@ class WebhooksTest extends TestCase
             ->andReturn($session_data);
 
         // Order expectations
+        // Not on hold, so the manual-review and merchant-hold guards let the
+        // completion through. Held orders are covered in ManualReviewHoldTest.
+        $order->shouldReceive('has_status')
+            ->with('on-hold')
+            ->andReturn(false);
         $order->shouldReceive('has_status')
             ->with('processing')
             ->andReturn(false);

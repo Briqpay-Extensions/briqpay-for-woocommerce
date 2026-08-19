@@ -182,6 +182,22 @@ class Order_Status_Manager
             // pending or rejected. Promoting on the session status alone marked
             // unpaid orders as processing, so require an approved transaction and
             // then let WooCommerce record the payment properly.
+            // Never move an order a human is holding, and never complete one
+            // Briqpay has flagged for review.
+            if (Order_Management::is_held_for_merchant($order)) {
+                Logger::log('Janitor: Order ' . $order->get_id() . ' is on hold - leaving it for manual release.');
+                continue;
+            }
+
+            if (Order_Management::session_requires_manual_review($session)) {
+                Logger::log('Janitor: Session ' . $session_id . ' is flagged for manual review - holding order ' . $order->get_id() . '.');
+                $order->update_status(
+                    'on-hold',
+                    __('Briqpay: Flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
+                );
+                continue;
+            }
+
             if ($status === 'completed') {
                 // Strictest of the three call sites: this is a recovery path, so
                 // only an explicitly approved transaction justifies acting. No

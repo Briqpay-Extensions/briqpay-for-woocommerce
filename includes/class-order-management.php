@@ -1189,6 +1189,86 @@ class Order_Management
     }
 
     /**
+     * Has Briqpay flagged this session for manual review?
+     *
+     * Read from data.paymentTags.manual_review. An order carrying the tag must be
+     * parked in on-hold for a human to look at, and nothing may quietly advance it
+     * to processing afterwards.
+     *
+     * Two payload shapes are accepted, because paymentTags is a tag bag and both
+     * forms occur in practice: a map with the tag as a truthy key
+     * (paymentTags.manual_review = true) and a plain list of tag names
+     * (paymentTags = ['manual_review']). Anything else reads as "no review
+     * needed" - a tag we cannot parse must never hold up a legitimate order.
+     *
+     * @param array $session Session payload from the Briqpay API, or a webhook body.
+     * @return bool
+     */
+    public static function session_requires_manual_review($session)
+    {
+        $tags = $session['data']['paymentTags'] ?? ($session['paymentTags'] ?? null);
+
+        if (empty($tags)) {
+            return false;
+        }
+
+        // List form: ['manual_review', ...]
+        if (is_array($tags) && in_array('manual_review', $tags, true)) {
+            return true;
+        }
+
+        // Map form: ['manual_review' => true|'true'|1]
+        if (is_array($tags) && isset($tags['manual_review'])) {
+            $value = $tags['manual_review'];
+
+            if (is_bool($value)) {
+                return $value;
+            }
+            if (is_numeric($value)) {
+                return (int) $value > 0;
+            }
+            if (is_string($value)) {
+                return in_array(strtolower($value), array('true', 'yes', '1'), true);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Should this order be left exactly where it is?
+     *
+     * True when the order sits in on-hold. On-hold means somebody - the merchant's
+     * own code, a capture failure, an amount mismatch, or our own manual-review
+     * handling - decided this order needs a human. Advancing it from a webhook
+     * would undo that decision silently.
+     *
+     * This closes a real gap: the webhook status hierarchy ranks on-hold BELOW
+     * processing, so an approval event used to promote a held order straight past
+     * the hold. Leasing and manual-review flows depend on the hold surviving until
+     * a human moves it.
+     *
+     * Filterable for a merchant who wants the previous auto-advance behaviour back.
+     *
+     * @param \WC_Order $order The order.
+     * @return bool
+     */
+    public static function is_held_for_merchant($order)
+    {
+        if (!is_callable(array($order, 'has_status')) || !$order->has_status('on-hold')) {
+            return false;
+        }
+
+        /**
+         * Filter whether an on-hold order is left alone by webhook status handling.
+         *
+         * @param bool      $respect Whether to leave the order on hold.
+         * @param \WC_Order $order   The order.
+         */
+        return (bool) apply_filters('briqpay_respect_on_hold_status', true, $order);
+    }
+
+    /**
      * How far has Briqpay actually got with the money on this session?
      *
      * A session status of 'completed' only means the customer reached the end of

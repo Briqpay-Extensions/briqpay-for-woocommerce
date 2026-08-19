@@ -376,6 +376,11 @@ class Checkout_Handler
             $this->fire_payment_complete($order, $session);
             $this->fire_commit_hooks($order);
 
+            // Surface a manual-review flag straight away rather than leaving the
+            // order in 'pending' until a webhook arrives. Only ever promotes from
+            // pending - an order already processing or completed is left alone.
+            $this->maybe_hold_for_manual_review($order, $session);
+
             // Idempotent cart and session cleanup
             if (null !== WC()->cart && !WC()->cart->is_empty()) {
                 WC()->cart->empty_cart();
@@ -2185,6 +2190,38 @@ class Checkout_Handler
         } catch (\Throwable $e) {
             Logger::error('Could not calculate COGS for order ' . $order->get_id() . ': ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Park an order in on-hold when Briqpay has flagged it for manual review.
+     *
+     * Called from the return handler so the merchant sees the hold immediately
+     * instead of a 'pending' order that only becomes on-hold when a webhook lands.
+     *
+     * Promotes from 'pending' only. An order already at processing or completed has
+     * been resolved by another path, and an order already on-hold needs no change -
+     * moving either would be the silent status change this feature exists to stop.
+     *
+     * @param \WC_Order $order   The order.
+     * @param array     $session Briqpay session from the API.
+     * @return void
+     */
+    private function maybe_hold_for_manual_review($order, $session)
+    {
+        if (!Order_Management::session_requires_manual_review($session)) {
+            return;
+        }
+
+        if (!$order->has_status('pending')) {
+            return;
+        }
+
+        Logger::log(sprintf('Order %s is flagged for manual review - holding at return.', $order->get_id()));
+
+        $order->update_status(
+            'on-hold',
+            __('Briqpay: Flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
+        );
     }
 
     /**

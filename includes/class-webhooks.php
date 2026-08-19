@@ -192,6 +192,30 @@ class Webhooks
                     return;
                 }
 
+                // Briqpay flagged this order for manual review: park it in on-hold
+                // for a human rather than completing the payment.
+                if (Order_Management::session_requires_manual_review($session)) {
+                    if ($order->has_status('on-hold')) {
+                        Logger::log(sprintf('Order %s is flagged for manual review and already on hold - leaving it.', $order->get_id()));
+                        return;
+                    }
+                    Logger::log(sprintf('Order %s is flagged for manual review - holding instead of completing payment.', $order->get_id()));
+                    $order->update_status(
+                        'on-hold',
+                        __('Briqpay: Flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
+                    );
+                    return;
+                }
+
+                // Somebody put this order on hold - the merchant's own code, a
+                // capture failure, an amount mismatch, or a manual-review flag.
+                // Advancing it here would silently undo that decision; only a human
+                // moves it out.
+                if (Order_Management::is_held_for_merchant($order)) {
+                    Logger::log(sprintf('Order %s is on hold - not completing payment from the webhook.', $order->get_id()));
+                    return;
+                }
+
                 // A 'completed' session says the customer finished the checkout, not
                 // that the money is secured. Block when the payload actively shows
                 // no approved transaction (pending bank transfer, rejected card).
@@ -237,6 +261,15 @@ class Webhooks
                     $status_note = __('Briqpay: Session failed.', 'briqpay-for-woocommerce');
                 }
                 break;
+        }
+
+        if ($new_wc_status && Order_Management::is_held_for_merchant($order)) {
+            Logger::log(sprintf(
+                'Order %s is on hold - not changing its status to %s from the webhook.',
+                $order->get_id(),
+                $new_wc_status
+            ));
+            return;
         }
 
         if ($new_wc_status) {
@@ -342,6 +375,19 @@ class Webhooks
         $current_status = $order->get_status();
         $current_rank = $status_hierarchy[$current_status] ?? 0;
 
+        // An on-hold order is waiting for a human. The hierarchy above ranks
+        // on-hold BELOW processing, so without this an approval event would promote
+        // a held order straight past the hold - exactly what leasing and
+        // manual-review flows must not allow.
+        if (Order_Management::is_held_for_merchant($order)) {
+            Logger::log(sprintf(
+                'Order %s is on hold - ignoring the %s status webhook and leaving it for manual release.',
+                $order->get_id(),
+                $status
+            ));
+            return;
+        }
+
         switch ($status) {
             case 'order_pending':
                 if ($current_rank >= 1) {
@@ -363,6 +409,16 @@ class Webhooks
                     Logger::log(sprintf('Ignoring order_approved_not_captured webhook for order %s because current status is %s', $order->get_id(), $current_status));
                     return;
                 }
+                if (Order_Management::session_requires_manual_review($data)) {
+                    Logger::log(sprintf('Order %s approved but flagged for manual review - holding instead of processing.', $order->get_id()));
+                    $order->update_status(
+                        'on-hold',
+                        __('Briqpay: Order approved but flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
+                    );
+                    $this->update_payment_method_title($order);
+                    break;
+                }
+
                 $order->update_status('processing', __('Briqpay: Order approved, ready for capture.', 'briqpay-for-woocommerce'));
                 $this->update_payment_method_title($order);
                 break;
@@ -515,6 +571,11 @@ class Webhooks
                 if (abs(($bp_amount / 100) - $order_amount) > 0.05 || (!empty($bp_currency) && strtolower($bp_currency) !== strtolower($order_currency))) {
                     Logger::log(sprintf('Security: Amount or currency mismatch on capture webhook. BP: %s %s, WC: %s %s. Setting order to on-hold.', $bp_amount, $bp_currency, $order_amount, $order_currency));
                     $order->update_status('on-hold', sprintf(__('Briqpay: Capture amount/currency mismatch! BP: %s %s, WC: %s %s.', 'briqpay-for-woocommerce'), $bp_amount, $bp_currency, $order_amount, $order_currency));
+                    return;
+                }
+
+                if (Order_Management::is_held_for_merchant($order)) {
+                    Logger::log(sprintf('Order %s is on hold - not recording payment from the capture webhook.', $order->get_id()));
                     return;
                 }
 

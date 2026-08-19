@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.5
+Stable tag: 1.1.6
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,10 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.6 =
+* Added: Orders that Briqpay flags for manual review (the `manual_review` payment tag) are now placed on hold instead of being moved to processing. The order stays on hold until someone releases it manually, and no later Briqpay event will advance it.
+* Added: An order you have put on hold yourself now stays on hold. Previously an approval or capture event from Briqpay could move it to processing, overriding your own logic - relevant for leasing, credit checks and other flows where an order must wait for a human. Applies to any on-hold order, whatever placed it there, including capture failures and amount mismatches. Use the `briqpay_respect_on_hold_status` filter if you want the previous behaviour.
 
 = 1.1.5 =
 * Added: "WooCommerce checkout actions" setting (WooCommerce > Settings > Payments > Briqpay). **Existing stores are unaffected until you turn this on.** When enabled, Briqpay orders fire WooCommerce's standard checkout actions - `woocommerce_checkout_create_order`, `woocommerce_checkout_update_order_meta`, `woocommerce_checkout_order_created`, `woocommerce_checkout_order_processed`, the Blocks Store API equivalents, and the `woocommerce_checkout_create_order_line_item_object` filter - so third-party plugins (custom checkout fields, ERP and invoicing connectors, delivery-date pickers, shipping brokers) receive them the same way they receive orders paid with other methods. The submitted checkout form is passed to those actions, captured during checkout and replayed, because the payment decision request carries only a session ID.

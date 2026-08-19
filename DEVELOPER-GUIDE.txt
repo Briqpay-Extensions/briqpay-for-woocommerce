@@ -196,7 +196,7 @@ WooCommerce > Status > Logs for 'Direct update failed: <reason>' (debug level) a
 'API Error (<code>)' (error level - present even with "Logging" off). A PATCH that
 fails while creation succeeds usually means a create-only field (customerType,
 modules, country, locale) is reaching the update payload from a merchant filter;
-see section 13.
+see section 14.
 
 --------------------------------------------------------------------------------
 11. WOOCOMMERCE CHECKOUT ACTION PARITY
@@ -465,7 +465,56 @@ that was never charged is not recoverable. The line is sent as productType
 references is left to the 'briqpay_amount_only_refund_items' filter.
 
 --------------------------------------------------------------------------------
-13. DEVELOPER HOOKS (ACTIONS & FILTERS)
+13. MANUAL REVIEW AND RESPECTING AN ON-HOLD ORDER
+--------------------------------------------------------------------------------
+Two related rules, both about never silently overriding a decision that an order
+needs a human.
+
+MANUAL REVIEW TAG
+Briqpay can flag a session with data.paymentTags.manual_review. Such an order is
+placed in 'on-hold' and never advanced to processing by any later event.
+
+Order_Management::session_requires_manual_review($session) reads the tag. Two
+payload shapes are accepted, because paymentTags is a tag bag and both occur:
+  - map form:  paymentTags = ['manual_review' => true]  (also 1, '1', 'true', 'yes')
+  - list form: paymentTags = ['manual_review']
+Anything unparseable reads as "no review needed" - a tag we cannot understand must
+never hold up a legitimate order.
+
+Enforced at:
+  - Checkout_Handler::maybe_hold_for_manual_review(), from the return handler, so
+    the merchant sees the hold immediately rather than a 'pending' order that only
+    becomes on-hold when a webhook lands. Promotes from 'pending' only.
+  - Webhooks::handle_order_status(), approved branch - holds instead of processing.
+  - Webhooks::process_webhook_callback(), completed session - holds instead of
+    calling payment_complete().
+  - Order_Status_Manager::janitor_cleanup_task().
+
+AN ON-HOLD ORDER IS LEFT ALONE
+Order_Management::is_held_for_merchant($order) returns true for any order in
+'on-hold', whatever put it there: the merchant's own leasing or credit-check logic,
+a capture failure, an amount/currency mismatch, or the manual-review handling
+above. Every webhook path that would change status consults it first and bails.
+
+Why this was needed: handle_order_status()'s hierarchy ranks on-hold (2) BELOW
+processing (3), so the existing rank check did not stop an approval event promoting
+a held order straight past the hold. The guard therefore sits BEFORE the switch,
+not inside a branch.
+
+Guarded call sites:
+  - Webhooks::handle_order_status()      - before the switch
+  - Webhooks::process_webhook_callback() - completed path and generic status mapping
+  - Webhooks::handle_capture_status()    - before payment_complete()
+  - Order_Status_Manager::janitor_cleanup_task()
+
+Only a human moves the order out of on-hold. Override with the
+'briqpay_respect_on_hold_status' filter to restore the previous auto-advance.
+
+Note refunds and captures themselves are NOT blocked by a hold - the hold governs
+order status, not money operations a merchant explicitly triggers.
+
+--------------------------------------------------------------------------------
+14. DEVELOPER HOOKS (ACTIONS & FILTERS)
 --------------------------------------------------------------------------------
 Integrators can customize the plugin behavior using the following hooks:
 
@@ -508,6 +557,8 @@ ACTIONS:
   validated webhook event is processed (session/order-status fall-through only).
 - `briqpay_webhook_session_verified`: (data, session, order) Triggered for
   EVERY verified webhook, including capture_status/refund_status/order_status.
+- `briqpay_respect_on_hold_status`: (bool, order) Return false to let webhook
+  status handling advance an on-hold order again. See section 13.
 - `briqpay_fire_payment_complete`: (bool, order) Suppress
   `briqpay_payment_complete`. Only needed if you built a workaround while that
   action was unreachable - see section 11.
@@ -517,7 +568,7 @@ ACTIONS:
   Run before/after a hosted payment page is created.
 
 --------------------------------------------------------------------------------
-14. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
+15. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
 --------------------------------------------------------------------------------
 For stores migrating from the previous "Briqpay for WooCommerce" plugin
 (github.com/krokedil/briqpay-for-woocommerce, v1 API), B2B orders can
