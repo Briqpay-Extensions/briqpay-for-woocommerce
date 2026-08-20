@@ -147,8 +147,15 @@ class Checkout_Handler
                 };
 
                 checkAndKill();
-                var sentinel = setInterval(checkAndKill, 50);
-                setTimeout(function() { clearInterval(sentinel); }, 15000);
+
+                // The MutationObserver is the accurate mechanism - it fires the
+                // instant WooCommerce inserts a Place Order button - and the
+                // body-class CSS above already hides them declaratively. The
+                // interval only exists to catch style changes that mutate no nodes,
+                // so it runs at 250ms for 5s rather than the previous 50ms for 15s
+                // (300 passes per page load, on the checkout critical path).
+                var sentinel = setInterval(checkAndKill, 250);
+                setTimeout(function() { clearInterval(sentinel); }, 5000);
 
                 var observer = new MutationObserver(checkAndKill);
                 observer.observe(document.documentElement, { childList: true, subtree: true });
@@ -764,7 +771,11 @@ class Checkout_Handler
             }
         }
 
-        WC()->customer->save();
+        // Only write when a field actually changed. This runs on every session
+        // sync - several per checkout page - and each save() is a serialize plus a
+        // wc_sessions write. WC_Data::get_changes() is WooCommerce's own record of
+        // pending changes, so this is exact rather than a guess.
+        $this->save_customer_if_changed();
 
         $shipping_country = WC()->customer->get_shipping_country();
         $shipping_postcode = WC()->customer->get_shipping_postcode();
@@ -929,7 +940,7 @@ class Checkout_Handler
             WC()->customer->set_shipping_state($s['region'] ?? '');
             WC()->customer->set_shipping_country($s['country'] ?? '');
         }
-        WC()->customer->save();
+        $this->save_customer_if_changed();
 
         // Robust re-calculation: Force shipping before totals to ensure sync.
         WC()->cart->calculate_shipping();
@@ -2190,6 +2201,38 @@ class Checkout_Handler
         } catch (\Throwable $e) {
             Logger::error('Could not calculate COGS for order ' . $order->get_id() . ': ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Persist the WC customer only if a field actually changed.
+     *
+     * get_changes() is WC_Data's own dirty-field record (WooCommerce 3.0+), so an
+     * unchanged customer costs nothing. Falls back to an unconditional save if the
+     * method is unavailable - correctness before the optimisation.
+     *
+     * @return void
+     */
+    private function save_customer_if_changed()
+    {
+        if (null === WC() || null === WC()->customer) {
+            return;
+        }
+
+        $customer = WC()->customer;
+
+        if (!is_callable(array($customer, 'get_changes'))) {
+            $customer->save();
+            return;
+        }
+
+        $changes = $customer->get_changes();
+
+        if (empty($changes)) {
+            return;
+        }
+
+        Logger::log('Saving WC customer (' . count($changes) . ' changed field(s)).');
+        $customer->save();
     }
 
     /**

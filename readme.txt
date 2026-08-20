@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.6
+Stable tag: 1.1.7
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,15 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.7 =
+* Fix: The Briqpay checkout took noticeably too long to appear, and visibly loaded twice. The iframe was drawn, then thrown away and rebuilt a second or two later.
+* Fix: Removed a full second of fixed waiting before the checkout was even requested (two 500 ms timers ran back to back), and another fixed second after every session update - the iframe stayed suspended long after the API had already responded.
+* Fix: Every checkout load sent a redundant second session request. Creating a session did not record what it had sent, so the next WooCommerce event always re-sent an identical payload and the response rebuilt the iframe.
+* Fix: The server-side check that skips unchanged session updates could never run - it required an argument no caller passes. Unchanged updates are now genuinely skipped instead of going to the API on every field change.
+* Fix: When WooCommerce refreshes the payment area, the Briqpay iframe is now redrawn from the snippet already held rather than fetched again, and overlapping initialisation is prevented so several checkout events can no longer start competing requests.
+* Fix: The customer record is only saved when a field actually changed, instead of on every session sync.
+* Fix: The script that hides WooCommerce's own "Place Order" button no longer polls the page 20 times a second for 15 seconds. It now relies mainly on the stylesheet and a DOM observer, with a much lighter fallback check.
 
 = 1.1.6 =
 * Added: Orders that Briqpay flags for manual review (the `manual_review` payment tag) are now placed on hold instead of being moved to processing. The order stays on hold until someone releases it manually, and no later Briqpay event will advance it.

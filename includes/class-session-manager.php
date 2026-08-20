@@ -240,6 +240,12 @@ class Session_Manager
             // and Briqpay are in sync. Clear any flag a failed PATCH left behind.
             self::set_sync_failed(false);
 
+            // Record the hash the NEXT update would compute. Without this the sync
+            // immediately after a create always PATCHed - re-sending a payload
+            // byte-identical to the one just POSTed, and returning a fresh snippet
+            // that made the front end rebuild the iframe it had only just drawn.
+            $this->store_update_payload_hash($session_id);
+
             /**
              * Action after a new Briqpay session is created.
              *
@@ -253,6 +259,32 @@ class Session_Manager
         }
 
         return $session;
+    }
+
+    /**
+     * Store the payload hash that update_session() will compare against.
+     *
+     * Must mirror update_session()'s computation exactly - same builder, same
+     * filter, same encoding - or the comparison never matches and the skip is
+     * dead again.
+     *
+     * @param string $session_id Briqpay session ID.
+     * @return void
+     */
+    private function store_update_payload_hash($session_id)
+    {
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        $data = $this->get_session_data(true);
+
+        /** This filter is part of the hashed payload; see update_session(). */
+        $data = apply_filters('briqpay_update_session_data', $data, $session_id);
+
+        WC()->session->set('briqpay_payload_hash', md5(wp_json_encode($data)));
+
+        Logger::log('Stored update payload hash after session creation - the next sync will skip a redundant PATCH.');
     }
 
     /**
@@ -275,9 +307,23 @@ class Session_Manager
         $new_hash = md5(wp_json_encode($data));
         $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_payload_hash') : null;
 
-        if ($stored_hash === $new_hash && $existing_session !== null && !is_wp_error($existing_session)) {
+        if ($stored_hash === $new_hash) {
             Logger::log('Skipping PATCH request: payload hash unchanged.');
-            return $existing_session;
+
+            // Previously this also required a non-null $existing_session, but no
+            // caller ever passes one - so the skip was unreachable and every sync
+            // hit the API even when nothing had changed. When a caller did supply
+            // the session, hand it straight back; otherwise report the no-op with
+            // just the session id, which is all the update path needs (the iframe
+            // is already showing this session, so no snippet is required).
+            if (null !== $existing_session && !is_wp_error($existing_session)) {
+                return $existing_session;
+            }
+
+            return array(
+                'sessionId' => $session_id,
+                'briqpayUnchanged' => true,
+            );
         }
 
         /**

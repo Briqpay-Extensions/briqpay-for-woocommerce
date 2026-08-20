@@ -8,6 +8,14 @@ window.briqpayCheckout = {
     _isUpdating: false,
     _isSuspended: false,
     _pendingDecision: null,
+    // Guards overlapping initialisation: updated_checkout, updated_shipping_method,
+    // payment_method_selected and the B2B shortcode can all trigger it, and the
+    // B2B script calls initOrUpdate() directly on top of the normal flow.
+    _isInitializing: false,
+    // Last snippet Briqpay returned. WooCommerce replaces the payment fragment on
+    // every order review refresh, which throws the iframe away - this lets us
+    // redraw it without another session request.
+    _lastSnippet: null,
 
     init: function () {
         const $ = jQuery;
@@ -107,7 +115,11 @@ window.briqpayCheckout = {
             }
         }
 
-        setTimeout(this.onUpdatedCheckout.bind(this), 500);
+        // Call straight through. This used to wait 500ms and then hit
+        // onUpdatedCheckout's own 500ms debounce, so nothing reached Briqpay for a
+        // full second after the page was ready. The debounce below still collapses
+        // bursts of events, which is what the delay was actually for.
+        this.onUpdatedCheckout();
     },
 
     onUpdatedCheckout: function () {
@@ -142,7 +154,7 @@ window.briqpayCheckout = {
             if (isBriqpaySelected || isSingleMethod) {
                 self.initOrUpdate();
             }
-        }, 500);
+        }, 250);
     },
 
     forceUpdate: function () {
@@ -153,14 +165,54 @@ window.briqpayCheckout = {
 
     initOrUpdate: function (data) {
         const $ = jQuery;
+        var $container = $('#briqpay-iframe-container');
         var hasSession = !!this.session;
-        var hasIframe = $('#briqpay-iframe-container').children().length > 0;
+        var hasIframe = $container.children().length > 0;
+
+        // Overlapping initialisation. Several events can fire close together
+        // (updated_checkout, updated_shipping_method, payment_method_selected), and
+        // without this each one could start its own session request.
+        if (this._isInitializing) {
+            return;
+        }
 
         if (hasSession && hasIframe) {
             this.updateSession(data);
-        } else {
-            this.initIframe(data);
+            return;
         }
+
+        // The container is empty but we already have a live session. This is the
+        // ordinary case after WooCommerce refreshes the payment fragment:
+        // payment_fields() emits a fresh empty container, so the iframe we drew a
+        // moment ago is gone. Re-drawing from the cached snippet costs nothing,
+        // where calling initIframe() would create/PATCH a session over the network
+        // and hand back a snippet identical to the one we already hold - the second
+        // iframe load visible on the checkout page.
+        if (hasSession && !hasIframe && this._lastSnippet) {
+            $container.html(this._lastSnippet);
+            this.listenersAttached = false;
+            this.attachListeners();
+
+            // Redrawing restores the view, but the fragment may well have refreshed
+            // BECAUSE the cart changed - a new shipping method, a coupon - so the
+            // session still has to be reconciled. updateSession() compares the form
+            // fingerprint and no-ops when nothing actually moved, so this costs a
+            // request only when one is genuinely needed.
+            this.updateSession(data);
+            return;
+        }
+
+        this.initIframe(data);
+    },
+
+    /**
+     * The payload fingerprint updateSession() compares against, so a create and an
+     * update agree on what "unchanged" means.
+     */
+    _payloadHash: function (data) {
+        const $ = jQuery;
+        var $form = $('form.checkout, form#order_review, form.woocommerce-checkout');
+        return $form.serialize() + '||' + (data ? JSON.stringify(data) : '');
     },
 
     initIframe: function (data) {
@@ -180,6 +232,12 @@ window.briqpayCheckout = {
             requestData.blocks_data = JSON.stringify(data);
         }
 
+        // Seed the fingerprint from the form we are about to send, so the next
+        // updateSession() recognises an unchanged payload and skips the request
+        // entirely. Without this the sync right after a create always fired.
+        this._lastPayloadHash = this._payloadHash(data);
+        this._isInitializing = true;
+
         $.ajax({
             url: briqpayParams.ajax_url,
             type: 'POST',
@@ -189,14 +247,22 @@ window.briqpayCheckout = {
                     var snippet = response.data.htmlSnippet;
                     if (snippet) {
                         window.briqpayCheckout.session = response.data.sessionId;
+                        // Cached so a fragment refresh can redraw without a request.
+                        window.briqpayCheckout._lastSnippet = snippet;
                         $('#briqpay-iframe-container').html(snippet);
                         window.briqpayCheckout.attachListeners();
                     }
                 } else {
+                    // Nothing was drawn, so the fingerprint must not claim the form
+                    // is already synced - a retry has to be allowed through.
+                    window.briqpayCheckout._lastPayloadHash = null;
                     console.error('Briqpay: Failed to load session', response);
                 }
+                window.briqpayCheckout._isInitializing = false;
             },
             error: function (xhr, status, error) {
+                window.briqpayCheckout._lastPayloadHash = null;
+                window.briqpayCheckout._isInitializing = false;
                 console.error('Briqpay: AJAX error in initIframe', error);
             }
         });
@@ -210,7 +276,7 @@ window.briqpayCheckout = {
         var formData = $form.serialize();
         var blocksJson = data ? JSON.stringify(data) : '';
 
-        var payloadHash = formData + '||' + blocksJson;
+        var payloadHash = this._payloadHash(data);
 
         if (payloadHash === this._lastPayloadHash) {
             this.resume();
@@ -252,23 +318,28 @@ window.briqpayCheckout = {
                             $('#briqpay-iframe-container').html(response.data.htmlSnippet);
                             window.briqpayCheckout.listenersAttached = false;
 
-                            // Re-attach listeners and WAIT before resuming to ensure SDK is ready
+                            // A brand-new iframe was just inserted, so the SDK does
+                            // genuinely need a moment to come up before resume().
+                            // 250ms rather than a full second - attachListeners()
+                            // already retries until the SDK answers.
+                            window.briqpayCheckout._lastSnippet = response.data.htmlSnippet;
                             window.briqpayCheckout.attachListeners();
                             setTimeout(function () {
                                 window.briqpayCheckout.resume();
                                 window.briqpayCheckout._isUpdating = false;
                                 window.briqpayCheckout._processPendingDecision();
-                            }, 1000);
+                            }, 250);
                             return; // Exit early, setTimeout handles the rest
                         }
                     }
 
-                    // Standard update (PATCH): also wait 1000ms before resume to ensure backend sync
-                    setTimeout(function () {
-                        window.briqpayCheckout.resume();
-                        window.briqpayCheckout._isUpdating = false;
-                        window.briqpayCheckout._processPendingDecision();
-                    }, 1000);
+                    // Standard PATCH: the same iframe is still on screen and the
+                    // API has already answered, so there is nothing to wait for.
+                    // The old unconditional 1s kept the iframe suspended long after
+                    // the work was done.
+                    window.briqpayCheckout.resume();
+                    window.briqpayCheckout._isUpdating = false;
+                    window.briqpayCheckout._processPendingDecision();
                 } else {
                     console.error('Briqpay: Session sync failed', response);
                     window.briqpayCheckout.resume();
