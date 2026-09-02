@@ -119,6 +119,90 @@ class SessionSyncEfficiencyTest extends TestCase
         );
     }
 
+    /**
+     * The regression this closes, found in production: a customer arrived with a
+     * session already in their WC session and an unchanged cart, so the skip fired
+     * and returned a response with no htmlSnippet. The front end had no session of
+     * its own (JS state does not survive navigation), so it had nothing to render -
+     * the checkout stayed blank, with no error anywhere.
+     *
+     * Skipping is therefore only safe when the BROWSER already holds this session.
+     */
+    public function testSkippingRequiresTheBrowserToAlreadyHoldTheSession(): void
+    {
+        $body = $this->methodBody('update_session');
+
+        $this->assertStringContainsString(
+            '$this->client_session_id === $session_id',
+            $body,
+            'The skip must confirm the browser has this session rendered.'
+        );
+
+        $guard_pos = strpos($body, '$this->client_session_id === $session_id');
+        $return_pos = strpos($body, "'briqpayUnchanged' => true");
+
+        $this->assertNotFalse($guard_pos);
+        $this->assertNotFalse($return_pos);
+        $this->assertLessThan(
+            $return_pos,
+            $guard_pos,
+            'The snippet-less response must sit behind that guard.'
+        );
+
+        $this->assertStringContainsString(
+            'patching anyway to obtain a snippet',
+            $body,
+            'A fresh page load must fall through to the PATCH so it gets a snippet.'
+        );
+    }
+
+    public function testTheClientSessionIdIsAcceptedAndNormalised(): void
+    {
+        $manager = new Session_Manager();
+
+        $property = new \ReflectionProperty(Session_Manager::class, 'client_session_id');
+        $property->setAccessible(true);
+
+        $this->assertNull($property->getValue($manager), 'Absent by default.');
+
+        $manager->set_client_session_id('sess_abc');
+        $this->assertSame('sess_abc', $property->getValue($manager));
+
+        // An empty string is what the front end sends on a fresh load, and must not
+        // be mistaken for "the browser holds session ''".
+        $manager->set_client_session_id('');
+        $this->assertNull($property->getValue($manager));
+    }
+
+    /**
+     * The AJAX handler has to actually pass it through, and must complain when a
+     * response cannot be rendered - the silence is what made this bug expensive.
+     */
+    public function testTheAjaxHandlerForwardsItAndFlagsUnrenderableResponses(): void
+    {
+        $method = new \ReflectionMethod(\Briqpay\WooCommerce\Checkout_Handler::class, 'ajax_get_session');
+        $lines = file($method->getFileName());
+        $body = implode('', array_slice(
+            $lines,
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1
+        ));
+
+        $this->assertStringContainsString("\$_POST['client_session_id']", $body);
+        $this->assertStringContainsString('set_client_session_id($client_session_id)', $body);
+
+        $set_pos = strpos($body, 'set_client_session_id');
+        // Anchor on the call, not the earlier comment that mentions it.
+        $call_pos = strpos($body, '$session_manager->get_or_create_session()');
+        $this->assertLessThan($call_pos, $set_pos, 'It must be set before the session work runs.');
+
+        $this->assertStringContainsString(
+            'carries no htmlSnippet',
+            $body,
+            'An unrenderable response must be logged as an error.'
+        );
+    }
+
     // ──────────────────────────────────────────────────────────────────────
     // Creating must seed the hash
     // ──────────────────────────────────────────────────────────────────────
@@ -181,6 +265,77 @@ class SessionSyncEfficiencyTest extends TestCase
             'if (null === WC() || null === WC()->session) {',
             $seed,
             'Hosted pages and CLI contexts have no WC session.'
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Gateway availability is resolved once per request
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * get_available_payment_gateways() runs is_available() on every registered
+     * gateway, and third-party gateways do real work there. WooCommerce does not
+     * memoize it and themes often evaluate body_class() more than once, so this was
+     * repeating the whole pass each time.
+     */
+    public function testGatewayAvailabilityIsMemoisedForTheRequest(): void
+    {
+        $method = new \ReflectionMethod(
+            \Briqpay\WooCommerce\Checkout_Handler::class,
+            'get_available_gateways_once'
+        );
+        $lines = file($method->getFileName());
+        $body = implode('', array_slice(
+            $lines,
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1
+        ));
+
+        $this->assertStringContainsString('static $gateways = null;', $body);
+        $this->assertStringContainsString(
+            'if (null !== $gateways) {',
+            $body,
+            'A second call must return the cached list.'
+        );
+        $this->assertTrue($method->isStatic());
+    }
+
+    public function testBodyClassUsesTheMemoisedAccessor(): void
+    {
+        $method = new \ReflectionMethod(
+            \Briqpay\WooCommerce\Checkout_Handler::class,
+            'add_body_class'
+        );
+        $lines = file($method->getFileName());
+        $body = implode('', array_slice(
+            $lines,
+            $method->getStartLine() - 1,
+            $method->getEndLine() - $method->getStartLine() + 1
+        ));
+
+        $this->assertStringContainsString('self::get_available_gateways_once()', $body);
+        $this->assertStringNotContainsString(
+            '->get_available_payment_gateways()',
+            $body,
+            'body_class must not run the availability pass directly.'
+        );
+    }
+
+    /**
+     * Memoisation must not spread beyond body_class output. Anywhere that needs a
+     * live list - the gateway itself, order handling - has to keep asking
+     * WooCommerce directly.
+     */
+    public function testOnlyBodyClassUsesTheMemoisedList(): void
+    {
+        $handler = file_get_contents(
+            (new \ReflectionClass(\Briqpay\WooCommerce\Checkout_Handler::class))->getFileName()
+        );
+
+        $this->assertSame(
+            1,
+            substr_count($handler, 'self::get_available_gateways_once()'),
+            'Exactly one consumer: add_body_class().'
         );
     }
 

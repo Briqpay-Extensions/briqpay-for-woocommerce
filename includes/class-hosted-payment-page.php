@@ -191,7 +191,7 @@ class Hosted_Payment_Page
                 continue;
             }
 
-            $qty = isset($item['quantity']) ? $item['quantity'] : 1;
+            $qty = isset($item['quantity']) ? (int) $item['quantity'] : 1;
             $sum_ex += $item['unitPrice'] * $qty;
             $sum_inc += $item['totalAmount'];
         }
@@ -199,6 +199,106 @@ class Hosted_Payment_Page
         return array(
             'amountIncVat' => (int) round($sum_inc),
             'amountExVat' => (int) round($sum_ex),
+        );
+    }
+
+    /**
+     * Refuse to create a payment-module page for an order missing customer data.
+     *
+     * The payment-module flows (Consumer, Business - Payment Methods Only) load
+     * only the `payment` module, so the hosted page shows payment methods and
+     * nothing else - the customer has no way to enter an address. Briqpay needs
+     * that data prefilled, and build_session_payload() omits whole blocks when the
+     * order cannot supply them: get_billing_address() returns null unless street,
+     * city, postcode and country are all present, and get_company() returns null
+     * without a company name.
+     *
+     * The result used to be a link that was created successfully, sent to the
+     * customer, and then never unlocked. Failing here instead is worth the friction:
+     * the merchant is in the admin, the fix is filling in a field, and the
+     * alternative is a broken link already in a customer's inbox.
+     *
+     * Deliberately does NOT apply to Business - Full Checkout, which loads
+     * company_lookup, billing and shipping - there Briqpay collects the data itself
+     * and requiring it up front would block the flow's whole purpose. The check is
+     * driven off loadModules rather than the flow name so a new flow gets the right
+     * behaviour automatically.
+     *
+     * @param \WC_Order $order The order.
+     * @param string    $flow  Normalized flow key.
+     * @return true|\WP_Error
+     */
+    private function validate_prefill_for_flow($order, $flow)
+    {
+        $flows = self::get_flows();
+        $modules = isset($flows[$flow]['loadModules']) ? $flows[$flow]['loadModules'] : array();
+
+        // Briqpay collects the address itself - nothing to prefill.
+        if (in_array('billing', $modules, true)) {
+            return true;
+        }
+
+        $required = array(
+            'address_1' => __('billing address', 'briqpay-for-woocommerce'),
+            'city' => __('billing city', 'briqpay-for-woocommerce'),
+            'postcode' => __('billing postcode', 'briqpay-for-woocommerce'),
+            'country' => __('billing country', 'briqpay-for-woocommerce'),
+            'email' => __('billing email', 'briqpay-for-woocommerce'),
+        );
+
+        /**
+         * Filter the order fields required before a payment-module hosted page can
+         * be created. Keys are WC_Order billing field names without the prefix.
+         *
+         * @param array     $required Field key => human label.
+         * @param \WC_Order $order    The order.
+         * @param string    $flow     Flow key.
+         */
+        $required = apply_filters('briqpay_hpp_required_prefill_fields', $required, $order, $flow);
+
+        $missing = array();
+
+        foreach ($required as $field => $label) {
+            $getter = 'get_billing_' . $field;
+            if (!is_callable(array($order, $getter)) || '' === trim((string) $order->$getter())) {
+                $missing[] = $label;
+            }
+        }
+
+        // A business session with no company is the same omission problem: without
+        // company_lookup there is nowhere for the customer to supply it.
+        $is_business = 'business' === (isset($flows[$flow]['customerType']) ? $flows[$flow]['customerType'] : '');
+        if ($is_business && !in_array('company_lookup', $modules, true)) {
+            $company = $order->get_billing_company();
+            if ('' === trim((string) $company)) {
+                $company = (string) $order->get_meta('_briqpay_company_name');
+            }
+            if ('' === trim($company)) {
+                $missing[] = __('company name', 'briqpay-for-woocommerce');
+            }
+        }
+
+        if (empty($missing)) {
+            return true;
+        }
+
+        $label = isset($flows[$flow]['label']) ? $flows[$flow]['label'] : $flow;
+
+        Logger::log(sprintf(
+            'Refusing to create a %s hosted payment page for order %s: missing %s.',
+            $flow,
+            $order->get_id(),
+            implode(', ', $missing)
+        ));
+
+        return new \WP_Error(
+            'briqpay_hpp_missing_customer_data',
+            sprintf(
+                /* translators: 1: flow label, 2: comma-separated list of missing fields */
+                __('Fill in the customer details on this order before creating a "%1$s" hosted payment page. Missing: %2$s. That flow shows payment methods only, so the customer cannot enter these themselves - the page would never unlock. Choose "Business - Full Checkout" if you want Briqpay to collect the details instead.', 'briqpay-for-woocommerce'),
+                $label,
+                implode(', ', $missing)
+            )
         );
     }
 
@@ -329,6 +429,11 @@ class Hosted_Payment_Page
         }
 
         $flow = self::normalize_flow($flow);
+
+        $prefill = $this->validate_prefill_for_flow($order, $flow);
+        if (is_wp_error($prefill)) {
+            return $prefill;
+        }
 
         // Refuse to regenerate over an already-completed session - that would
         // orphan a paid session instead of just replacing an unused link.
@@ -951,7 +1056,9 @@ class Hosted_Payment_Page
      */
     private function get_locale()
     {
-        $locale = strtolower(str_replace('_', '-', get_locale()));
+        // Same normalisation as the storefront session: WordPress hands back bare
+        // codes for some languages ("fi"), which Briqpay's locale pattern rejects.
+        $locale = Session_Manager::normalize_locale(get_locale());
 
         /**
          * Filter the locale sent for a hosted payment page session.

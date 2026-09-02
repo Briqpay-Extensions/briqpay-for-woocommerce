@@ -166,6 +166,37 @@ class Checkout_Handler
     }
 
     /**
+     * The available payment gateways, resolved at most once per request.
+     *
+     * get_available_payment_gateways() is not cheap: it runs is_available() on
+     * every registered gateway, and third-party gateways do real work there -
+     * geolocation, currency lookups, sometimes an outbound HTTP call. WooCommerce
+     * does not memoize it, and body_class() is commonly evaluated more than once
+     * per page by themes, so this was repeating that whole pass each time.
+     *
+     * Safe to hold for the request because the only consumer is body_class output,
+     * which is rendered once in the document head after the cart has settled.
+     *
+     * @return array<string,\WC_Payment_Gateway>
+     */
+    private static function get_available_gateways_once()
+    {
+        static $gateways = null;
+
+        if (null !== $gateways) {
+            return $gateways;
+        }
+
+        $gateways = array();
+
+        if (function_exists('WC') && null !== WC()->payment_gateways()) {
+            $gateways = WC()->payment_gateways()->get_available_payment_gateways();
+        }
+
+        return $gateways;
+    }
+
+    /**
      * Add Body Class for styling
      */
     public function add_body_class($classes)
@@ -174,7 +205,7 @@ class Checkout_Handler
             $settings = get_option('woocommerce_briqpay_settings');
             if ('yes' === ($settings['enabled'] ?? 'no')) {
                 $chosen_payment_method = (null !== WC() && null !== WC()->session) ? WC()->session->get('chosen_payment_method') : null;
-                $available_gateways = function_exists('WC') && null !== WC()->payment_gateways() ? WC()->payment_gateways()->get_available_payment_gateways() : array();
+                $available_gateways = self::get_available_gateways_once();
                 $is_only_gateway = (1 === count($available_gateways) && isset($available_gateways['briqpay']));
 
                 // Mirror WooCommerce's own wc_get_chosen_gateway() fallback: when nothing is
@@ -843,11 +874,31 @@ class Checkout_Handler
         }
 
         $session_manager = new Session_Manager();
+
+        // Which session the browser already has rendered, if any. Without this the
+        // unchanged-payload skip cannot tell a repeated sync (nothing to send back)
+        // from a fresh page load (needs a snippet or the checkout never appears).
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified at the top of this handler.
+        $client_session_id = isset($_POST['client_session_id'])
+            ? sanitize_text_field(wp_unslash($_POST['client_session_id']))
+            : '';
+        $session_manager->set_client_session_id($client_session_id);
+
         $session = $session_manager->get_or_create_session();
 
         if (is_wp_error($session)) {
             Logger::log('AJAX Error: ' . $session->get_error_message());
             wp_send_json_error(array('message' => 'An error occurred while creating the session.'));
+        }
+
+        // A response the front end cannot render is worth shouting about: this is
+        // exactly the shape of the bug where a session existed but no iframe ever
+        // appeared, and it produced no error of any kind.
+        if (empty($session['htmlSnippet']) && empty($session['briqpayUnchanged'])) {
+            Logger::error(sprintf(
+                'Session response for %s carries no htmlSnippet and is not a no-op - the checkout will not render.',
+                $session['sessionId'] ?? 'unknown'
+            ));
         }
 
         Logger::log('AJAX Success.');
@@ -1373,7 +1424,11 @@ class Checkout_Handler
                     $item->set_variation_id(0);
                 }
 
-                $item->set_quantity($values['quantity']);
+                // Cast: the cart stores whatever wc_stock_amount() returned, which
+                // is a string for a plain integer input. Storing that verbatim made
+                // get_quantity() hand a string to get_order_cart(), which then put
+                // "400" in the Briqpay payload where a number is required.
+                $item->set_quantity((int) $values['quantity']);
                 $item->set_subtotal($values['line_subtotal']);
                 $item->set_total($values['line_total']);
                 $item->set_subtotal_tax($values['line_subtotal_tax']);

@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.7
+Stable tag: 1.1.8
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,21 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.8 =
+* Fix: Regression in 1.1.7. On a page load where the cart had not changed since the previous one, the Briqpay checkout could fail to appear at all - a session existed but no payment window was ever drawn, and nothing was reported in the logs. **Anyone running 1.1.7 should update.** The optimisation that skips unchanged session updates now only applies when the browser already has the payment window open; a fresh page load always receives what it needs to render.
+* Fix: Refunding a product line failed outright with "Cart item has mismatching reference" and nothing was refunded. Since this release a line is identified to Briqpay by its product and its unit price together, so that the same product at two prices in one cart stays two separate lines - but the refund was still building the old identifier, without the price. It therefore did not match what the order had been captured under, which also made the refund unable to see how much of the line was still captured. Refunds now read the identifier from the order line they belong to. Orders placed before this release, which never had the newer identifier, are unaffected either way.
+* Fix: Hardened how a capture started from the order screen works out its amounts. The captured total was built by multiplying a rounded per-item price, which does not always equal the line total; a safety net further down corrected it against the payment session, so captured amounts were right in normal use, but any line the session no longer recognised skipped that safety net and went out with the miscalculated figure. Amounts are now taken from the order itself and split so that a series of partial captures always adds back up to the line total exactly. Capture amounts are also no longer read back from the browser, and the quantity is capped at what the order still has left to capture, so a capture can only ever be for what the order actually holds. Automatic capture on status change was never affected.
+* Fix: A session response the browser cannot render is now logged as an error instead of failing silently.
+* Fix: Two session updates could run at the same time - a shipping change landing on top of a checkout refresh - so the slower response could overwrite the newer one. Updates are now queued and the latest always wins.
+* Fix: The first session request no longer waits out the debounce intended for collapsing bursts of later events, saving about 250 ms before the checkout appears.
+* Fix: Adding Briqpay's checkout body classes no longer re-runs the availability check for every installed payment gateway each time it is evaluated. That check can be slow in other payment plugins, and themes often evaluate body classes more than once per page.
+* Added: Full Swedish, Danish, Norwegian, Finnish, German, Dutch, French, Spanish, Italian, Portuguese and Polish translations - all 166 strings in each language, covering the payment gateway settings, the order screen's payment and capture panels, the hosted payment page box, the messages shown to customers during checkout, and the notes the plugin writes on an order. Previously only ten strings were translated, so a store set to one of these languages saw a mix of its own language and English in the same panel. A translation template (`languages/briqpay-for-woocommerce.pot`) is included for any further languages.
+* Fix: The plugin never loaded its own translation files. The text domain was declared but nothing loaded it, so any bundled translation was ignored. Translations now follow the language WordPress is set to - the administrator's own admin language if they have chosen one, otherwise the site language.
+* Fix: Regional language variants no longer fall back to English. A site set to Brazilian Portuguese, Mexican Spanish, Austrian or Swiss German, Canadian or Belgian French, Belgian Dutch, Finland Swedish, Nynorsk or a formal German/Dutch variant now uses the translation for that language instead of showing English.
+* Added: Creating a hosted payment page for a "Consumer" or "Business - Payment Methods Only" order now checks that the customer's details are filled in first. Those flows show payment methods only, so the customer cannot enter an address themselves - previously the link was created, sent, and then never unlocked. The error names exactly which fields are missing and suggests "Business - Full Checkout" if you would rather Briqpay collected them. "Business - Full Checkout" is unaffected, since it gathers the details itself.
+* Fix: Checkout failed completely on stores using a language WordPress ships without a country code - Finnish is the clearest case, where the locale is plain `fi` rather than `fi_FI`. Briqpay rejected every session with "body.locale pattern mismatch". Locales are now always sent as a language-country pair (`fi-fi`, `sv-se`, `de-de`), including WordPress variants such as `de_DE_formal`. All English locales are sent as `en-gb`, whichever region the site is set to. Added the `briqpay_locale` filter to override any of this.
+* Fix: Line quantities were sent to Briqpay as text rather than numbers - a quantity of 400 was sent as `"400"`. WooCommerce stores cart quantities as text, and because the arithmetic still worked the wrong type was only visible when the API rejected it. Quantities are now sent as numbers everywhere, on both new and existing orders.
 
 = 1.1.7 =
 * Fix: The Briqpay checkout took noticeably too long to appear, and visibly loaded twice. The iframe was drawn, then thrown away and rebuilt a second or two later.

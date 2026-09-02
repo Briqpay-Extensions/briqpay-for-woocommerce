@@ -199,40 +199,99 @@ class Order_Management
      */
     private function manual_capture_locked($order, $session_id, $items_to_capture)
     {
-        // Map the manual input to the detailed format needed for capture
-        $detailed_items = array();
+        return $this->execute_capture(
+            $order,
+            $session_id,
+            $this->build_manual_capture_items($order, $items_to_capture)
+        );
+    }
+
+    /**
+     * Build the capture payload for an admin-selected set of items.
+     *
+     * Split out from manual_capture_locked() so the money arithmetic can be
+     * asserted without standing up an HTTP capture.
+     *
+     * @param \WC_Order $order            The order.
+     * @param array     $items_to_capture Items the admin selected.
+     * @return array Detailed capture items.
+     */
+    private function build_manual_capture_items($order, $items_to_capture)
+    {
         $is_us = 'US' === $order->get_billing_country();
         $total_tax_to_capture = 0;
 
+        // Only the reference and the quantity are read from the request; every
+        // amount is re-derived from the order.
+        //
+        // This used to take the posted unitPriceIncVat at face value and compute
+        // the line total as (rounded unit price) x quantity. Rounding before
+        // multiplying is not the same as rounding the line total once, so any
+        // line whose per-unit price does not land on a whole minor unit was
+        // captured a cent adrift: 2 x 19,15 EUR at 25.5% VAT authorizes 4807 but
+        // captured 4806, because the unit price rounds to 2403 and 2403 x 2 is
+        // 4806. Automatic capture never had the bug - it multiplies the
+        // full-precision unit price and rounds once - so the two paths could
+        // disagree on the same order. Quantity-1 lines (shipping, fees, coupons)
+        // were unaffected either way, since there is nothing to multiply.
+        $basis = $this->get_capture_basis($order);
+
         $consolidated_detailed = array();
         foreach ($items_to_capture as $item) {
-            $qty = (int) $item['quantity'];
-            $unit_price_inc = (int) $item['unitPriceIncVat'];
-            $tax_rate = (int) $item['taxRate'];
+            $ref = sanitize_text_field($item['reference'] ?? '');
 
-            // Precision fix: derive unit price ex VAT from unit price inc VAT
-            $unit_price_ex = (int) round($unit_price_inc / (1 + ($tax_rate / 10000)));
-
-            if ($is_us) {
-                $item_tax = ($unit_price_inc - $unit_price_ex) * $qty;
-                $total_tax_to_capture += ($item_tax / 100);
-                $unit_price_inc = $unit_price_ex;
-                $tax_rate = 0;
+            if (!isset($basis[$ref])) {
+                Logger::error(sprintf(
+                    'Refusing to capture reference "%s" on order %d: no matching order line.',
+                    $ref,
+                    $order->get_id()
+                ));
+                continue;
             }
 
-            $total_amount = $unit_price_inc * $qty;
-            $total_vat = $is_us ? 0 : ($total_amount - ($unit_price_ex * $qty));
+            $line = $basis[$ref];
 
-            $ref = sanitize_text_field($item['reference']);
+            // Never capture more of a line than the order still has outstanding,
+            // whatever the request asked for.
+            $qty = min((int) ($item['quantity'] ?? 0), $line['remaining']);
+            if ($qty < 1) {
+                continue;
+            }
+
+            $already = $line['captured'];
+            $total_amount = self::allocate_minor($line['total_inc'], $line['total_qty'], $already, $qty);
+            $ex_amount = self::allocate_minor($line['total_ex'], $line['total_qty'], $already, $qty);
+
+            $unit_price_ex = (int) round($ex_amount / $qty);
+
+            if ($is_us) {
+                // US orders carry tax as a separate sales_tax line, so the line
+                // itself is captured ex VAT.
+                $total_tax_to_capture += Money::from_minor($total_amount - $ex_amount);
+                $total_amount = $unit_price_ex * $qty;
+                $total_vat = 0;
+                $tax_rate = 0;
+                $unit_price_inc = $unit_price_ex;
+            } else {
+                // Briqpay validates that unitPrice x quantity equals
+                // totalAmount - totalVatAmount. totalAmount is the money and has
+                // to match the order, so the VAT breakdown absorbs the sub-minor-unit
+                // remainder and the invariant holds exactly.
+                $total_vat = $total_amount - ($unit_price_ex * $qty);
+                $tax_rate = $line['tax_rate'];
+                // Reported per unit only. Nothing multiplies this back up.
+                $unit_price_inc = (int) round($total_amount / $qty);
+            }
+
             if (isset($consolidated_detailed[$ref])) {
                 $consolidated_detailed[$ref]['quantity'] += $qty;
                 $consolidated_detailed[$ref]['totalAmount'] += $total_amount;
                 $consolidated_detailed[$ref]['totalVatAmount'] += (int) $total_vat;
             } else {
                 $consolidated_detailed[$ref] = array(
-                    'productType' => $item['productType'] ?? 'physical',
+                    'productType' => $line['productType'],
                     'reference' => $ref,
-                    'name' => sanitize_text_field($item['name']),
+                    'name' => $line['name'],
                     'quantity' => $qty,
                     'quantityUnit' => 'pc',
                     'unitPrice' => $unit_price_ex,
@@ -251,12 +310,165 @@ class Order_Management
                 'productType' => 'sales_tax',
                 'name' => __('Sales tax', 'briqpay-for-woocommerce'),
                 'reference' => 'sales_tax',
-                'quantity' => (int) round($total_tax_to_capture * 100), // Internal tracking
-                'totalTaxAmount' => (int) round($total_tax_to_capture * 100),
+                'quantity' => Money::to_minor($total_tax_to_capture), // Internal tracking
+                'totalTaxAmount' => Money::to_minor($total_tax_to_capture),
             );
         }
 
-        return $this->execute_capture($order, $session_id, $detailed_items);
+        return $detailed_items;
+    }
+
+    /**
+     * Allocate part of a line total to a quantity, in minor units.
+     *
+     * Splitting a line across several captures has to add back up to the line
+     * total exactly. Rounding each slice on its own does not guarantee that -
+     * three captures of one unit from a 10,00 line would send 333 three times
+     * and lose a minor unit. So each slice is the difference between the rounded
+     * running total up to and including it and the rounded running total before
+     * it, which telescopes: however the quantity is divided up, the slices sum
+     * to the rounded line total and nothing is created or lost.
+     *
+     * @param float $line_total  Full major-unit total for the whole line.
+     * @param int   $total_qty   Quantity the line total covers.
+     * @param int   $already_qty Quantity already captured.
+     * @param int   $take_qty    Quantity being captured now.
+     * @return int Minor units for this slice.
+     */
+    private static function allocate_minor($line_total, $total_qty, $already_qty, $take_qty)
+    {
+        if ($total_qty < 1) {
+            return Money::to_minor($line_total);
+        }
+
+        $upto = Money::to_minor($line_total * (($already_qty + $take_qty) / $total_qty));
+        $prior = Money::to_minor($line_total * ($already_qty / $total_qty));
+
+        return $upto - $prior;
+    }
+
+    /**
+     * Authoritative per-reference capture basis for an order.
+     *
+     * Keyed by the same reference the capture history and the admin box use, and
+     * carrying full-precision totals rather than rounded per-unit amounts, so a
+     * caller can allocate an exact slice of a line. Lines sharing a reference are
+     * consolidated, matching what get_remaining_items_to_capture() sends.
+     *
+     * @param \WC_Order $order The order.
+     * @return array Reference => line facts.
+     */
+    private function get_capture_basis($order)
+    {
+        $captured_counts = array();
+        foreach (($order->get_meta('_briqpay_capture_history') ?: array()) as $capture) {
+            foreach ($capture['items'] as $captured) {
+                $ref = $captured['reference'];
+                $captured_counts[$ref] = ($captured_counts[$ref] ?? 0) + $captured['quantity'];
+            }
+        }
+
+        $basis = array();
+
+        $add = function ($ref, $name, $type, $tax_rate, $qty, $total_ex, $total_inc) use (&$basis) {
+            $ref = (string) $ref;
+
+            if (isset($basis[$ref])) {
+                $basis[$ref]['total_qty'] += $qty;
+                $basis[$ref]['total_ex'] += $total_ex;
+                $basis[$ref]['total_inc'] += $total_inc;
+                return;
+            }
+
+            $basis[$ref] = array(
+                'reference' => $ref,
+                'name' => $name,
+                'productType' => $type,
+                'tax_rate' => $tax_rate,
+                'total_qty' => $qty,
+                'total_ex' => $total_ex,
+                'total_inc' => $total_inc,
+            );
+        };
+
+        foreach ($order->get_items() as $item) {
+            $product = $item->get_product();
+            $ref = $item->get_meta('_briqpay_item_reference');
+            if (empty($ref)) {
+                if (!$product) {
+                    continue;
+                }
+                $sku = $product->get_sku();
+                $ref = !empty($sku) ? $sku : (string) $product->get_id();
+            }
+
+            // Subtotal, not total: discounts ride as their own coupon lines, the
+            // same basis the session and automatic capture are built on.
+            $ex = (float) $item->get_subtotal();
+            $tax = (float) $item->get_subtotal_tax();
+
+            $add(
+                $ref,
+                $item->get_name(),
+                'physical',
+                $this->get_item_tax_rate($item),
+                (int) $item->get_quantity(),
+                $ex,
+                $ex + $tax
+            );
+        }
+
+        $shipping_total = (float) $order->get_shipping_total();
+        if ($shipping_total > 0) {
+            $shipping_tax = (float) $order->get_shipping_tax();
+            $add(
+                'shipping',
+                __('Shipping', 'briqpay-for-woocommerce'),
+                'shipping_fee',
+                $this->get_shipping_tax_rate($order),
+                1,
+                $shipping_total,
+                $shipping_total + $shipping_tax
+            );
+        }
+
+        foreach ($order->get_fees() as $fee) {
+            $fee_total = (float) $fee->get_total();
+            $fee_tax = (float) $fee->get_total_tax();
+            $add(
+                $fee->get_meta('_briqpay_fee_reference') ?: (string) $fee->get_id(),
+                $fee->get_name(),
+                'physical',
+                $this->get_item_tax_rate($fee),
+                1,
+                $fee_total,
+                $fee_total + $fee_tax
+            );
+        }
+
+        foreach ($order->get_items('coupon') as $coupon) {
+            $code = $coupon->get_code();
+            $discount = -1 * (float) $coupon->get_discount();
+            $discount_tax = -1 * (float) $coupon->get_discount_tax();
+            $add(
+                'discount_' . $code,
+                // translators: %s: coupon code
+                sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                'physical',
+                $this->get_coupon_tax_rate($order),
+                1,
+                $discount,
+                $discount + $discount_tax
+            );
+        }
+
+        foreach ($basis as $ref => $line) {
+            $captured = min($line['total_qty'], $captured_counts[$ref] ?? 0);
+            $basis[$ref]['captured'] = $captured;
+            $basis[$ref]['remaining'] = max(0, $line['total_qty'] - $captured);
+        }
+
+        return $basis;
     }
 
     /**
@@ -607,13 +819,7 @@ class Order_Management
         $total_diff_cents = 0;
 
         foreach ($latest_refund->get_items() as $item) {
-            $product = $item->get_product();
-            $ref = $item->get_meta('_briqpay_item_reference');
-            if (empty($ref) && $product) {
-                $sku = $product->get_sku();
-                $id = $product->get_id();
-                $ref = !empty($sku) ? $sku : (string) $id;
-            }
+            $ref = $this->get_refund_item_reference($order, $item);
 
             if (!isset($diffs_by_reference[$ref])) {
                 continue;
@@ -926,6 +1132,60 @@ class Order_Management
     /**
      * Get items from the latest refund
      */
+    /**
+     * Briqpay reference for a refund line item.
+     *
+     * A refund line item is a fresh object WooCommerce creates when the refund is
+     * made, and it does not carry _briqpay_item_reference - that lives on the
+     * parent order item. Reading the meta off the refund line therefore always
+     * missed, and the SKU/ID fallback rebuilt the reference under the pre-1.1.8
+     * scheme, without the "-<unit price>" suffix that the session, the order item
+     * and the capture history all use.
+     *
+     * A product line refunded on order 27 went out as "14" where everything else
+     * said "14-1915", which broke the refund twice over: the per-capture balance
+     * lookup found nothing for the reference and warned that not enough quantity
+     * was captured, and Briqpay then rejected the payload outright with
+     * CART_ITEM_NOT_FOUND. Capture was never affected because it iterates the
+     * order's own items, which do carry the meta.
+     *
+     * WooCommerce records the originating item on the refund line as
+     * _refunded_item_id, so resolve through that before falling back. The final
+     * SKU/ID fallback is kept deliberately: on an order placed before the suffix
+     * existed the parent has no meta either, and the bare reference is then the
+     * correct one - it is also what capture derives for the same order.
+     *
+     * @param \WC_Order $order The parent order.
+     * @param object    $item  Refund line item.
+     * @return string Reference, or an empty string when nothing can be resolved.
+     */
+    private function get_refund_item_reference($order, $item)
+    {
+        $ref = $item->get_meta('_briqpay_item_reference');
+        if (!empty($ref)) {
+            return (string) $ref;
+        }
+
+        $parent_id = (int) $item->get_meta('_refunded_item_id');
+        if ($parent_id > 0) {
+            $parent = $order->get_item($parent_id);
+            if ($parent) {
+                $ref = $parent->get_meta('_briqpay_item_reference');
+                if (!empty($ref)) {
+                    return (string) $ref;
+                }
+            }
+        }
+
+        $product = $item->get_product();
+        if ($product) {
+            $sku = $product->get_sku();
+            return !empty($sku) ? (string) $sku : (string) $product->get_id();
+        }
+
+        return '';
+    }
+
     private function get_refund_items($order)
     {
         $refunds = $order->get_refunds();
@@ -945,12 +1205,7 @@ class Order_Management
             $item_tax = abs((float) $item->get_total_tax());
 
             $parent_tax_rate = $this->get_item_tax_rate($item);
-            $ref = $item->get_meta('_briqpay_item_reference');
-            if (empty($ref) && $product) {
-                $sku = $product->get_sku();
-                $id = $product->get_id();
-                $ref = !empty($sku) ? $sku : (string) $id;
-            }
+            $ref = $this->get_refund_item_reference($order, $item);
 
             if ($qty > 0) {
                 $unit_ex = $item_total / $qty;
@@ -1510,7 +1765,9 @@ class Order_Management
                 }
             }
 
-            $qty = $item->get_quantity();
+            // Cast for orders created before the quantity was stored as an int,
+            // and for line items other plugins may have written.
+            $qty = (int) $item->get_quantity();
             $item_total = (float) $item->get_subtotal();
             $item_tax = (float) $item->get_subtotal_tax();
             $tax_rate = $this->get_item_tax_rate($item);

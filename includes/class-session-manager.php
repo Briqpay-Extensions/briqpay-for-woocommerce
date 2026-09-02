@@ -16,6 +16,17 @@ class Session_Manager
     const SYNC_FAILED_KEY = 'briqpay_sync_failed';
 
     /**
+     * Session ID the browser already has an iframe rendered for, if any.
+     *
+     * Set from the AJAX request. It is the only reliable signal for whether the
+     * caller still needs an htmlSnippet back, which decides whether an unchanged
+     * PATCH can safely be skipped.
+     *
+     * @var string|null
+     */
+    private $client_session_id = null;
+
+    /**
      * Cache for product image URLs.
      *
      * @var array
@@ -87,6 +98,17 @@ class Session_Manager
         } else {
             setcookie('briqpay_session_id', '', time() - 3600, COOKIEPATH, COOKIE_DOMAIN);
         }
+    }
+
+    /**
+     * Tell this instance which session the browser has already rendered.
+     *
+     * @param string $session_id Session ID reported by the front end, or ''.
+     * @return void
+     */
+    public function set_client_session_id($session_id)
+    {
+        $this->client_session_id = '' !== (string) $session_id ? (string) $session_id : null;
     }
 
     /**
@@ -308,22 +330,26 @@ class Session_Manager
         $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_payload_hash') : null;
 
         if ($stored_hash === $new_hash) {
-            Logger::log('Skipping PATCH request: payload hash unchanged.');
-
-            // Previously this also required a non-null $existing_session, but no
-            // caller ever passes one - so the skip was unreachable and every sync
-            // hit the API even when nothing had changed. When a caller did supply
-            // the session, hand it straight back; otherwise report the no-op with
-            // just the session id, which is all the update path needs (the iframe
-            // is already showing this session, so no snippet is required).
+            // Skipping returns no htmlSnippet, so it is only safe when the caller
+            // does not need one - i.e. the browser already has an iframe rendered
+            // for THIS session. On a fresh page load the front end has no session
+            // (its state does not survive navigation) while the WC session still
+            // holds the id and the matching hash. Skipping there returned a
+            // snippet-less response and the checkout silently never rendered.
             if (null !== $existing_session && !is_wp_error($existing_session)) {
+                Logger::log('Skipping PATCH request: payload hash unchanged.');
                 return $existing_session;
             }
 
-            return array(
-                'sessionId' => $session_id,
-                'briqpayUnchanged' => true,
-            );
+            if (null !== $this->client_session_id && $this->client_session_id === $session_id) {
+                Logger::log('Skipping PATCH request: payload hash unchanged and the browser already has this session rendered.');
+                return array(
+                    'sessionId' => $session_id,
+                    'briqpayUnchanged' => true,
+                );
+            }
+
+            Logger::log('Payload hash unchanged, but the browser has no iframe for this session - patching anyway to obtain a snippet.');
         }
 
         /**
@@ -396,7 +422,7 @@ class Session_Manager
                     continue;
                 }
 
-                $item_qty = isset($item['quantity']) ? $item['quantity'] : 1;
+                $item_qty = isset($item['quantity']) ? (int) $item['quantity'] : 1;
                 // Briqpay calculates total as (unitPrice * quantity) + (sum of totalVatAmount)
                 // However, they also validate that (unitPrice * quantity) == totalAmount - totalVatAmount
                 $sum_ex += $item['unitPrice'] * $item_qty;
@@ -608,8 +634,25 @@ class Session_Manager
             $product = $cart_item['data'];
             Logger::log('Processing item: ' . (is_object($product) ? $product->get_name() : 'non-object'));
 
-            // Calculate V3 cart fields
-            $quantity = $cart_item['quantity'];
+            // Calculate V3 cart fields.
+            // Cast: WooCommerce stores the cart quantity as whatever
+            // wc_stock_amount() returned, which is a string for a plain integer
+            // input and can be a float when decimal stock is enabled. Passing it
+            // through unchanged put "400" in the JSON payload where Briqpay's schema
+            // requires a number. It is also the divisor below, so a numeric string
+            // works arithmetically and the bug only ever surfaced at the API.
+            $quantity = (int) $cart_item['quantity'];
+
+            // A zero or negative quantity would divide by zero below. WooCommerce
+            // should never produce one, but the division makes it worth refusing.
+            if ($quantity < 1) {
+                Logger::error(sprintf(
+                    'Skipping cart line "%s": quantity resolved to %s.',
+                    is_object($product) ? $product->get_name() : 'unknown',
+                    var_export($cart_item['quantity'], true)
+                ));
+                continue;
+            }
             $line_total_exc_tax = $cart_item['line_subtotal'];
             $line_tax = $cart_item['line_subtotal_tax'];
             $line_total_inc_tax = $line_total_exc_tax + $line_tax;
@@ -977,7 +1020,106 @@ class Session_Manager
      */
     private function get_locale()
     {
-        return strtolower(str_replace('_', '-', get_locale()));
+        $locale = self::normalize_locale(get_locale());
+
+        /**
+         * Filter the locale sent when creating a Briqpay session.
+         *
+         * @param string $locale Locale in "sv-se" / "en-gb" format.
+         */
+        return apply_filters('briqpay_locale', $locale);
+    }
+
+    /**
+     * Convert a WordPress locale into the language-region form Briqpay requires.
+     *
+     * Briqpay's schema wants a two-part tag ("sv-se", "en-gb") and rejects anything
+     * shorter with:
+     *
+     *   body.locale pattern mismatch, body.locale has less length than allowed
+     *
+     * WordPress does not always give two parts. Several languages ship with a bare
+     * code - Finnish is plain "fi", not "fi_FI" - so the old
+     * strtolower(str_replace('_', '-', ...)) passed "fi" straight through and every
+     * session on a Finnish store was refused.
+     *
+     * It can also give MORE than two parts: "de_DE_formal" became
+     * "de-de-formal", which fails the same pattern.
+     *
+     * English is special-cased: every en_* locale is sent as "en-gb", and that is
+     * also the fallback for input we cannot parse.
+     *
+     * @param string $wp_locale Raw value from get_locale().
+     * @return string Two-part lowercase tag.
+     */
+    public static function normalize_locale($wp_locale)
+    {
+        $locale = strtolower(str_replace('_', '-', (string) $wp_locale));
+
+        // Keep only letters and dashes; WordPress variants such as
+        // "de-de-formal" then reduce to their first two segments below.
+        $locale = preg_replace('/[^a-z\-]/', '', $locale);
+        $parts = array_values(array_filter(explode('-', $locale)));
+
+        if (empty($parts)) {
+            Logger::log('Could not derive a locale from "' . $wp_locale . '" - falling back to en-gb.');
+            return 'en-gb';
+        }
+
+        $language = $parts[0];
+
+        // Every English locale is sent as en-gb, whatever region WordPress reports.
+        // Deliberately overrides the region rather than honouring it, so en_US,
+        // en_AU and a bare "en" all resolve the same way. This is a Briqpay-side
+        // requirement, not a guess at the shopper's dialect.
+        if ('en' === $language) {
+            return 'en-gb';
+        }
+
+        // Already two-part (or more): keep the first two segments only.
+        if (isset($parts[1]) && 2 === strlen($parts[1])) {
+            return $language . '-' . $parts[1];
+        }
+
+        // Bare language. Duplicating the code is right for most of these
+        // (fi-fi, de-de, fr-fr, it-it, nl-nl, pl-pl, es-es, pt-pt, tr-tr, ru-ru),
+        // so only the exceptions need listing.
+        $regions = array(
+            'sv' => 'se',
+            'da' => 'dk',
+            'nb' => 'no',
+            'nn' => 'no',
+            'no' => 'no',
+            'cs' => 'cz',
+            'et' => 'ee',
+            'el' => 'gr',
+            'sl' => 'si',
+            'uk' => 'ua',
+            'ja' => 'jp',
+            'ko' => 'kr',
+            'zh' => 'cn',
+            'ga' => 'ie',
+            'he' => 'il',
+            'ar' => 'sa',
+            'ca' => 'es',
+            'eu' => 'es',
+            'gl' => 'es',
+            'be' => 'by',
+            'sq' => 'al',
+            'fa' => 'ir',
+            'hi' => 'in',
+            'vi' => 'vn',
+            'ms' => 'my',
+            'sr' => 'rs',
+            'bs' => 'ba',
+        );
+
+        if (2 !== strlen($language)) {
+            Logger::log('Unexpected locale "' . $wp_locale . '" - falling back to en-gb.');
+            return 'en-gb';
+        }
+
+        return $language . '-' . ($regions[$language] ?? $language);
     }
 
     /**

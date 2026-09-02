@@ -1,0 +1,788 @@
+# Spanish translation for Briqpay for WooCommerce.
+# Machine-drafted; please have a native speaker review before release.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Briqpay for WooCommerce 1.1.8\n"
+"Report-Msgid-Bugs-To: support@briqpay.com\n"
+"PO-Revision-Date: 2026-08-24 09:00+0000\n"
+"Last-Translator: Briqpay <support@briqpay.com>\n"
+"Language-Team: Spanish\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: es_ES\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+"X-Generator: briqpay build_po.py\n"
+
+
+#: includes/class-admin-order-meta-box.php:95
+msgid "Briqpay Payment Details"
+msgstr "Detalles de pago de Briqpay"
+
+#: includes/class-admin-order-meta-box.php:112
+msgid "Not a Briqpay order."
+msgstr "Este pedido no es un pedido de Briqpay."
+
+#: includes/class-admin-order-meta-box.php:127
+msgid "Session ID:"
+msgstr "ID de sesión:"
+
+#: includes/class-admin-order-meta-box.php:130
+msgid "Open in Briqpay Backoffice"
+msgstr "Abrir en el Backoffice de Briqpay"
+
+#: includes/class-admin-order-meta-box.php:138
+msgid "PSP Name:"
+msgstr "Nombre del PSP:"
+
+#: includes/class-admin-order-meta-box.php:139
+#: includes/class-admin-order-meta-box.php:143
+#: includes/class-admin-order-meta-box.php:147
+msgid "N/A"
+msgstr "N/D"
+
+#: includes/class-admin-order-meta-box.php:142
+msgid "Integration:"
+msgstr "Integración:"
+
+#: includes/class-admin-order-meta-box.php:146
+msgid "Reservation ID:"
+msgstr "ID de reserva:"
+
+#: includes/class-admin-order-meta-box.php:154
+msgid "Captures"
+msgstr "Capturas"
+
+#: includes/class-admin-order-meta-box.php:169
+msgid "No captures found."
+msgstr "No se han encontrado capturas."
+
+#: includes/class-admin-order-meta-box.php:181
+msgid "Items Captured:"
+msgstr "Artículos capturados:"
+
+#: includes/class-admin-order-meta-box.php:206
+msgid "Fully captured."
+msgstr "Capturado por completo."
+
+#: includes/class-admin-order-meta-box.php:214
+msgid "Auto capture in progress."
+msgstr "Captura automática en curso."
+
+#: includes/class-admin-order-meta-box.php:220
+msgid "Manual Capture"
+msgstr "Captura manual"
+
+#: includes/class-admin-order-meta-box.php:226
+msgid "Item"
+msgstr "Artículo"
+
+#: includes/class-admin-order-meta-box.php:227
+msgid "Qty"
+msgstr "Cant."
+
+#: includes/class-admin-order-meta-box.php:237
+#, php-format
+msgid "Captured: %1$d of %2$d"
+msgstr "Capturado: %1$d de %2$d"
+
+#: includes/class-admin-order-meta-box.php:256
+msgid "Execute Capture"
+msgstr "Ejecutar captura"
+
+#: includes/class-admin-order-meta-box.php:351
+#: includes/class-order-management.php:993
+#: includes/class-order-management.php:1408
+#: includes/class-order-management.php:1574
+#: includes/class-session-manager.php:744
+msgid "Shipping"
+msgstr "Envío"
+
+#: includes/class-admin-order-meta-box.php:370
+#: includes/class-order-management.php:1029
+#: includes/class-order-management.php:1460
+#: includes/class-order-management.php:1553
+#: includes/class-session-manager.php:809
+#, php-format
+msgid "Coupon: %s"
+msgstr "Cupón: %s"
+
+#: includes/class-admin-order-meta-box.php:420
+#: includes/class-hosted-payment-page.php:550
+msgid "Permission denied."
+msgstr "Acceso denegado."
+
+#: includes/class-admin-order-meta-box.php:428
+msgid "Invalid request."
+msgstr "Solicitud no válida."
+
+#: includes/class-admin-order-meta-box.php:439
+msgid "Capture successful."
+msgstr "La captura se ha realizado correctamente."
+
+#: includes/class-b2b-checkout.php:404 includes/class-session-manager.php:228
+msgid "Your cart is empty."
+msgstr "Su carrito está vacío."
+
+#: includes/class-b2b-checkout.php:480
+msgid "Order Summary"
+msgstr "Resumen del pedido"
+
+#: includes/class-b2b-checkout.php:489
+msgid "Loading payment..."
+msgstr "Cargando el pago …"
+
+#: includes/class-b2b-checkout.php:511 includes/class-session-manager.php:706
+msgid "Product"
+msgstr "Producto"
+
+#: includes/class-b2b-checkout.php:512 includes/class-b2b-checkout.php:581
+msgid "Total"
+msgstr "Total"
+
+#: includes/class-b2b-checkout.php:539
+msgid "Subtotal"
+msgstr "Subtotal"
+
+#: includes/class-b2b-checkout.php:658
+msgid "Company (Briqpay)"
+msgstr "Empresa (Briqpay)"
+
+#: includes/class-b2b-checkout.php:660
+msgid "Name:"
+msgstr "Nombre:"
+
+#: includes/class-b2b-checkout.php:663
+msgid "CIN:"
+msgstr "CIF:"
+
+#: includes/class-checkout-handler.php:297
+msgid "Order created via native checkout. Awaiting Briqpay decision."
+msgstr "Pedido creado mediante el checkout de WooCommerce. Pendiente de la decisión de Briqpay."
+
+#: includes/class-checkout-handler.php:321
+msgid "Payment session not found."
+msgstr "No se ha encontrado la sesión de pago."
+
+#: includes/class-checkout-handler.php:332
+#: includes/class-hosted-payment-page.php:565
+#: includes/class-hosted-payment-page.php:772
+msgid "Order not found."
+msgstr "No se ha encontrado el pedido."
+
+#: includes/class-checkout-handler.php:346
+msgid "Could not verify payment."
+msgstr "No se ha podido verificar el pago."
+
+#: includes/class-checkout-handler.php:441
+#, php-format
+msgid "Payment verification failed. Status: %s"
+msgstr "La verificación del pago ha fallado. Estado: %s"
+
+#: includes/class-checkout-handler.php:442
+msgid "Payment not approved."
+msgstr "El pago no se ha aprobado."
+
+#: includes/class-checkout-handler.php:497
+msgid "Briqpay session verified. Awaiting webhook confirmation."
+msgstr "Sesión de Briqpay verificada. Pendiente de confirmación por webhook."
+
+#: includes/class-checkout-handler.php:1113
+#: includes/class-checkout-handler.php:2655
+msgid "Please select a shipping method."
+msgstr "Seleccione un método de envío."
+
+#: includes/class-checkout-handler.php:1114
+#: includes/class-checkout-handler.php:2648
+msgid "No shipping methods are available for your address."
+msgstr "No hay métodos de envío disponibles para su dirección."
+
+#: includes/class-checkout-handler.php:1115
+#: includes/class-checkout-handler.php:2527
+msgid "Please fill in your email."
+msgstr "Introduzca su correo electrónico."
+
+#: includes/class-checkout-handler.php:1116
+#: includes/class-checkout-handler.php:2625
+msgid "You must accept our Terms & Conditions to complete your purchase."
+msgstr "Debe aceptar nuestros términos y condiciones para completar la compra."
+
+#: includes/class-checkout-handler.php:1127
+msgid "Something went wrong, please try again"
+msgstr "Algo ha ido mal, inténtelo de nuevo"
+
+#: includes/class-checkout-handler.php:2321
+#: includes/class-order-status-manager.php:196 includes/class-webhooks.php:205
+msgid ""
+"Briqpay: Flagged for manual review. Release the order manually once reviewed."
+msgstr "Briqpay: marcado para revisión manual. Libere el pedido manualmente una vez revisado."
+
+#: includes/class-checkout-handler.php:2580
+msgid ""
+"We were unable to synchronize your cart with the payment provider. Please "
+"reload the page and try again."
+msgstr "No hemos podido sincronizar su carrito con el proveedor de pagos. Recargue la página e inténtelo de nuevo."
+
+#: includes/class-checkout-handler.php:2588
+#, php-format
+msgid "\"%s\" is no longer available for purchase."
+msgstr "«%s» ya no está disponible para la compra."
+
+#: includes/class-checkout-handler.php:2590
+#, php-format
+msgid "\"%s\" is out of stock."
+msgstr "«%s» está agotado."
+
+#: includes/class-checkout-handler.php:2592
+#, php-format
+msgid "We do not have enough stock of \"%s\" to fulfill your order."
+msgstr "No tenemos suficientes unidades de «%s» en stock para completar su pedido."
+
+#: includes/class-checkout-handler.php:2602
+#, php-format
+msgid "Coupon \"%s\" is not valid."
+msgstr "El cupón «%s» no es válido."
+
+#: includes/class-gateway.php:41
+msgid "Briqpay"
+msgstr "Briqpay"
+
+#: includes/class-gateway.php:42
+msgid "Briqpay streamlines all payment methods into one integration."
+msgstr "Briqpay reúne todos los métodos de pago en una sola integración."
+
+#: includes/class-gateway.php:79
+msgid "Enable/Disable"
+msgstr "Activar/Desactivar"
+
+#: includes/class-gateway.php:81
+msgid "Enable Briqpay"
+msgstr "Activar Briqpay"
+
+#: includes/class-gateway.php:85
+msgid "Merchant ID (MID)"
+msgstr "ID de comercio (MID)"
+
+#: includes/class-gateway.php:87 includes/class-gateway.php:92
+msgid "Found in Briqpay Dashboard."
+msgstr "Disponible en el panel de Briqpay."
+
+#: includes/class-gateway.php:90
+msgid "Shared Secret"
+msgstr "Secreto compartido"
+
+#: includes/class-gateway.php:95
+msgid "Test mode"
+msgstr "Modo de pruebas"
+
+#: includes/class-gateway.php:96
+msgid "Enable Test Mode"
+msgstr "Activar el modo de pruebas"
+
+#: includes/class-gateway.php:98
+msgid "Place the payment gateway in test mode using playground API."
+msgstr "Ejecutar la pasarela de pago en modo de pruebas contra la API playground."
+
+#: includes/class-gateway.php:103
+msgid "Enable Briqpay Order Management"
+msgstr "Activar la gestión de pedidos de Briqpay"
+
+#: includes/class-gateway.php:104
+msgid "Enable Order Management"
+msgstr "Activar la gestión de pedidos"
+
+#: includes/class-gateway.php:106
+msgid ""
+"If enabled, captures and refunds will be handled automatically towards "
+"Briqpay."
+msgstr "Si se activa, las capturas y los reembolsos se gestionan automáticamente con Briqpay."
+
+#: includes/class-gateway.php:111
+msgid "Validate Terms & Conditions"
+msgstr "Validar los términos y condiciones"
+
+#: includes/class-gateway.php:112
+msgid "Require the WooCommerce Terms & Conditions checkbox"
+msgstr "Exigir la casilla de términos y condiciones de WooCommerce"
+
+#: includes/class-gateway.php:114
+msgid ""
+"When enabled, a purchase is rejected at the payment decision unless the "
+"customer ticked WooCommerce's native Terms & Conditions checkbox. Disable "
+"this if you collect consent elsewhere - for example with Briqpay's own terms "
+"module, or a third-party consent plugin - to avoid asking the customer "
+"twice. Has no effect when WooCommerce has no Terms and conditions page "
+"configured."
+msgstr "Cuando esta opción está activada, la compra se rechaza en el momento de la decisión de pago si el cliente no ha marcado la casilla de términos y condiciones propia de WooCommerce. Desactívela si recoge el consentimiento en otro lugar – por ejemplo con el módulo de condiciones de Briqpay o un plugin de consentimiento de terceros – para no preguntar al cliente dos veces. No tiene efecto si WooCommerce no tiene configurada una página de términos y condiciones."
+
+#: includes/class-gateway.php:119
+msgid "WooCommerce checkout actions"
+msgstr "Acciones del checkout de WooCommerce"
+
+#: includes/class-gateway.php:120
+msgid "Fire WooCommerce's standard checkout actions"
+msgstr "Ejecutar las acciones estándar del checkout de WooCommerce"
+
+#: includes/class-gateway.php:122
+msgid ""
+"Lets third-party plugins (custom checkout fields, ERP and invoicing "
+"connectors, delivery-date pickers) receive Briqpay orders the same way they "
+"receive orders paid with other methods. <strong>Before enabling, check any "
+"custom code you added to compensate for these actions being missing</strong> "
+"- for example on <code>briqpay_after_create_order</code> - because it will "
+"now run alongside the plugins it was standing in for. Existing stores keep "
+"this off until you turn it on."
+msgstr "Permite que los plugins de terceros (campos de checkout personalizados, conectores de ERP y facturación, selectores de fecha de entrega) reciban los pedidos de Briqpay igual que los pedidos pagados con otros métodos. <strong>Antes de activarlo, revise cualquier código propio que haya añadido para compensar la ausencia de estas acciones</strong> – por ejemplo en <code>briqpay_after_create_order</code> – porque ahora se ejecutará junto a los plugins a los que sustituía. Las tiendas existentes mantienen esta opción desactivada hasta que usted la active."
+
+#: includes/class-gateway.php:127
+msgid "Hosted Payment Pages"
+msgstr "Páginas de pago"
+
+#: includes/class-gateway.php:129
+msgid ""
+"Create a Briqpay hosted payment page for an order you have built in the "
+"WooCommerce admin, then send the link to your customer."
+msgstr "Cree una página de pago de Briqpay para un pedido que haya montado en la administración de WooCommerce y envíe el enlace a su cliente."
+
+#: includes/class-gateway.php:132 includes/class-gateway.php:133
+msgid "Enable Hosted Payment Pages"
+msgstr "Activar las páginas de pago"
+
+#: includes/class-gateway.php:135
+msgid "Adds a \"Briqpay Hosted Payment Page\" box to the order edit screen."
+msgstr "Añade el bloque «Página de pago de Briqpay» a la pantalla de edición del pedido."
+
+#: includes/class-gateway.php:140
+msgid "Default flow"
+msgstr "Flujo predeterminado"
+
+#: includes/class-gateway.php:143
+msgid ""
+"Pre-selected on the order screen. You can always pick a different flow when "
+"creating the page."
+msgstr "Preseleccionado en la pantalla del pedido. Siempre puede elegir otro flujo al crear la página."
+
+#: includes/class-gateway.php:147 includes/class-hosted-payment-page.php:89
+msgid "Consumer"
+msgstr "Particular"
+
+#: includes/class-gateway.php:148 includes/class-hosted-payment-page.php:94
+msgid "Business - Payment Methods Only"
+msgstr "Empresa – solo métodos de pago"
+
+#: includes/class-gateway.php:149 includes/class-hosted-payment-page.php:101
+msgid "Business - Full Checkout"
+msgstr "Empresa – checkout completo"
+
+#: includes/class-gateway.php:153
+msgid "Hosted page title"
+msgstr "Título de la página de pago"
+
+#: includes/class-gateway.php:155
+msgid ""
+"Short text shown to the customer beneath your logo. Between 3 and 256 "
+"characters; leave empty to omit."
+msgstr "Texto breve que se muestra al cliente debajo de su logotipo. Entre 3 y 256 caracteres; déjelo vacío para omitirlo."
+
+#: includes/class-gateway.php:160
+msgid "Hosted page logo URL"
+msgstr "URL del logotipo de la página de pago"
+
+#: includes/class-gateway.php:162
+msgid ""
+"Absolute URL to a PNG, JPG, JPEG or SVG image (max 512 characters). Leave "
+"empty to omit."
+msgstr "URL absoluta a una imagen PNG, JPG, JPEG o SVG (máximo 512 caracteres). Déjelo vacío para omitirlo."
+
+#: includes/class-gateway.php:167
+msgid "Show cart on hosted page"
+msgstr "Mostrar el carrito en la página de pago"
+
+#: includes/class-gateway.php:168
+msgid "Display the order lines above the payment section"
+msgstr "Mostrar las líneas del pedido encima de la sección de pago"
+
+#: includes/class-gateway.php:173
+msgid "Logging"
+msgstr "Registro"
+
+#: includes/class-gateway.php:174
+msgid "Log Briqpay events"
+msgstr "Registrar los eventos de Briqpay"
+
+#: includes/class-gateway.php:176
+msgid "Log Briqpay events, such as API requests."
+msgstr "Registrar los eventos de Briqpay, por ejemplo las peticiones a la API."
+
+#: includes/class-gateway.php:180
+msgid "Verbose Logging"
+msgstr "Registro detallado"
+
+#: includes/class-gateway.php:181
+msgid "Enable verbose debug logs"
+msgstr "Activar los registros de depuración detallados"
+
+#: includes/class-gateway.php:183
+msgid ""
+"Include detailed trace messages like availability checks and cart processing."
+msgstr "Incluir mensajes de traza detallados, como las comprobaciones de disponibilidad y el procesamiento del carrito."
+
+#: includes/class-gateway.php:187
+msgid "Migration / legacy compatibility"
+msgstr "Migración / compatibilidad heredada"
+
+#: includes/class-gateway.php:189
+msgid ""
+"Options for stores migrating from the previous Briqpay for WooCommerce "
+"plugin."
+msgstr "Opciones para las tiendas que migran desde el plugin anterior Briqpay for WooCommerce."
+
+#: includes/class-gateway.php:192
+msgid "Legacy B2B order meta mapping"
+msgstr "Asignación de metadatos heredada para pedidos B2B"
+
+#: includes/class-gateway.php:193
+msgid "Also store B2B order data using the previous plugin's meta keys"
+msgstr "Guardar también los datos de los pedidos B2B con las claves meta del plugin anterior"
+
+#: includes/class-gateway.php:195
+msgid ""
+"For stores migrating from the previous Briqpay plugin. B2B orders "
+"additionally store the organisation number in <code>_billing_org_nr</code> "
+"and the shipping email in <code>_shipping_email</code>, so existing ERP "
+"exports and integrations keep working. Current meta keys are always written "
+"as well."
+msgstr "Para las tiendas que migran desde el plugin anterior de Briqpay. Los pedidos B2B guardan además el número de empresa en <code>_billing_org_nr</code> y el correo electrónico de envío en <code>_shipping_email</code>, de modo que las exportaciones a ERP y las integraciones existentes sigan funcionando. Las claves meta actuales se escriben siempre también."
+
+#: includes/class-gateway.php:373
+msgid "Please complete your payment using the Briqpay checkout."
+msgstr "Complete su pago en el checkout de Briqpay."
+
+#: includes/class-gateway.php:459
+msgid ""
+"Briqpay: the hosted page logo URL must be an absolute URL ending "
+"in .png, .jpg, .jpeg or .svg, and at most 512 characters."
+msgstr "Briqpay: la URL del logotipo de la página de pago debe ser una URL absoluta que termine en .png, .jpg, .jpeg o .svg, y tener como máximo 512 caracteres."
+
+#: includes/class-hosted-payment-page.php:242
+msgid "billing address"
+msgstr "dirección de facturación"
+
+#: includes/class-hosted-payment-page.php:243
+msgid "billing city"
+msgstr "ciudad de facturación"
+
+#: includes/class-hosted-payment-page.php:244
+msgid "billing postcode"
+msgstr "código postal de facturación"
+
+#: includes/class-hosted-payment-page.php:245
+msgid "billing country"
+msgstr "país de facturación"
+
+#: includes/class-hosted-payment-page.php:246
+msgid "billing email"
+msgstr "correo electrónico de facturación"
+
+#: includes/class-hosted-payment-page.php:277
+msgid "company name"
+msgstr "nombre de la empresa"
+
+#: includes/class-hosted-payment-page.php:298
+#, php-format
+msgid ""
+"Fill in the customer details on this order before creating a \"%1$s\" hosted "
+"payment page. Missing: %2$s. That flow shows payment methods only, so the "
+"customer cannot enter these themselves - the page would never unlock. Choose "
+"\"Business - Full Checkout\" if you want Briqpay to collect the details "
+"instead."
+msgstr "Rellene los datos del cliente en este pedido antes de crear una página de pago «%1$s». Falta: %2$s. Ese flujo solo muestra métodos de pago, por lo que el cliente no puede introducir estos datos y la página nunca se desbloquearía. Elija «Empresa – checkout completo» si prefiere que Briqpay recopile los datos."
+
+#: includes/class-hosted-payment-page.php:416
+msgid "Hosted Payment Pages are not enabled in the Briqpay settings."
+msgstr "Las páginas de pago no están activadas en los ajustes de Briqpay."
+
+#: includes/class-hosted-payment-page.php:420
+msgid "Invalid order."
+msgstr "Pedido no válido."
+
+#: includes/class-hosted-payment-page.php:424
+msgid "This order has already been paid, refunded or cancelled."
+msgstr "Este pedido ya se ha pagado, reembolsado o cancelado."
+
+#: includes/class-hosted-payment-page.php:428
+msgid ""
+"Add at least one line item to the order before creating a hosted payment "
+"page."
+msgstr "Añada al menos una línea al pedido antes de crear una página de pago."
+
+#: includes/class-hosted-payment-page.php:444
+msgid ""
+"This order already has a completed Briqpay session and cannot be regenerated."
+msgstr "Este pedido ya tiene una sesión de Briqpay completada y no se puede volver a generar."
+
+#: includes/class-hosted-payment-page.php:452
+msgid "Could not build a Briqpay cart from this order."
+msgstr "No se ha podido construir un carrito de Briqpay a partir de este pedido."
+
+#: includes/class-hosted-payment-page.php:465
+#, php-format
+msgid ""
+"Briqpay total (%1$s) does not match the WooCommerce order total (%2$s). "
+"Recalculate the order and try again."
+msgstr "El total de Briqpay (%1$s) no coincide con el total del pedido de WooCommerce (%2$s). Recalcule el pedido e inténtelo de nuevo."
+
+#: includes/class-hosted-payment-page.php:487
+msgid "Briqpay did not return a session ID."
+msgstr "Briqpay no ha devuelto ningún ID de sesión."
+
+#: includes/class-hosted-payment-page.php:501
+msgid "Briqpay did not return a hosted page URL."
+msgstr "Briqpay no ha devuelto ninguna URL de página de pago."
+
+#: includes/class-hosted-payment-page.php:522
+#, php-format
+msgid "Briqpay hosted payment page created (%1$s). Link: %2$s"
+msgstr "Página de pago de Briqpay creada (%1$s). Enlace: %2$s"
+
+#: includes/class-hosted-payment-page.php:560
+msgid "Invalid flow selected."
+msgstr "Flujo seleccionado no válido."
+
+#: includes/class-hosted-payment-page.php:575
+msgid ""
+"A hosted payment page is already being created for this order. Please wait a "
+"moment and reload."
+msgstr "Ya se está creando una página de pago para este pedido. Espere un momento y recargue."
+
+#: includes/class-hosted-payment-page.php:699
+msgid "Briqpay Hosted Payment Page"
+msgstr "Página de pago de Briqpay"
+
+#: includes/class-hosted-payment-page.php:777
+msgid ""
+"Add products and save the order first, then come back here to create a "
+"hosted payment page."
+msgstr "Añada primero productos y guarde el pedido, y vuelva luego aquí para crear una página de pago."
+
+#: includes/class-hosted-payment-page.php:793
+msgid ""
+"This order has already been paid, refunded or cancelled. No new hosted page "
+"can be created."
+msgstr "Este pedido ya se ha pagado, reembolsado o cancelado. No se puede crear una nueva página de pago."
+
+#: includes/class-hosted-payment-page.php:798
+msgid "Hosted payment link:"
+msgstr "Enlace a la página de pago:"
+
+#: includes/class-hosted-payment-page.php:801
+msgid "Copy link"
+msgstr "Copiar enlace"
+
+#: includes/class-hosted-payment-page.php:802
+msgid "Open"
+msgstr "Abrir"
+
+#: includes/class-hosted-payment-page.php:804
+msgid "Flow:"
+msgstr "Flujo:"
+
+#: includes/class-hosted-payment-page.php:809
+msgid "Regenerate"
+msgstr "Crear de nuevo"
+
+#: includes/class-hosted-payment-page.php:811
+msgid "Flow"
+msgstr "Flujo"
+
+#: includes/class-hosted-payment-page.php:819
+msgid "No billing email on this order - some payment methods require one."
+msgstr "Este pedido no tiene correo electrónico de facturación: algunos métodos de pago lo requieren."
+
+#: includes/class-hosted-payment-page.php:822
+msgid "Create hosted payment page"
+msgstr "Crear página de pago"
+
+#: includes/class-hosted-payment-page.php:853
+msgid "Create a Briqpay hosted payment page for this order?"
+msgstr "¿Crear una página de pago de Briqpay para este pedido?"
+
+#: includes/class-hosted-payment-page.php:854
+msgid ""
+"This creates a NEW payment session and invalidates the previous link. "
+"Continue?"
+msgstr "Esto crea una NUEVA sesión de pago e invalida el enlace anterior. ¿Continuar?"
+
+#: includes/class-hosted-payment-page.php:855
+msgid "Could not create the hosted payment page."
+msgstr "No se ha podido crear la página de pago."
+
+#: includes/class-hosted-payment-page.php:856
+msgid "Copied!"
+msgstr "¡Copiado!"
+
+#: includes/class-legacy-b2b-meta.php:195
+msgid "Billing Organization Number"
+msgstr "Número de empresa de facturación"
+
+#: includes/class-legacy-b2b-meta.php:224
+msgid "Email"
+msgstr "Correo electrónico"
+
+#: includes/class-order-management.php:84
+#, php-format
+msgid "Briqpay capture failed: %s. Merchant action required."
+msgstr "Briqpay: la captura ha fallado: %s. Se requiere la intervención del comercio."
+
+#: includes/class-order-management.php:138
+#, php-format
+msgid "Briqpay: Capture retry %1$d/3 failed: %2$s"
+msgstr "Briqpay: el intento de captura %1$d/3 ha fallado: %2$s"
+
+#: includes/class-order-management.php:150
+msgid "Briqpay: Capture succeeded on retry."
+msgstr "Briqpay: la captura se ha realizado correctamente en un nuevo intento."
+
+#: includes/class-order-management.php:163
+msgid "Order management is disabled."
+msgstr "La gestión de pedidos está desactivada."
+
+#: includes/class-order-management.php:168
+msgid "No Briqpay session found."
+msgstr "No se ha encontrado ninguna sesión de Briqpay."
+
+#: includes/class-order-management.php:181
+msgid ""
+"A capture is already in progress for this order. Please wait a moment and "
+"reload."
+msgstr "Ya hay una captura en curso para este pedido. Espere un momento y recargue."
+
+#: includes/class-order-management.php:252
+#: includes/class-order-management.php:1045
+#: includes/class-order-management.php:1476
+#: includes/class-order-management.php:1613
+#: includes/class-session-manager.php:830
+msgid "Sales tax"
+msgstr "Impuesto sobre las ventas"
+
+#: includes/class-order-management.php:353
+#, php-format
+msgid "Briqpay: Captured. ID: %s"
+msgstr "Briqpay: capturado. ID: %s"
+
+#: includes/class-order-management.php:379
+#, php-format
+msgid ""
+"Briqpay: Capture amount mismatch! Captured: %s, Order Total: %s. Order not "
+"marked as payment complete."
+msgstr "Briqpay: el importe capturado no coincide. Capturado: %s, total del pedido: %s. El pedido no se marca como pagado."
+
+#: includes/class-order-management.php:389
+msgid "Capture failed: No captureId returned."
+msgstr "La captura ha fallado: no se ha devuelto ningún captureId."
+
+#: includes/class-order-management.php:564
+msgid ""
+"This refund spans multiple captures. Please perform separate refunds per "
+"capture."
+msgstr "Este reembolso abarca varias capturas. Realice reembolsos separados para cada captura."
+
+#: includes/class-order-management.php:727
+msgid "Refund adjustment"
+msgstr "Ajuste del reembolso"
+
+#: includes/class-order-management.php:902
+#, php-format
+msgid "Briqpay: Refunded %1$s from capture %2$s."
+msgstr "Briqpay: se han reembolsado %1$s de la captura %2$s."
+
+#: includes/class-order-management.php:1080
+msgid "Briqpay: Cannot cancel order after capture. Please use refund instead."
+msgstr "Briqpay: el pedido no se puede cancelar después de la captura. Utilice un reembolso en su lugar."
+
+#: includes/class-order-management.php:1089
+msgid "Briqpay: Cancel request sent successfully."
+msgstr "Briqpay: la solicitud de cancelación se ha enviado."
+
+#: includes/class-order-management.php:1093
+#, php-format
+msgid "Briqpay: Cancel request failed: %s"
+msgstr "Briqpay: la solicitud de cancelación ha fallado: %s"
+
+#: includes/class-order-management.php:1686
+msgid "Failed to retrieve valid session from Briqpay."
+msgstr "No se ha podido obtener una sesión válida de Briqpay."
+
+#: includes/class-order-management.php:1702
+msgid "No Briqpay session ID found for this order."
+msgstr "No se ha encontrado ningún ID de sesión de Briqpay para este pedido."
+
+#: includes/class-order-status-manager.php:93
+#: includes/class-order-status-manager.php:108
+msgctxt "Order status"
+msgid "Briqpay Temporary"
+msgstr "Briqpay temporal"
+
+#: includes/class-order-status-manager.php:209
+msgid ""
+"Briqpay Janitor: Recovered completed session with an approved transaction."
+msgstr "Briqpay Janitor: se ha recuperado una sesión completada con una transacción aprobada."
+
+#: includes/class-order-status-manager.php:218
+msgid "Briqpay Janitor: Order cancelled due to inactivity (5h threshold)."
+msgstr "Briqpay Janitor: pedido cancelado por inactividad (umbral de 5 h)."
+
+#: includes/class-pay-button-handler.php:96
+msgid "This order has already been paid. We are processing your payment."
+msgstr "Este pedido ya se ha pagado. Estamos procesando su pago."
+
+#: includes/class-webhooks.php:191
+#, php-format
+msgid "Briqpay: Payment amount/currency mismatch! BP: %s %s, WC: %s %s."
+msgstr "Briqpay: el importe o la moneda no coinciden. BP: %s %s, WC: %s %s."
+
+#: includes/class-webhooks.php:239
+msgid "Briqpay: Payment confirmed via side-channel."
+msgstr "Briqpay: pago confirmado por un canal alternativo."
+
+#: includes/class-webhooks.php:258
+msgid "Briqpay: Session cancelled."
+msgstr "Briqpay: sesión cancelada."
+
+#: includes/class-webhooks.php:261
+msgid "Briqpay: Session failed."
+msgstr "Briqpay: la sesión ha fallado."
+
+#: includes/class-webhooks.php:397
+msgid "Briqpay: Order pending."
+msgstr "Briqpay: pedido pendiente."
+
+#: includes/class-webhooks.php:416
+msgid ""
+"Briqpay: Order approved but flagged for manual review. Release the order "
+"manually once reviewed."
+msgstr "Briqpay: pedido aprobado pero marcado para revisión manual. Libere el pedido manualmente una vez revisado."
+
+#: includes/class-webhooks.php:422
+msgid "Briqpay: Order approved, ready for capture."
+msgstr "Briqpay: pedido aprobado, listo para la captura."
+
+#: includes/class-webhooks.php:432
+#, php-format
+msgid "Briqpay: Order %s."
+msgstr "Briqpay: pedido %s."
+
+#: includes/class-webhooks.php:544
+#, php-format
+msgid "Briqpay: Capture approved. ID: %s"
+msgstr "Briqpay: captura aprobada. ID: %s"
+
+#: includes/class-webhooks.php:573
+#, php-format
+msgid "Briqpay: Capture amount/currency mismatch! BP: %s %s, WC: %s %s."
+msgstr "Briqpay: el importe o la moneda de la captura no coinciden. BP: %s %s, WC: %s %s."
+
+#: includes/class-webhooks.php:622
+msgid "Briqpay: Refund approved."
+msgstr "Briqpay: reembolso aprobado."

@@ -47,6 +47,31 @@ The plugin supports both automated and manual order management:
   the 'Manual Capture' button is replaced with an 'Auto capture in progress'
   notice instead, since Briqpay is already handling the capture itself.
 
+CAPTURE AMOUNTS COME FROM THE ORDER, NOT THE REQUEST
+The capture box posts a reference and a quantity per row. Nothing else in that
+request is trusted: build_manual_capture_items() looks each reference up in
+get_capture_basis(), which carries the order's own full-precision line totals,
+and clamps the quantity to what is still outstanding. An unrecognized reference
+is logged and skipped rather than captured.
+
+Amounts are allocated with allocate_minor(), which takes each slice as the
+difference between rounded running totals instead of rounding slices on their
+own. That telescopes, so however a line is split across partial captures the
+slices always sum to the line total - three single-unit captures off a 10,00
+line send 333, 334 and 333, not 333 three times.
+
+This matters because rounding a per-unit price and then multiplying by the
+quantity does not give the line total. Doing that is what previously let a
+capture drift off the authorized amount, by up to three cents at quantity six,
+and more often upwards than downwards. Quantity-1 lines - shipping, fees,
+discounts - were never affected, since there is nothing to multiply.
+
+Briqpay validates that unitPrice x quantity equals totalAmount minus
+totalVatAmount. totalAmount is the money and has to match the order, so it stays
+exact and the VAT figure absorbs the sub-cent remainder; the invariant then holds
+by construction. unitPriceIncVat is reported per unit only and is never
+multiplied back into an amount.
+
 --------------------------------------------------------------------------------
 5. ACTION SCHEDULER & BACKGROUND PROCESSING
 --------------------------------------------------------------------------------
@@ -158,6 +183,17 @@ storefront checkout.
 - Line item/fee references sent to Briqpay are frozen onto the order's items
   as `_briqpay_item_reference` / `_briqpay_fee_reference` at creation time, so
   a later SKU rename cannot break captures/refunds for that order.
+- Required customer data: the payment-module flows (Consumer, Business - Payment
+  Methods Only) load only the `payment` module, so the hosted page cannot collect an
+  address. Hosted_Payment_Page::validate_prefill_for_flow() therefore refuses to
+  create one until the order has billing street, city, postcode, country and email -
+  plus a company name for the business payment-module flow. Without them
+  build_session_payload() omits the whole `data.billing` / `data.company` block and
+  the page never unlocks, which used to happen silently after the link had already
+  been sent. Business - Full Checkout is exempt because it loads company_lookup,
+  billing and shipping; the exemption is derived from loadModules, not the flow name,
+  so a future flow that collects its own data is exempt automatically. Adjust the
+  required set with the `briqpay_hpp_required_prefill_fields` filter.
 - The order's billing/shipping address and company are prefilled; for the
   Business - Full Checkout flow, whatever Briqpay confirms is written back
   onto the order once the payment webhook arrives.
@@ -196,7 +232,7 @@ WooCommerce > Status > Logs for 'Direct update failed: <reason>' (debug level) a
 'API Error (<code>)' (error level - present even with "Logging" off). A PATCH that
 fails while creation succeeds usually means a create-only field (customerType,
 modules, country, locale) is reaching the update payload from a merchant filter;
-see section 14.
+see section 15.
 
 --------------------------------------------------------------------------------
 11. WOOCOMMERCE CHECKOUT ACTION PARITY
@@ -514,7 +550,81 @@ Note refunds and captures themselves are NOT blocked by a hold - the hold govern
 order status, not money operations a merchant explicitly triggers.
 
 --------------------------------------------------------------------------------
-14. DEVELOPER HOOKS (ACTIONS & FILTERS)
+14. TRANSLATIONS
+--------------------------------------------------------------------------------
+Text domain 'briqpay-for-woocommerce', catalogues in /languages.
+
+IMPORTANT: the plugin loads them itself, via load_plugin_textdomain() on 'init'
+from the main plugin file. Declaring Text Domain and Domain Path in the header is
+NOT sufficient - before WordPress 6.1 the just-in-time loader only looked in
+WP_LANG_DIR/plugins, never the plugin's own Domain Path, and this plugin supports
+WordPress 5.8. Without that call every bundled .mo was silently ignored. It is on
+'init' rather than 'plugins_loaded' because WordPress 6.7+ warns about translations
+loaded earlier than that.
+
+WHICH LANGUAGE IS USED
+The locale comes from WordPress itself - determine_locale(), which resolves to the
+logged-in user's admin language when they have set one, otherwise the site language
+from Settings > General. That is deliberate for an admin-facing message: it follows
+the language the person reading it chose.
+
+Note this is NOT the same locale sent to Briqpay in the session payload. That uses
+get_locale() (the SITE language), because the checkout iframe and hosted page are
+read by the customer, not by the admin who created them. Do not "unify" the two.
+
+Regional variants fall back to the base language. WordPress has many more locales
+than any plugin ships catalogues for, and load_plugin_textdomain() only matches the
+exact locale, so a site set to de_DE_formal, de_AT, pt_BR, es_MX, fr_CA, nl_BE or
+sv_FI found no file and silently fell back to English - even though the language was
+one we translated. find_language_fallback() reuses the catalogue whose base language
+matches:
+
+  de_DE_formal, de_AT, de_CH  -> de_DE
+  pt_BR                       -> pt_PT
+  es_MX, es_AR, es_CO         -> es_ES
+  fr_CA, fr_BE                -> fr_FR
+  nl_BE, nl_NL_formal         -> nl_NL
+  sv_FI                       -> sv_SE
+  nn_NO, no                   -> nb_NO  (alias: the two written standards share one)
+
+It is driven by scanning /languages, so adding a catalogue covers that language's
+variants automatically. The exact lookup runs FIRST and returns on success, so an
+official translation in WP_LANG_DIR/plugins always wins over anything bundled here.
+A language with no catalogue resolves to nothing rather than borrowing another.
+
+Regenerating the template after changing any translatable string:
+
+  xgettext --language=PHP --from-code=UTF-8 \
+    -k__ -k_e -k_x:1,2c -k_n:1,2 -kesc_html__ -kesc_attr__ -kesc_html_e \
+    -kesc_attr_e -kesc_html_x:1,2c \
+    --package-name="Briqpay for WooCommerce" \
+    -o languages/briqpay-for-woocommerce.pot \
+    briqpay-for-woocommerce.php includes/*.php
+
+Then update each .po and recompile. A .po alone does nothing at runtime - only the
+.mo is read:
+
+  cd languages && for po in *.po; do
+    msgfmt --check --check-format -o "${po%.po}.mo" "$po"
+  done
+
+--check-format matters: it refuses a translation that drops or renumbers the
+%1$s / %2$s placeholders, which would otherwise produce a message with a value
+missing and no error anywhere.
+
+Shipped locales: sv_SE, da_DK, nb_NO, fi, de_DE, nl_NL, fr_FR, es_ES, it_IT,
+pt_PT, pl_PL. These currently cover the hosted-page customer-data validation
+message plus the strings it interpolates (the billing field labels and the three
+flow names) - a partially translated catalogue is valid, and untranslated entries
+fall back to English. They are machine-drafted and marked as such in each file
+header; have a native speaker review before treating them as final.
+
+TranslationsTest guards all of this: it parses the compiled .mo binaries rather
+than the .po sources, so a .po edited without recompiling fails, as does a lost
+placeholder, a missing interpolated string, or the textdomain loader being removed.
+
+--------------------------------------------------------------------------------
+15. DEVELOPER HOOKS (ACTIONS & FILTERS)
 --------------------------------------------------------------------------------
 Integrators can customize the plugin behavior using the following hooks:
 
@@ -535,6 +645,14 @@ FILTERS:
   Modify the address blocks derived from the order for a hosted payment page.
 - `briqpay_hpp_locale`: (string) Modify the locale sent for a hosted payment
   page session.
+- `briqpay_locale`: (string) Modify the locale sent when creating a storefront
+  session. Both paths normalise get_locale() through
+  Session_Manager::normalize_locale() first, because Briqpay requires a
+  language-country pair and WordPress ships some languages with a bare code
+  ("fi", not "fi_FI") and others with a third variant segment ("de_DE_formal").
+  Note every en_* locale resolves to "en-gb" - the region is deliberately
+  overridden, not honoured - and "en-gb" is also the fallback for unparseable
+  input. Use this filter if a store needs something else.
 - `briqpay_fire_checkout_hook`: (bool, string) Disable one specific WooCommerce
   checkout action while leaving the others enabled. See section 11.
 - `briqpay_superimpose_post_data`: (bool, array) Disable superimposing the
@@ -568,7 +686,7 @@ ACTIONS:
   Run before/after a hosted payment page is created.
 
 --------------------------------------------------------------------------------
-15. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
+16. MIGRATING FROM THE PREVIOUS PLUGIN (LEGACY B2B META MAPPING)
 --------------------------------------------------------------------------------
 For stores migrating from the previous "Briqpay for WooCommerce" plugin
 (github.com/krokedil/briqpay-for-woocommerce, v1 API), B2B orders can
@@ -592,6 +710,28 @@ ERP exports/integrations built against those keys keep working unchanged.
   'business'`, falling back to a non-empty `data.company.cin`/`name`) - it
   cannot use B2b_Checkout::is_b2b_active()'s WC session/cookie logic, because
   the webhook and Hosted Payment Page call sites run with neither available.
+
+THE SESSION ID IS DELIBERATELY NOT MAPPED
+`_briqpay_session_id` is absent from the mapping below because the previous plugin
+used the SAME key. Verified against krokedil/briqpay-for-woocommerce:
+  - classes/class-briqpay-gateway.php, process_payment():
+      $order->update_meta_data( '_briqpay_session_id', $response['sessionid'] );
+  - includes/briqpay-functions.php: order lookup by meta_key '_briqpay_session_id'
+  - classes/class-briqpay-confirmation.php: $order->get_meta( '_briqpay_session_id' )
+
+Two consequences worth knowing:
+  - Nothing needs mirroring. Writing it under the legacy toggle would put the same
+    value in the same key.
+  - Orders created by the OLD plugin are already fully operable here. The session id
+    is not decorative metadata - it is the key for capture, refund, the janitor's
+    session lookup, the webhook's order lookup, the admin meta box, the pay button
+    and hosted-page regeneration. Because the key matches, migrated open orders can
+    be captured and refunded with no migration step.
+
+DO NOT RENAME `_briqpay_session_id`. Renaming it would silently strand every order
+created by the previous plugin: Order_Management::capture_order() and
+refund_order() both bail with `if (!$session_id) { return; }` - no error, no order
+note, no log line. SessionIdCompatibilityTest pins the key for this reason.
 
 Meta key mapping (legacy key -> source):
   _billing_org_nr                       <- data.company.cin

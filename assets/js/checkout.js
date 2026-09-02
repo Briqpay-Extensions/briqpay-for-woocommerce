@@ -16,6 +16,9 @@ window.briqpayCheckout = {
     // every order review refresh, which throws the iframe away - this lets us
     // redraw it without another session request.
     _lastSnippet: null,
+    // Newest payload that arrived while a session update was in flight. Only the
+    // latest is worth keeping - intermediate cart states are already superseded.
+    _queuedUpdate: null,
 
     init: function () {
         const $ = jQuery;
@@ -128,6 +131,15 @@ window.briqpayCheckout = {
 
         // Debounce: collapse multiple rapid 'updated_checkout' events into one call.
         clearTimeout(self._updateDebounceTimer);
+
+        // The first initialisation has nothing to collapse - there is no session yet
+        // and no request in flight - so it goes on the next tick instead of waiting
+        // out the debounce. Still a setTimeout rather than a direct call, so the
+        // current event handler finishes and the DOM is settled before we read it.
+        // Safe against duplicate requests because _isInitializing gates initIframe()
+        // and clearTimeout above still collapses a burst of events into one.
+        var delay = (!self.session && !self._isInitializing) ? 0 : 250;
+
         self._updateDebounceTimer = setTimeout(function () {
             self._updateDebounceTimer = null;
 
@@ -154,7 +166,7 @@ window.briqpayCheckout = {
             if (isBriqpaySelected || isSingleMethod) {
                 self.initOrUpdate();
             }
-        }, 250);
+        }, delay);
     },
 
     forceUpdate: function () {
@@ -225,6 +237,9 @@ window.briqpayCheckout = {
         var requestData = {
             action: 'briqpay_get_session',
             nonce: briqpayParams.nonce,
+            // Empty on a fresh page load. The server needs to know that, or it may
+            // skip the update and answer without a snippet to render.
+            client_session_id: this.session || '',
             checkout_data: $('form.checkout, form#order_review, form.woocommerce-checkout').serialize()
         };
 
@@ -251,6 +266,11 @@ window.briqpayCheckout = {
                         window.briqpayCheckout._lastSnippet = snippet;
                         $('#briqpay-iframe-container').html(snippet);
                         window.briqpayCheckout.attachListeners();
+                    } else {
+                        // Success with no snippet leaves an empty checkout, and this
+                        // used to pass in complete silence. Allow a retry and say so.
+                        window.briqpayCheckout._lastPayloadHash = null;
+                        console.error('Briqpay: session response contained no htmlSnippet - nothing to render.', response);
                     }
                 } else {
                     // Nothing was drawn, so the fingerprint must not claim the form
@@ -272,6 +292,16 @@ window.briqpayCheckout = {
         const $ = jQuery;
         if (!this.session) return;
 
+        // A request is already in flight. _isInitializing only guards the FIRST
+        // call, so without this a shipping change landing on top of
+        // updated_checkout could start a second concurrent sync - two PATCHes
+        // racing, with the loser's payload potentially applied last. Keep the
+        // newest payload and run it when the current request finishes.
+        if (this._isUpdating) {
+            this._queuedUpdate = { data: data };
+            return;
+        }
+
         var $form = $('form.checkout, form#order_review, form.woocommerce-checkout');
         var formData = $form.serialize();
         var blocksJson = data ? JSON.stringify(data) : '';
@@ -292,6 +322,7 @@ window.briqpayCheckout = {
         var requestData = {
             action: 'briqpay_get_session',
             nonce: briqpayParams.nonce,
+            client_session_id: this.session || '',
             checkout_data: formData
         };
 
@@ -325,9 +356,7 @@ window.briqpayCheckout = {
                             window.briqpayCheckout._lastSnippet = response.data.htmlSnippet;
                             window.briqpayCheckout.attachListeners();
                             setTimeout(function () {
-                                window.briqpayCheckout.resume();
-                                window.briqpayCheckout._isUpdating = false;
-                                window.briqpayCheckout._processPendingDecision();
+                                window.briqpayCheckout._finishUpdate();
                             }, 250);
                             return; // Exit early, setTimeout handles the rest
                         }
@@ -337,23 +366,38 @@ window.briqpayCheckout = {
                     // API has already answered, so there is nothing to wait for.
                     // The old unconditional 1s kept the iframe suspended long after
                     // the work was done.
-                    window.briqpayCheckout.resume();
-                    window.briqpayCheckout._isUpdating = false;
-                    window.briqpayCheckout._processPendingDecision();
+                    window.briqpayCheckout._finishUpdate();
                 } else {
                     console.error('Briqpay: Session sync failed', response);
-                    window.briqpayCheckout.resume();
-                    window.briqpayCheckout._isUpdating = false;
-                    window.briqpayCheckout._processPendingDecision();
+                    window.briqpayCheckout._finishUpdate();
                 }
             },
             error: function (xhr, status, error) {
                 console.error('Briqpay: AJAX error in updateSession', error);
-                window.briqpayCheckout.resume();
-                window.briqpayCheckout._isUpdating = false;
-                window.briqpayCheckout._processPendingDecision();
+                window.briqpayCheckout._finishUpdate();
             }
         });
+    },
+
+    /**
+     * One exit path for every session update - success, snippet swap, failure and
+     * transport error alike.
+     *
+     * Runs a queued payload before releasing a deferred decision, so a purchase is
+     * never decided against a session that is about to be updated again.
+     */
+    _finishUpdate: function () {
+        this.resume();
+        this._isUpdating = false;
+
+        if (this._queuedUpdate) {
+            var queued = this._queuedUpdate;
+            this._queuedUpdate = null;
+            this.updateSession(queued.data);
+            return;
+        }
+
+        this._processPendingDecision();
     },
 
     _processPendingDecision: function () {
