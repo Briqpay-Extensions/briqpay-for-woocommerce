@@ -40,6 +40,7 @@ class NativeCheckoutParityTest extends TestCase
         parent::setUp();
         WP_Mock::setUp();
         \Briqpay_Test_Actions::reset();
+        \Briqpay_Test_Options::reset();
 
         $this->order_meta = array();
         $this->status = 'checkout-draft';
@@ -292,6 +293,81 @@ class NativeCheckoutParityTest extends TestCase
             $source,
             'A reservation failure must be logged, not thrown at a customer mid-authorization.'
         );
+    }
+
+    /**
+     * Blocks/Store API checkout (POST /wc/store/v1/checkout) already reserves
+     * stock for the order before the Briqpay decision comes back. Calling
+     * wc_reserve_stock_for_order() again for the same order is harmless for the
+     * hold itself, but core appends a "Stock hold of N minutes" order note on
+     * every call, so a second call produced a visible duplicate note.
+     */
+    public function testStockIsNotReReservedWhenAlreadyHeld(): void
+    {
+        $source = $this->methodSource(Checkout_Handler::class, 'reserve_stock');
+
+        $this->assertStringContainsString('order_has_active_stock_reservation($order)', $source);
+        $this->assertMatchesRegularExpression(
+            '/order_has_active_stock_reservation\(\$order\)\)\s*\{\s*[^}]*return;/s',
+            $source,
+            'The existing-reservation check must return before wc_reserve_stock_for_order() is called.'
+        );
+    }
+
+    public function testActiveStockReservationIsDetectedFromTheReservedStockTable(): void
+    {
+        $order = $this->mockOrder(555);
+
+        $wpdb = new class {
+            public $wc_reserved_stock = 'wp_wc_reserved_stock';
+            public $lastQuery = '';
+            public function prepare($query, ...$args)
+            {
+                $this->lastQuery = vsprintf(str_replace('%d', '%d', $query), $args);
+                return $this->lastQuery;
+            }
+            public function get_var($query)
+            {
+                return 1;
+            }
+        };
+        $GLOBALS['wpdb'] = $wpdb;
+
+        try {
+            $result = $this->invoke('order_has_active_stock_reservation', array($order));
+        } finally {
+            unset($GLOBALS['wpdb']);
+        }
+
+        $this->assertTrue($result);
+        $this->assertStringContainsString('555', $wpdb->lastQuery);
+        $this->assertStringContainsString('expires > NOW()', $wpdb->lastQuery);
+    }
+
+    public function testNoActiveStockReservationWhenTableHasNoMatchingRow(): void
+    {
+        $order = $this->mockOrder(555);
+
+        $wpdb = new class {
+            public $wc_reserved_stock = 'wp_wc_reserved_stock';
+            public function prepare($query, ...$args)
+            {
+                return vsprintf(str_replace('%d', '%d', $query), $args);
+            }
+            public function get_var($query)
+            {
+                return null;
+            }
+        };
+        $GLOBALS['wpdb'] = $wpdb;
+
+        try {
+            $result = $this->invoke('order_has_active_stock_reservation', array($order));
+        } finally {
+            unset($GLOBALS['wpdb']);
+        }
+
+        $this->assertFalse($result);
     }
 
     public function testStockIsReleasedWhenTheDecisionIsRejected(): void

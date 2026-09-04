@@ -317,4 +317,80 @@ class B2BCompanyMetaTest extends TestCase
 
         $this->assertSame('', $html, 'No output expected when legacy mapping owns the display');
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // display_company_in_emails()
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Both name and CIN present → HTML block is rendered in the HTML email.
+     */
+    public function testDisplayCompanyInEmailsRendersHtmlBlock(): void
+    {
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_name')->andReturn('Acme AB');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_cin')->andReturn('556677-8899');
+
+        ob_start();
+        $this->b2b->display_company_in_emails($order, false, false, null);
+        $html = ob_get_clean();
+
+        $this->assertStringContainsString('Acme AB', $html);
+        $this->assertStringContainsString('556677-8899', $html);
+    }
+
+    /**
+     * Plain-text emails must not get HTML markup.
+     */
+    public function testDisplayCompanyInEmailsRendersPlainText(): void
+    {
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_name')->andReturn('Acme AB');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_cin')->andReturn('556677-8899');
+
+        ob_start();
+        $this->b2b->display_company_in_emails($order, false, true, null);
+        $text = ob_get_clean();
+
+        $this->assertStringContainsString('Acme AB', $text);
+        $this->assertStringContainsString('556677-8899', $text);
+        $this->assertStringNotContainsString('<', $text, 'Plain-text emails must not contain HTML tags');
+    }
+
+    /**
+     * No company meta on the order → nothing rendered, in either admin or
+     * customer emails (sent_to_admin is irrelevant to whether the data exists).
+     */
+    public function testDisplayCompanyInEmailsRendersNothingWhenEmpty(): void
+    {
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_name')->andReturn('');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_cin')->andReturn('');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('');
+
+        ob_start();
+        $this->b2b->display_company_in_emails($order, true, false, null);
+        $html = ob_get_clean();
+
+        $this->assertSame('', $html, 'No output expected when company meta is empty');
+    }
+
+    /**
+     * Unlike display_company_in_admin(), this is not gated on legacy mapping -
+     * Legacy_B2b_Meta renders nothing in emails, so there is nothing to
+     * duplicate.
+     */
+    public function testDisplayCompanyInEmailsIgnoresLegacyMappingToggle(): void
+    {
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_name')->andReturn('Acme AB');
+        $order->shouldReceive('get_meta')->with('_briqpay_company_cin')->andReturn('');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('');
+
+        ob_start();
+        $this->b2b->display_company_in_emails($order, false, false, null);
+        $html = ob_get_clean();
+
+        $this->assertStringContainsString('Acme AB', $html);
+    }
 }

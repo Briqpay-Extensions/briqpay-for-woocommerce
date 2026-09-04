@@ -2021,8 +2021,17 @@ class Checkout_Handler
      * draft, reuses Store API drafts, searches the database for recent drafts,
      * and can be re-entered when a customer retries after a rejected decision.
      * The commit hooks additionally have two possible call sites (the return
-     * handler and, as a fallback, the webhook). Plugins that append on these
-     * hooks - a fee, an order note, an ERP queue row - must not append twice.
+     * handler and, as a fallback, the webhook) - and the return handler itself
+     * can be hit twice in near-parallel requests (observed in testing: the
+     * browser landing on briqpay_return twice within the same second). Plugins
+     * that append on these hooks - a fee, an order note, an ERP queue row -
+     * must not append twice.
+     *
+     * The get_meta() check alone is not safe against that: two concurrent
+     * requests each load their own $order object, so both can see the flag
+     * unset before either has saved it. Lock::claim_once() is a real
+     * INSERT-based mutex (see its own docblock) - exactly one concurrent
+     * caller gets true, so only one proceeds past this point.
      *
      * The flag is persisted BEFORE the callback runs, deliberately: if
      * third-party code fatals, a retry must not get a second attempt at the same
@@ -2040,6 +2049,15 @@ class Checkout_Handler
         if ($order->get_meta($meta_key)) {
             Logger::log(sprintf(
                 'Checkout %s hooks already fired for order %s - skipping.',
+                $group,
+                $order->get_id()
+            ));
+            return false;
+        }
+
+        if (!Lock::claim_once('briqpay_hooks_' . $group . '_' . $order->get_id(), MINUTE_IN_SECONDS)) {
+            Logger::log(sprintf(
+                'Checkout %s hooks already claimed for order %s by a concurrent request - skipping.',
                 $group,
                 $order->get_id()
             ));
@@ -2196,12 +2214,29 @@ class Checkout_Handler
      * point Briqpay is about to authorize and refusing would be worse than a
      * possible oversell the merchant can see in the log.
      *
+     * Blocks/Store API checkout already reserves stock for the order itself
+     * (POST /wc/store/v1/checkout calls wc_reserve_stock_for_order() before the
+     * Briqpay decision even comes back), and this flow can go on to reuse that
+     * same order as a "trusted draft". Calling wc_reserve_stock_for_order()
+     * again here would still be harmless for the actual hold (WooCommerce just
+     * extends the expiry), but core appends a "Stock hold of N minutes" order
+     * note unconditionally on every call, so a second call produces a visible
+     * duplicate note. Skip the call when an active reservation already exists.
+     *
      * @param \WC_Order $order The order.
      * @return void
      */
     private function reserve_stock($order)
     {
         if (!function_exists('wc_reserve_stock_for_order')) {
+            return;
+        }
+
+        if ($this->order_has_active_stock_reservation($order)) {
+            Logger::log(sprintf(
+                'Stock already reserved for order %s (likely by WooCommerce\'s own Store API checkout) - skipping to avoid a duplicate stock hold note.',
+                $order->get_id()
+            ));
             return;
         }
 
@@ -2214,6 +2249,33 @@ class Checkout_Handler
                 $e->getMessage()
             ));
         }
+    }
+
+    /**
+     * Whether this order already has an unexpired stock hold.
+     *
+     * Checks WooCommerce's own wc_reserved_stock table directly rather than
+     * trying to track "did Blocks already reserve this?" through the checkout
+     * flow - the table is the actual source of truth and this stays correct
+     * regardless of which code path put the hold there.
+     *
+     * @param \WC_Order $order The order.
+     * @return bool
+     */
+    private function order_has_active_stock_reservation($order)
+    {
+        global $wpdb;
+
+        if (empty($wpdb->wc_reserved_stock)) {
+            return false;
+        }
+
+        $reserved = $wpdb->get_var($wpdb->prepare(
+            "SELECT 1 FROM {$wpdb->wc_reserved_stock} WHERE order_id = %d AND expires > NOW() LIMIT 1",
+            $order->get_id()
+        ));
+
+        return !empty($reserved);
     }
 
     /**
@@ -2420,7 +2482,26 @@ class Checkout_Handler
 
             $this->with_posted_data($data, function () use ($order, $data) {
                 if (self::hook_enabled('woocommerce_checkout_order_created')) {
+                    // WooCommerce core itself subscribes to this action to reserve
+                    // stock (wc-stock-functions.php:
+                    // add_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order')).
+                    // reserve_stock() already reserved stock for this order in the
+                    // data hooks above, so replaying the action here for
+                    // third-party compatibility would make core reserve it again -
+                    // and core appends a "Stock hold of N minutes" order note
+                    // unconditionally on every call, producing a visible duplicate.
+                    // Suppress just that one core callback around the replay; every
+                    // other subscriber (third-party or core) still runs normally.
+                    $has_core_stock_reservation = has_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order');
+                    if ($has_core_stock_reservation) {
+                        remove_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order');
+                    }
+
                     do_action('woocommerce_checkout_order_created', $order);
+
+                    if ($has_core_stock_reservation) {
+                        add_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order');
+                    }
                 }
 
                 if (self::hook_enabled('woocommerce_checkout_order_processed')) {

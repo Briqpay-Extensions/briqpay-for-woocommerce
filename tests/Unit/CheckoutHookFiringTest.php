@@ -36,6 +36,7 @@ class CheckoutHookFiringTest extends TestCase
         parent::setUp();
         WP_Mock::setUp();
         \Briqpay_Test_Actions::reset();
+        \Briqpay_Test_Options::reset();
 
         $this->order_meta = array();
         $this->saves = 0;
@@ -340,6 +341,67 @@ class CheckoutHookFiringTest extends TestCase
             \Briqpay_Test_Actions::countFor('woocommerce_checkout_order_processed'),
             'Return handler and webhook fallback must not both fire for one order.'
         );
+    }
+
+    /**
+     * Found in live testing: the return handler can be hit twice in
+     * near-parallel requests (the browser landing on briqpay_return twice
+     * within the same second). Each request loads its own WC_Order object, so
+     * a get_meta() check alone is not enough - both objects see the flag unset
+     * before either request's save() has committed. Lock::claim_once() is the
+     * real guard: it is backed by an atomic INSERT (Briqpay_Test_Options in
+     * this test), so exactly one of two independent order objects for the
+     * same order ID may proceed even though neither's in-memory meta reflects
+     * the other's write.
+     */
+    public function testCommitHooksSurviveTwoConcurrentOrderObjectsForTheSameOrder(): void
+    {
+        $this->stash(array());
+
+        // Two independent order objects, same ID, each with its OWN meta
+        // array - simulating two requests that each loaded the order before
+        // either had a chance to save the "already fired" flag.
+        $meta_a = array();
+        $meta_b = array();
+        $order_a = $this->mockOrderWithOwnMeta(9001, $meta_a);
+        $order_b = $this->mockOrderWithOwnMeta(9001, $meta_b);
+
+        (new Checkout_Handler())->fire_commit_hooks($order_a);
+        (new Checkout_Handler())->fire_commit_hooks($order_b);
+
+        $this->assertSame(
+            1,
+            \Briqpay_Test_Actions::countFor('woocommerce_checkout_order_processed'),
+            'A concurrent second request must not re-run the commit hooks just because its own order object has no flag yet.'
+        );
+    }
+
+    /**
+     * Like mockOrder(), but backed by a caller-supplied meta array instead of
+     * $this->order_meta - so two "concurrent" order objects can each have
+     * their own view of the order's meta.
+     */
+    private function mockOrderWithOwnMeta($id, array &$meta)
+    {
+        $order = Mockery::mock('WC_Order');
+
+        $order->shouldReceive('get_id')->andReturn($id);
+
+        $order->shouldReceive('get_meta')->andReturnUsing(function ($key) use (&$meta) {
+            return $meta[$key] ?? '';
+        });
+
+        $order->shouldReceive('update_meta_data')->andReturnUsing(function ($key, $value) use (&$meta) {
+            $meta[$key] = $value;
+        });
+
+        $order->shouldReceive('save')->andReturn(true);
+
+        $order->shouldReceive('get_total')->andReturnUsing(function () {
+            return $this->total;
+        });
+
+        return $order;
     }
 
     /**

@@ -36,9 +36,10 @@ class B2b_Checkout
         add_filter('woocommerce_is_checkout', array($this, 'force_is_checkout'));
         add_filter('body_class', array($this, 'add_body_class'));
 
-        // B2B Company metadata: save from session, display in admin.
+        // B2B Company metadata: save from session, display in admin and in emails.
         add_filter('briqpay_order_metadata', array($this, 'save_company_metadata'), 10, 3);
         add_action('woocommerce_admin_order_data_after_billing_address', array($this, 'display_company_in_admin'), 10, 1);
+        add_action('woocommerce_email_order_meta', array($this, 'display_company_in_emails'), 10, 4);
     }
 
     /**
@@ -663,6 +664,54 @@ class B2b_Checkout
                 <?php esc_html_e('CIN:', 'briqpay-for-woocommerce'); ?>             <?php echo esc_html($company_cin); ?>
             <?php endif; ?>
         </div>
+        <?php
+    }
+
+    /**
+     * Display Company Info in Order Emails
+     *
+     * Hooked to `woocommerce_email_order_meta`, which every core email
+     * template (customer processing/completed/on-hold, admin new order, etc.)
+     * fires right after the order details table. Unlike display_company_in_admin(),
+     * this is not gated on legacy meta mode: Legacy_B2b_Meta renders nothing in
+     * emails, so there is no risk of the CIN appearing twice there.
+     *
+     * @param \WC_Order $order         The WooCommerce order.
+     * @param bool      $sent_to_admin Whether this email is going to the store admin.
+     * @param bool      $plain_text    Whether this is the plain-text version of the email.
+     * @param \WC_Email $email         The email object (unused, part of the hook signature).
+     * @return void
+     */
+    public function display_company_in_emails($order, $sent_to_admin, $plain_text, $email)
+    {
+        $company_name = $order->get_meta('_briqpay_company_name');
+        $company_cin = Legacy_B2b_Meta::get_company_cin($order);
+
+        if (empty($company_name) && empty($company_cin)) {
+            return;
+        }
+
+        if ($plain_text) {
+            echo esc_html__('Company (Briqpay)', 'briqpay-for-woocommerce') . "\n";
+            if ($company_name) {
+                echo esc_html__('Name:', 'briqpay-for-woocommerce') . ' ' . esc_html($company_name) . "\n";
+            }
+            if ($company_cin) {
+                echo esc_html__('CIN:', 'briqpay-for-woocommerce') . ' ' . esc_html($company_cin) . "\n";
+            }
+            echo "\n";
+            return;
+        }
+        ?>
+        <p>
+            <strong><?php esc_html_e('Company (Briqpay)', 'briqpay-for-woocommerce'); ?></strong><br>
+            <?php if ($company_name): ?>
+                <?php esc_html_e('Name:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_name); ?><br>
+            <?php endif; ?>
+            <?php if ($company_cin): ?>
+                <?php esc_html_e('CIN:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_cin); ?>
+            <?php endif; ?>
+        </p>
         <?php
     }
 

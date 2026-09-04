@@ -218,6 +218,40 @@ class CheckoutHookRegressionTest extends TestCase
     }
 
     /**
+     * Found in live testing: replaying woocommerce_checkout_order_created for
+     * third-party compatibility also re-triggers WooCommerce core's own
+     * subscriber on that action (wc_reserve_stock_for_order), because stock was
+     * already reserved once in the data hooks step. Core appends a
+     * "Stock hold of N minutes" order note unconditionally on every call, so
+     * the replay produced a visible duplicate note. The replay must unhook
+     * that one core callback around the do_action() call and restore it after,
+     * leaving every other subscriber (core or third-party) unaffected.
+     */
+    public function testCommitHooksSuppressCoreStockReservationAroundTheReplay(): void
+    {
+        $source = $this->methodSource(Checkout_Handler::class, 'fire_commit_hooks');
+
+        $do_pos = strpos($source, "do_action('woocommerce_checkout_order_created', \$order)");
+        $this->assertNotFalse($do_pos, 'Must still replay woocommerce_checkout_order_created for third-party compatibility.');
+
+        // has_action()/remove_action() must appear as real code before the
+        // replay; add_action() is also named in the explanatory comment above
+        // (documenting how core registers the callback in the first place), so
+        // its real re-hook call is found by searching only after do_action().
+        $has_pos = strpos($source, "has_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order')");
+        $remove_pos = strpos($source, "remove_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order')");
+        $add_pos = strpos($source, "add_action('woocommerce_checkout_order_created', 'wc_reserve_stock_for_order')", $do_pos);
+
+        $this->assertNotFalse($has_pos, 'Must check whether core is actually subscribed before touching it.');
+        $this->assertNotFalse($remove_pos, 'Must unhook core\'s wc_reserve_stock_for_order before the replay.');
+        $this->assertNotFalse($add_pos, 'Must restore core\'s subscriber after the replay.');
+
+        $this->assertLessThan($do_pos, $has_pos, 'Must check has_action() before firing the replay.');
+        $this->assertLessThan($do_pos, $remove_pos, 'Must unhook before firing the replay.');
+        $this->assertLessThan($add_pos, $do_pos, 'Must restore only after the replay has run.');
+    }
+
+    /**
      * The return handler is the primary commit-hook site, and it has TWO exits
      * that both need it.
      *

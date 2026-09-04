@@ -130,6 +130,29 @@ if (!function_exists('do_action')) {
     }
 }
 
+// WP_Mock defines add_action() itself (backed by expectActionAdded()/
+// onActionAdded(), which several tests rely on - see NativeCheckoutParityTest
+// and UpgradeMigrationTest), but it does not define has_action() or
+// remove_action() at all. Checkout_Handler::fire_commit_hooks() calls both
+// (to unhook core's own wc_reserve_stock_for_order around a do_action()
+// replay), so leaving them undefined would fatal. In this pure-unit
+// environment no real WordPress core ever registers wc_reserve_stock_for_order
+// via add_action(), so reporting "not registered" is simply correct - it also
+// means these stubs never need to interact with WP_Mock's add_action registry.
+if (!function_exists('has_action')) {
+    function has_action($tag, $function_to_check = false)
+    {
+        return false;
+    }
+}
+
+if (!function_exists('remove_action')) {
+    function remove_action($tag, $function_to_remove, $priority = 10)
+    {
+        return false;
+    }
+}
+
 WP_Mock::bootstrap();
 
 /**

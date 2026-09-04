@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.8
+Stable tag: 1.1.9
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,12 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.9 =
+* Fix: A stock hold could be applied twice for the same order - "Stock hold of N minutes applied to..." appearing twice in the order notes, one after another. This plugin replays WooCommerce's own `woocommerce_checkout_order_created` action so third-party plugins receive Briqpay orders the same way they receive any other order, but WooCommerce core itself is listening on that same action to reserve stock - so the replay made core reserve the order's stock a second time. The replay now unhooks core's own listener for the moment it runs and restores it immediately after; every other plugin listening on that action is unaffected.
+* Fix: Two requests hitting the Briqpay return page within the same second - seen when the browser's own completion redirect fires twice in quick succession - could each start the checkout-completion hooks before either had recorded that it was already running, so third-party hooks (and this plugin's own `briqpay_payment_complete`) could run twice for one order. The one-time-per-order guard is now backed by an atomic lock instead of a plain database read, so only one of the two can proceed.
+* Fix: The same duplicate stock-hold note could also happen on Blocks/Store API checkout, where WooCommerce had already reserved stock for the draft order before Briqpay's decision came back; this plugin's own reservation step now checks first and skips if stock is already held.
+* Added: A B2B order's company name and organisation/CIN number - already shown on the admin order screen - now also appear on the order confirmation email sent to the customer, and on admin notification emails.
 
 = 1.1.8 =
 * Fix: Regression in 1.1.7. On a page load where the cart had not changed since the previous one, the Briqpay checkout could fail to appear at all - a session existed but no payment window was ever drawn, and nothing was reported in the logs. **Anyone running 1.1.7 should update.** The optimisation that skips unchanged session updates now only applies when the browser already has the payment window open; a fresh page load always receives what it needs to render.

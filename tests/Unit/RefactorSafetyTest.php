@@ -72,6 +72,7 @@ class RefactorSafetyTest extends TestCase
             'stash_posted_data' => array(Checkout_Handler::class, 'stash_posted_data'),
             'warn_on_total_drift' => array(Checkout_Handler::class, 'warn_on_total_drift'),
             'reserve_stock' => array(Checkout_Handler::class, 'reserve_stock'),
+            'order_has_active_stock_reservation' => array(Checkout_Handler::class, 'order_has_active_stock_reservation'),
             'release_stock' => array(Checkout_Handler::class, 'release_stock'),
             'recalculate_cogs' => array(Checkout_Handler::class, 'recalculate_cogs'),
             'fire_tax_item_hooks' => array(Checkout_Handler::class, 'fire_tax_item_hooks'),
@@ -211,7 +212,8 @@ PHP;
             $k = $this->skipTypeTokensBackwards($tokens, $k);
 
             $prev = $tokens[$k] ?? null;
-            $is_binding = is_array($prev) && in_array($prev[0], array(T_AS, T_USE, T_FUNCTION, T_FN, T_CATCH), true);
+            // `global $wpdb;` binds $wpdb in local scope same as an assignment would.
+            $is_binding = is_array($prev) && in_array($prev[0], array(T_AS, T_USE, T_FUNCTION, T_FN, T_CATCH, T_GLOBAL), true);
 
             // '&' or '(' or ',' immediately before, inside a binding construct.
             // Note PHP 8.1+ tokenizes the '&' of `as &$ref` as
