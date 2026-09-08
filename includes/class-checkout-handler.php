@@ -2093,6 +2093,19 @@ class Checkout_Handler
      *
      *  - cart_hash: WooCommerce and several plugins use it to tell whether an
      *    order still matches the cart it came from.
+     *  - is_vat_exempt: WC_Checkout::set_data_from_cart() stamps this from the
+     *    live cart's customer object before the order's own calculate_totals()
+     *    ever runs, specifically so a merchant's VAT-exemption decision (e.g. a
+     *    validated EU business VAT number, set via the native
+     *    WC_Customer::set_is_vat_exempt()) survives independently of the cart.
+     *    WC_Abstract_Order::calculate_taxes() reads it back from order meta,
+     *    not from WC()->customer - so without this, create_order_at_decision()'s
+     *    own calculate_totals(true) call has no way to know the customer was
+     *    exempt and silently reintroduces tax. Briqpay's own session mirror is
+     *    built straight from the cart, so it shows the exemption correctly
+     *    while the saved order - and everything derived from it, including the
+     *    order confirmation - does not. This is why the discrepancy is
+     *    invisible in the Briqpay checkout itself and only shows up afterwards.
      *  - customer_note: the order comments field. The customer types it into the
      *    checkout form, which this flow never read, so it was silently discarded
      *    on every Briqpay order.
@@ -2104,6 +2117,13 @@ class Checkout_Handler
     {
         if (null !== WC() && null !== WC()->cart && is_callable(array($order, 'set_cart_hash'))) {
             $order->set_cart_hash(WC()->cart->get_cart_hash());
+        }
+
+        if (null !== WC() && null !== WC()->cart && is_callable(array(WC()->cart, 'get_customer'))) {
+            $cart_customer = WC()->cart->get_customer();
+            if ($cart_customer && is_callable(array($cart_customer, 'get_is_vat_exempt'))) {
+                $order->update_meta_data('is_vat_exempt', $cart_customer->get_is_vat_exempt() ? 'yes' : 'no');
+            }
         }
 
         // Only fill an empty note: a reused draft may already carry one from the

@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.9
+Stable tag: 1.1.10
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,10 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.10 =
+* Fix: Entering (or removing) a VAT number in the Briqpay checkout showed the correct VAT-exempt total in the payment window itself, but the order confirmation and the admin order screen still showed VAT. WooCommerce's own checkout stamps the customer's VAT-exempt decision onto the order before totals are calculated; this plugin's own order-creation path skipped that step, so the order's own tax calculation never learned about the exemption even though Briqpay had already applied it. The exemption is now stamped onto the order the same way WooCommerce's native checkout does.
+* Fix: A hosted payment page (or any other order that reaches "paid" purely through a capture confirmation, with no separate approval step beforehand) kept showing "PSP Name: N/A", "Integration: N/A" and "Reservation ID: N/A" on the order screen forever, even after the order fully captured. That information was only ever filled in by the approval step, which a hosted payment page never receives by design. It is now also filled in when a capture is confirmed.
 
 = 1.1.9 =
 * Fix: A stock hold could be applied twice for the same order - "Stock hold of N minutes applied to..." appearing twice in the order notes, one after another. This plugin replays WooCommerce's own `woocommerce_checkout_order_created` action so third-party plugins receive Briqpay orders the same way they receive any other order, but WooCommerce core itself is listening on that same action to reserve stock - so the replay made core reserve the order's stock a second time. The replay now unhooks core's own listener for the moment it runs and restores it immediately after; every other plugin listening on that action is unaffected.

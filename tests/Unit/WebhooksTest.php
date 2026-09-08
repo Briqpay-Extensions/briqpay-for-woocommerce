@@ -71,6 +71,10 @@ class WebhooksTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_capture_history')->andReturn(array());
         $order->shouldReceive('save')->atLeast()->once();
         $order->shouldReceive('has_status')->andReturn(false);
+        // handle_capture_status() now also refreshes PSP metadata via
+        // update_payment_method_title() on every approved capture (see
+        // Webhooks::handle_capture_status()), so this mock needs it too.
+        $order->shouldReceive('set_payment_method_title')->atLeast()->once();
 
         WP_Mock::userFunction('current_time', array('return' => '2026-02-12 12:00:00'));
         WP_Mock::userFunction('__', array('return_arg' => 0));
@@ -102,11 +106,22 @@ class WebhooksTest extends TestCase
             return count($history) === 1 && $history[0]['captureId'] === 'cap_123' && $history[0]['amount'] === 1000;
         }))->once();
 
-        $order->shouldReceive('save')->once();
+        // handle_capture_status() now calls update_payment_method_title() on
+        // every approved capture, so it also needs the PSP-metadata side of
+        // that call mocked (see Webhooks::update_payment_method_title()).
+        $order->shouldReceive('set_payment_method_title')->once();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_psp_name', 'Briqpay')->once();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_auto_capture_enabled', 'no')->once();
+
+        $order->shouldReceive('save')->atLeast()->once();
         $order->shouldReceive('has_status')->andReturn(false);
 
         WP_Mock::userFunction('current_time', array('return' => '2026-02-12 12:00:00'));
         WP_Mock::userFunction('__', array('return_arg' => 0));
+        WP_Mock::userFunction('is_wp_error', array('return' => false));
+        // Legacy_B2b_Meta::apply() (called from update_payment_method_title())
+        // reads this to decide whether legacy B2B meta mapping is active.
+        WP_Mock::userFunction('get_option', array('return' => array()));
 
         $reflection = new \ReflectionClass(Webhooks::class);
         $method = $reflection->getMethod('handle_capture_status');

@@ -536,6 +536,19 @@ class Webhooks
         // Use authoritative status from the API response
         $auth_status = $authoritative_capture['status'] ?? '';
         if ('approved' === $auth_status || 'successful' === $auth_status) {
+            // A capture can be the ONLY webhook an order ever receives - this is
+            // exactly what happens for a Hosted Payment Page (which disables the
+            // decision engine, so no order_status/order_approved_not_captured
+            // event is ever sent) and for any auto-capturing method that reaches
+            // "paid" without a preceding approval event. Without this call,
+            // update_payment_method_title() - and with it _briqpay_psp_name,
+            // _briqpay_psp_integration_name and _briqpay_reservation_id - would
+            // never run for such orders, leaving the "Briqpay Payment Details"
+            // admin box stuck on "N/A" forever even though the order fully
+            // captured. Safe to call on every delivery: it only writes metadata
+            // and re-saves the order.
+            $this->update_payment_method_title($order, $session);
+
             $captures = $order->get_meta('_briqpay_captures') ?: array();
 
             // Store capture ID for potential refunds if not already recorded

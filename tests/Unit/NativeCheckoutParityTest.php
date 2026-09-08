@@ -101,7 +101,7 @@ class NativeCheckoutParityTest extends TestCase
         return $order;
     }
 
-    private function mockWc(array $session_store = array(), $cart_hash = 'abc123')
+    private function mockWc(array $session_store = array(), $cart_hash = 'abc123', $is_vat_exempt = false)
     {
         $session = Mockery::mock('WC_Session');
         $session->shouldReceive('get')->andReturnUsing(function ($key, $default = null) use (&$session_store) {
@@ -111,8 +111,12 @@ class NativeCheckoutParityTest extends TestCase
             $session_store[$key] = $value;
         });
 
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('get_is_vat_exempt')->andReturn($is_vat_exempt);
+
         $cart = Mockery::mock('WC_Cart');
         $cart->shouldReceive('get_cart_hash')->andReturn($cart_hash);
+        $cart->shouldReceive('get_customer')->andReturn($customer);
 
         $wc = Mockery::mock('WooCommerce');
         $wc->session = $session;
@@ -152,6 +156,37 @@ class NativeCheckoutParityTest extends TestCase
         $this->invoke('apply_native_order_properties', array($order));
 
         $this->assertSame('hash-xyz', $this->cart_hash);
+    }
+
+    /**
+     * WC_Checkout::set_data_from_cart() stamps this from the live cart's
+     * customer object before the order's own calculate_totals() runs, so a
+     * merchant's VAT-exemption decision (WC_Customer::set_is_vat_exempt(),
+     * e.g. from a validated EU business VAT number) survives independently of
+     * the cart. WC_Abstract_Order::calculate_taxes() reads it back from order
+     * meta, not from WC()->customer - without this, the order (and therefore
+     * the order confirmation) silently has tax reintroduced even though
+     * Briqpay's own session mirror - built straight from the cart - correctly
+     * showed the customer as exempt.
+     */
+    public function testVatExemptCustomerIsStampedOntoTheOrder(): void
+    {
+        $this->mockWc(array(), 'abc123', true);
+        $order = $this->mockOrder();
+
+        $this->invoke('apply_native_order_properties', array($order));
+
+        $this->assertSame('yes', $this->order_meta['is_vat_exempt']);
+    }
+
+    public function testNonVatExemptCustomerIsStampedOntoTheOrder(): void
+    {
+        $this->mockWc(array(), 'abc123', false);
+        $order = $this->mockOrder();
+
+        $this->invoke('apply_native_order_properties', array($order));
+
+        $this->assertSame('no', $this->order_meta['is_vat_exempt']);
     }
 
     public function testCustomerNoteComesFromOrderCommentsOnClassic(): void
