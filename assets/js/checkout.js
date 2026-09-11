@@ -19,17 +19,21 @@ window.briqpayCheckout = {
     // Newest payload that arrived while a session update was in flight. Only the
     // latest is worth keeping - intermediate cart states are already superseded.
     _queuedUpdate: null,
+    // Set when WooCommerce tells us it has recalculated the cart. The payload
+    // fingerprint below only covers the checkout form, and the amount can move
+    // without a single form field changing - see updateSession().
+    _cartRecalculated: false,
 
     init: function () {
         const $ = jQuery;
-        $(document.body).on('updated_checkout', this.onUpdatedCheckout.bind(this));
+        $(document.body).on('updated_checkout', this.onCartRecalculated.bind(this));
         $(document.body).on('checkout_error', this.onCheckoutError.bind(this));
         $(document.body).on('applied_coupon_in_checkout removed_coupon_in_checkout', function () {
             // Clear hash so the next update is never skipped after coupon change
             window.briqpayCheckout._lastPayloadHash = '';
-            window.briqpayCheckout.onUpdatedCheckout();
+            window.briqpayCheckout.onCartRecalculated();
         });
-        $(document.body).on('updated_shipping_method', this.onUpdatedCheckout.bind(this));
+        $(document.body).on('updated_shipping_method', this.onCartRecalculated.bind(this));
         $(document.body).on('payment_method_selected', this.onUpdatedCheckout.bind(this));
 
         // Also listen for payment method changes directly
@@ -122,6 +126,18 @@ window.briqpayCheckout = {
         // onUpdatedCheckout's own 500ms debounce, so nothing reached Briqpay for a
         // full second after the page was ready. The debounce below still collapses
         // bursts of events, which is what the delay was actually for.
+        this.onUpdatedCheckout();
+    },
+
+    /**
+     * WooCommerce has just recalculated the cart server-side.
+     *
+     * Note this separately from the form fingerprint: WooCommerce recalculates
+     * for reasons that never touch the checkout form, and the resulting amount
+     * is what the customer is about to be charged.
+     */
+    onCartRecalculated: function () {
+        this._cartRecalculated = true;
         this.onUpdatedCheckout();
     },
 
@@ -251,6 +267,7 @@ window.briqpayCheckout = {
         // updateSession() recognises an unchanged payload and skips the request
         // entirely. Without this the sync right after a create always fired.
         this._lastPayloadHash = this._payloadHash(data);
+        this._cartRecalculated = false;
         this._isInitializing = true;
 
         $.ajax({
@@ -279,6 +296,18 @@ window.briqpayCheckout = {
                     console.error('Briqpay: Failed to load session', response);
                 }
                 window.briqpayCheckout._isInitializing = false;
+
+                // A recalculation that landed while the session was being created
+                // was dropped by initOrUpdate()'s _isInitializing guard, and
+                // nothing else is coming to pick it up. This is reachable
+                // whenever something recalculates the cart twice in quick
+                // succession - a VAT plugin refreshing the checkout once when the
+                // number is entered and again when its VIES lookup answers - where
+                // the second refresh can easily land inside this request. Without
+                // this, Briqpay would keep the amount from before that lookup.
+                if (window.briqpayCheckout.session && window.briqpayCheckout._cartRecalculated) {
+                    window.briqpayCheckout.onUpdatedCheckout();
+                }
             },
             error: function (xhr, status, error) {
                 window.briqpayCheckout._lastPayloadHash = null;
@@ -308,13 +337,28 @@ window.briqpayCheckout = {
 
         var payloadHash = this._payloadHash(data);
 
-        if (payloadHash === this._lastPayloadHash) {
+        // The fingerprint covers the checkout form and nothing else, so on its own
+        // it answers the wrong question: it tells us whether the CUSTOMER changed
+        // anything, when what matters is whether the AMOUNT did. WooCommerce
+        // recalculating the cart is an independent way for the amount to move -
+        // a VAT number validated asynchronously and flipping the cart to ex-VAT,
+        // a dynamic pricing or fee plugin, a currency switcher - and in all of
+        // those the form is byte-identical afterwards. Skipping on that basis
+        // left Briqpay holding the pre-recalculation amount, showing the customer
+        // a total the shop no longer agreed with; the purchase then either went
+        // through against the stale figure or was rejected by the amount check at
+        // decision time. So once WooCommerce says it recalculated, always sync.
+        if (payloadHash === this._lastPayloadHash && !this._cartRecalculated) {
             this.resume();
             this._processPendingDecision();
             return;
         }
 
         this._lastPayloadHash = payloadHash;
+        // Cleared as the request goes out, not when it returns: a recalculation
+        // arriving while this one is in flight has to survive into the queued
+        // update rather than be swallowed by this one.
+        this._cartRecalculated = false;
 
         // Suspend the Briqpay iframe while we update the session
         this.suspend();

@@ -189,6 +189,276 @@ class NativeCheckoutParityTest extends TestCase
         $this->assertSame('no', $this->order_meta['is_vat_exempt']);
     }
 
+    /**
+     * The decision request that builds the order posts nothing but a session ID.
+     * A VAT plugin has no VAT number to act on there, so it never re-applies the
+     * exemption and the live customer object answers "not exempt" for a customer
+     * who is. The exemption recorded during the last session sync - the request
+     * that computed the amount Briqpay was told to charge - has to win, or the
+     * order is rebuilt with the VAT the customer was told they would not pay.
+     */
+    public function testRecordedVatExemptionWinsOverAnUnrestoredCustomerObject(): void
+    {
+        $this->mockWc(array('briqpay_is_vat_exempt' => 'yes'), 'abc123', false);
+        $order = $this->mockOrder();
+
+        $this->invoke('apply_native_order_properties', array($order));
+
+        $this->assertSame('yes', $this->order_meta['is_vat_exempt']);
+    }
+
+    /**
+     * The mirror image: the recording is refreshed on every sync, so a customer
+     * who deletes their VAT number again pays VAT even if some other plugin has
+     * left the flag standing on the customer object.
+     */
+    public function testRecordedNonExemptionAlsoWinsOverTheCustomerObject(): void
+    {
+        $this->mockWc(array('briqpay_is_vat_exempt' => 'no'), 'abc123', true);
+        $order = $this->mockOrder();
+
+        $this->invoke('apply_native_order_properties', array($order));
+
+        $this->assertSame('no', $this->order_meta['is_vat_exempt']);
+    }
+
+    /**
+     * Flows that never run a session sync - so never record anything - still get
+     * the live customer object, which is what the previous behaviour was.
+     */
+    public function testVatExemptionFallsBackToTheCustomerWhenNothingWasRecorded(): void
+    {
+        $this->mockWc(array(), 'abc123', true);
+        $order = $this->mockOrder();
+
+        $this->invoke('apply_native_order_properties', array($order));
+
+        $this->assertSame('yes', $this->order_meta['is_vat_exempt']);
+    }
+
+    /**
+     * A junk value in the session must not be read as an answer either way; it
+     * falls through to the customer object rather than silently meaning "no".
+     */
+    public function testUnrecognisedRecordedValueFallsBackToTheCustomer(): void
+    {
+        $this->mockWc(array('briqpay_is_vat_exempt' => 'maybe'), 'abc123', true);
+        $order = $this->mockOrder();
+
+        $this->invoke('apply_native_order_properties', array($order));
+
+        $this->assertSame('yes', $this->order_meta['is_vat_exempt']);
+    }
+
+    public function testRememberVatExemptStateRecordsTheCartCustomersExemption(): void
+    {
+        $written = array();
+
+        $session = Mockery::mock('WC_Session');
+        $session->shouldReceive('get')->andReturn(null);
+        $session->shouldReceive('set')->andReturnUsing(function ($key, $value) use (&$written) {
+            $written[$key] = $value;
+        });
+
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('get_is_vat_exempt')->andReturn(true);
+
+        $cart = Mockery::mock('WC_Cart');
+        $cart->shouldReceive('get_customer')->andReturn($customer);
+
+        $wc = Mockery::mock('WooCommerce');
+        $wc->session = $session;
+        $wc->cart = $cart;
+        WP_Mock::userFunction('WC', array('return' => $wc));
+
+        $this->invoke('remember_vat_exempt_state');
+
+        $this->assertSame('yes', $written['briqpay_is_vat_exempt']);
+    }
+
+    /**
+     * The removal direction. Exemption has to come back off as readily as it went
+     * on: a customer who deletes their VAT number pays VAT again. The recording is
+     * only written when it changes, so a bug there would strand the earlier "yes"
+     * and keep pricing every later order ex-VAT.
+     */
+    public function testRemovingTheVatNumberFlipsTheRecordingBackToPayingVat(): void
+    {
+        $written = array();
+        $stored = array('briqpay_is_vat_exempt' => 'yes');
+
+        $session = Mockery::mock('WC_Session');
+        $session->shouldReceive('get')->andReturnUsing(function ($key, $default = null) use (&$stored) {
+            return array_key_exists($key, $stored) ? $stored[$key] : $default;
+        });
+        $session->shouldReceive('set')->andReturnUsing(function ($key, $value) use (&$written, &$stored) {
+            $written[$key] = $value;
+            $stored[$key] = $value;
+        });
+
+        // The VAT number is gone, so nothing re-applies the exemption this request.
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('get_is_vat_exempt')->andReturn(false);
+
+        $cart = Mockery::mock('WC_Cart');
+        $cart->shouldReceive('get_customer')->andReturn($customer);
+
+        $wc = Mockery::mock('WooCommerce');
+        $wc->session = $session;
+        $wc->cart = $cart;
+        WP_Mock::userFunction('WC', array('return' => $wc));
+
+        $this->invoke('remember_vat_exempt_state');
+
+        $this->assertSame('no', $written['briqpay_is_vat_exempt']);
+    }
+
+    /**
+     * The write-only-when-changed guard must not cost correctness: an unchanged
+     * exemption writes nothing, so the session is not dirtied on every sync.
+     */
+    public function testAnUnchangedExemptionIsNotRewritten(): void
+    {
+        $written = array();
+
+        $session = Mockery::mock('WC_Session');
+        $session->shouldReceive('get')->andReturn('yes');
+        $session->shouldReceive('set')->andReturnUsing(function ($key, $value) use (&$written) {
+            $written[$key] = $value;
+        });
+
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('get_is_vat_exempt')->andReturn(true);
+
+        $cart = Mockery::mock('WC_Cart');
+        $cart->shouldReceive('get_customer')->andReturn($customer);
+
+        $wc = Mockery::mock('WooCommerce');
+        $wc->session = $session;
+        $wc->cart = $cart;
+        WP_Mock::userFunction('WC', array('return' => $wc));
+
+        $this->invoke('remember_vat_exempt_state');
+
+        $this->assertSame(array(), $written);
+    }
+
+    /**
+     * A plugin that throws on the order review action must not take the payment
+     * session down with it. Losing the exemption means the tax may be wrong and
+     * is logged; losing the sync means the customer has no checkout at all.
+     */
+    public function testAThrowingPluginOnTheOrderReviewHookDoesNotBreakTheSync(): void
+    {
+        WP_Mock::onAction('woocommerce_checkout_update_order_review')
+            ->with('vat_number=SE559249533601')
+            ->perform(function () {
+                throw new \RuntimeException('third-party plugin exploded');
+            });
+
+        $this->invoke('fire_order_review_hook', array('vat_number=SE559249533601'));
+
+        // Reaching this line at all is the assertion: the throw was contained.
+        $this->assertContains(
+            'woocommerce_checkout_update_order_review',
+            \Briqpay_Test_Actions::fired()
+        );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // woocommerce_checkout_update_order_review
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * The action every checkout-field plugin hangs its "apply what the customer
+     * just typed" logic on. WooCommerce fires it before recalculating the order
+     * review; this flow recalculates for the same reason and never did, so those
+     * plugins never ran here - which is how a validated VAT number could leave
+     * the cart still charging VAT.
+     */
+    public function testOrderReviewHookIsFiredWithTheRawPostedForm(): void
+    {
+        $posted = 'billing_country=SE&vat_number=SE559249533601';
+
+        $this->invoke('fire_order_review_hook', array($posted));
+
+        $this->assertContains(
+            'woocommerce_checkout_update_order_review',
+            \Briqpay_Test_Actions::fired()
+        );
+        $this->assertSame(
+            array($posted),
+            \Briqpay_Test_Actions::argsFor('woocommerce_checkout_update_order_review'),
+            'WooCommerce passes the form unparsed, and plugins parse it themselves.'
+        );
+    }
+
+    /**
+     * Blocks posts no checkout form. Firing with an empty string would tell a
+     * listening plugin that every field had just been cleared.
+     */
+    public function testOrderReviewHookIsNotFiredWithoutAPostedForm(): void
+    {
+        $this->invoke('fire_order_review_hook', array(''));
+
+        $this->assertNotContains(
+            'woocommerce_checkout_update_order_review',
+            \Briqpay_Test_Actions::fired()
+        );
+    }
+
+    public function testOrderReviewHookCanBeDisabledByFilter(): void
+    {
+        WP_Mock::onFilter('briqpay_fire_order_review_hook')
+            ->with(true, 'billing_country=SE')
+            ->reply(false);
+
+        $this->invoke('fire_order_review_hook', array('billing_country=SE'));
+
+        $this->assertNotContains(
+            'woocommerce_checkout_update_order_review',
+            \Briqpay_Test_Actions::fired()
+        );
+    }
+
+    /**
+     * Order matters: the hook is what sets the VAT exemption, and the
+     * recalculation fingerprint reads it. Fired afterwards, the fingerprint
+     * would compare the state from before the customer's change and skip the
+     * recalculation that the change was supposed to cause.
+     */
+    public function testOrderReviewHookIsFiredBeforeTheRecalculationFingerprint(): void
+    {
+        $source = $this->methodSource(Checkout_Handler::class, 'ajax_get_session');
+
+        $hook_pos = strpos($source, '$this->fire_order_review_hook(');
+        $fingerprint_pos = strpos($source, '$address_data = array(');
+
+        $this->assertNotFalse($hook_pos, 'ajax_get_session() must fire the order review hook.');
+        $this->assertNotFalse($fingerprint_pos);
+        $this->assertLessThan(
+            $fingerprint_pos,
+            $hook_pos,
+            'The order review hook must fire before the fingerprint that reads what it sets.'
+        );
+    }
+
+    /**
+     * The recalculation skip is keyed on a fingerprint. VAT exemption changes the
+     * tax on a cart whose every other input is identical, so leaving it out meant
+     * the skip kept the pre-exemption totals and sent those to Briqpay.
+     */
+    public function testRecalculationFingerprintCoversVatExemption(): void
+    {
+        $source = $this->methodSource(Checkout_Handler::class, 'ajax_get_session');
+
+        $start = strpos($source, '$address_data = array(');
+        $end = strpos($source, ');', $start);
+        $fingerprint = substr($source, $start, $end - $start);
+
+        $this->assertStringContainsString('$is_vat_exempt', $fingerprint);
+    }
+
     public function testCustomerNoteComesFromOrderCommentsOnClassic(): void
     {
         $this->mockWc(array(

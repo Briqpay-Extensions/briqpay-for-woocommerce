@@ -16,6 +16,7 @@ describe('Briqpay Checkout JS', () => {
                     <div id="briqpay-iframe-container"></div>
                     <button id="place_order">Place Order</button>
                     <input type="text" name="billing_first_name" value="John" />
+                    <input type="text" name="vat_number" value="SE559249533601" />
                 </form>
             </body>
         `;
@@ -120,6 +121,160 @@ describe('Briqpay Checkout JS', () => {
             })
         }));
         expect(window._briqpay.v3.suspend).toHaveBeenCalled();
+    });
+
+    test('syncs after WooCommerce recalculates, even when the form is unchanged', () => {
+        // The bug this guards: the sync was skipped whenever the checkout form
+        // serialized identically to last time, which answers the wrong question.
+        // A VAT number validated asynchronously flips the cart to ex-VAT through
+        // WooCommerce alone - no form field changes - so Briqpay was left holding
+        // the amount from before the recalculation.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+
+        // Seed the fingerprint exactly as a completed sync of this form would.
+        window.briqpayCheckout._lastPayloadHash = window.briqpayCheckout._payloadHash();
+        $.ajax.mockClear();
+
+        $(document.body).trigger('updated_checkout');
+        jest.runAllTimers();
+
+        expect($.ajax).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                action: 'briqpay_get_session'
+            })
+        }));
+    });
+
+    test('still skips a redundant sync when neither the form nor the cart moved', () => {
+        // The other half: without this the fix would turn every no-op into a
+        // request and a suspend/resume of the iframe.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+
+        window.briqpayCheckout._lastPayloadHash = window.briqpayCheckout._payloadHash();
+        window.briqpayCheckout._cartRecalculated = false;
+        $.ajax.mockClear();
+        window._briqpay.v3.suspend.mockClear();
+
+        window.briqpayCheckout.updateSession();
+
+        expect($.ajax).not.toHaveBeenCalled();
+        // Nothing was sent, so the iframe must not have been locked either.
+        expect(window._briqpay.v3.suspend).not.toHaveBeenCalled();
+    });
+
+    test('the second of two recalculations still reaches Briqpay (VAT plugin pattern)', () => {
+        // A VAT plugin refreshes the checkout twice for one VAT number: once as
+        // soon as it is entered, and again when the VIES lookup answers and the
+        // exemption is actually applied. The second refresh carries the ex-VAT
+        // amount, and the form is identical by then, so it is the one that used
+        // to be dropped.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        window.briqpayCheckout._lastPayloadHash = window.briqpayCheckout._payloadHash();
+        $.ajax.mockClear();
+
+        // First refresh: field entered, exemption not applied yet.
+        $(document.body).trigger('updated_checkout');
+        jest.runAllTimers();
+        expect($.ajax).toHaveBeenCalledTimes(1);
+
+        // Second refresh, seconds later: VIES answered, cart is now ex-VAT.
+        $(document.body).trigger('updated_checkout');
+        jest.runAllTimers();
+        expect($.ajax).toHaveBeenCalledTimes(2);
+    });
+
+    test('a recalculation landing while the session is being created is reconciled', () => {
+        // initOrUpdate() refuses to run while a session is being created, so the
+        // second of the two refreshes above lands on nothing if it arrives inside
+        // that request. Once the session exists it has to be picked up.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = null;
+        $('#briqpay-iframe-container').empty();
+
+        // Hold the create open so the recalculation lands mid-flight.
+        let finishCreate;
+        $.ajax = jest.fn((options) => {
+            finishCreate = () => options.success({
+                success: true,
+                data: { sessionId: 'new_session', htmlSnippet: '<div>Iframe</div>' }
+            });
+            return { done: jest.fn(), fail: jest.fn(), always: jest.fn() };
+        });
+
+        window.briqpayCheckout.initIframe();
+        expect($.ajax).toHaveBeenCalledTimes(1);
+
+        // VIES answers while the session is still being created.
+        $(document.body).trigger('updated_checkout');
+        jest.runAllTimers();
+        expect($.ajax).toHaveBeenCalledTimes(1); // dropped by the _isInitializing guard
+
+        finishCreate();
+        jest.runAllTimers();
+
+        expect($.ajax).toHaveBeenCalledTimes(2);
+    });
+
+    test('clearing the VAT number syncs the amount back to including VAT', () => {
+        // The other direction. Removing the number changes the serialized form,
+        // so this path was already reaching Briqpay - the test is here so it
+        // stays that way, since the exemption coming back off matters exactly as
+        // much as it going on.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        window.briqpayCheckout._lastPayloadHash = window.briqpayCheckout._payloadHash();
+        window.briqpayCheckout._cartRecalculated = false;
+        $.ajax.mockClear();
+
+        $('input[name="vat_number"]').val('').trigger('change');
+        jest.runAllTimers();
+
+        expect($.ajax).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                action: 'briqpay_get_session',
+                checkout_data: expect.stringContaining('vat_number=')
+            })
+        }));
+    });
+
+    test('a recalculation arriving mid-sync is not swallowed by the one in flight', () => {
+        // The flag is cleared as the request goes out, so a recalculation that
+        // lands while it is in flight survives into the queued update instead of
+        // being counted as already handled.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        window.briqpayCheckout._lastPayloadHash = window.briqpayCheckout._payloadHash();
+
+        // Hold the first request open so the second arrives while it is running.
+        let release;
+        $.ajax = jest.fn((options) => {
+            release = () => options.success({
+                success: true,
+                data: { sessionId: 'existing_session' }
+            });
+            return { done: jest.fn(), fail: jest.fn(), always: jest.fn() };
+        });
+
+        window.briqpayCheckout._cartRecalculated = true;
+        window.briqpayCheckout.updateSession();
+        expect($.ajax).toHaveBeenCalledTimes(1);
+
+        // Second recalculation, same untouched form, while the first is in flight.
+        window.briqpayCheckout._cartRecalculated = true;
+        window.briqpayCheckout.updateSession();
+
+        release();
+        jest.runAllTimers();
+
+        expect($.ajax).toHaveBeenCalledTimes(2);
     });
 
     test('should not sync session when another gateway is selected', () => {

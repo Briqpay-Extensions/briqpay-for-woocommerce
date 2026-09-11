@@ -687,11 +687,18 @@ class Checkout_Handler
             }
         }
 
+        // The posted checkout form exactly as the browser serialized it.
+        // WooCommerce hands this same unparsed string to
+        // woocommerce_checkout_update_order_review, so it has to be kept
+        // alongside the parsed copy - see fire_order_review_hook().
+        $raw_checkout_data = '';
+
         // Update WC Customer data from posted form data if available (Classic Checkout)
         if (isset($_POST['checkout_data'])) {
             $checkout_data = array();
-            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- data is sanitized per-field below
-            parse_str(wp_unslash($_POST['checkout_data']), $checkout_data);
+            // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- parsed into $checkout_data and sanitized per-field just below; the raw copy is only ever handed to WooCommerce's own order-review action, which is documented to receive the form unparsed.
+            $raw_checkout_data = wp_unslash($_POST['checkout_data']);
+            parse_str($raw_checkout_data, $checkout_data);
 
             if (is_array($checkout_data)) {
                 // Recursively sanitize checkout_data
@@ -808,18 +815,41 @@ class Checkout_Handler
         // pending changes, so this is exact rather than a guess.
         $this->save_customer_if_changed();
 
+        // Let every plugin that extends the checkout form apply what the customer
+        // just typed, exactly as it would during WooCommerce's own order review.
+        // Must run before the fingerprint below, which reads the state it sets.
+        $this->fire_order_review_hook($raw_checkout_data);
+
         $shipping_country = WC()->customer->get_shipping_country();
         $shipping_postcode = WC()->customer->get_shipping_postcode();
         $shipping_city = WC()->customer->get_shipping_city();
         $chosen_shipping_methods = null !== WC()->session ? WC()->session->get('chosen_shipping_methods') : null;
         $cart_hash = WC()->cart->get_cart_hash();
 
+        // Everything below the shipping fields is here because it changes the TAX
+        // on an otherwise identical cart, and skipping the recalculation then
+        // leaves the stale figure to be sent to Briqpay:
+        //
+        //  - VAT exemption. A B2B customer entering a valid VAT number flips the
+        //    cart from inc-VAT to ex-VAT without touching a single field this
+        //    fingerprint used to cover, so the recalculation was skipped and the
+        //    customer was shown - and charged - the amount with VAT still on it.
+        //  - Billing city/postcode/country. A store that calculates tax on the
+        //    billing address (WooCommerce's "Tax based on: Customer billing
+        //    address") changes tax rate with these, and only the shipping
+        //    equivalents were being watched.
+        $is_vat_exempt = $this->customer_is_vat_exempt() ? 'yes' : 'no';
+
         $address_data = array(
             $shipping_country,
             $shipping_postcode,
             $shipping_city,
             $chosen_shipping_methods,
-            $cart_hash
+            $cart_hash,
+            $is_vat_exempt,
+            WC()->customer->get_billing_country(),
+            WC()->customer->get_billing_postcode(),
+            WC()->customer->get_billing_city(),
         );
         $new_hash = md5(wp_json_encode($address_data));
         $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_address_hash') : null;
@@ -834,6 +864,12 @@ class Checkout_Handler
         } else {
             Logger::log('Skipping shipping and totals recalculation (address and cart unchanged).');
         }
+
+        // Pin the exemption that produced the totals in this request, so the order
+        // built later at decision time is stamped with it even though that request
+        // carries no checkout form for a VAT plugin to read. See
+        // resolve_is_vat_exempt().
+        $this->remember_vat_exempt_state();
 
         $total_after = WC()->cart->get_total('edit');
         Logger::log(sprintf('Total Check: Before=%s, After=%s', $total_before, $total_after));
@@ -2085,6 +2121,158 @@ class Checkout_Handler
     }
 
     /**
+     * Fire WooCommerce's own "the customer changed something, re-read the form"
+     * action, handing over the posted checkout form unparsed.
+     *
+     * WC_AJAX::update_order_review() fires this immediately before recalculating
+     * shipping and totals, and it is the hook every plugin that adds a field to
+     * the checkout relies on to apply that field to the cart or the customer.
+     * This flow recalculates the cart from a posted form for exactly the same
+     * reason WooCommerce does, but never fired it, so those plugins simply never
+     * ran here.
+     *
+     * The case that surfaced it: a store using a EU VAT compliance plugin. The
+     * customer enters a valid VAT number, the plugin validates it against VIES
+     * and calls WC_Customer::set_is_vat_exempt() from this action - but only when
+     * this action fires. In our session sync it never did, so the customer object
+     * still said "pays VAT" and the totals sent to Briqpay, plus the order built
+     * from them, kept the VAT the customer had just been told they would not pay.
+     * Whether the amount happened to be right came down to whether WooCommerce's
+     * own order review had already recalculated and cached correct totals in the
+     * session first - a race, and one the customer could lose.
+     *
+     * Only fires when there is a form to hand over. The Blocks/Store API path
+     * posts no checkout form and has its own equivalents, and passing an empty
+     * string would tell a listening plugin that every field had been cleared.
+     *
+     * @param string $posted_data Raw serialized checkout form, as posted.
+     * @return void
+     */
+    private function fire_order_review_hook($posted_data)
+    {
+        if ('' === (string) $posted_data) {
+            return;
+        }
+
+        /**
+         * Filter whether woocommerce_checkout_update_order_review is fired while
+         * syncing the Briqpay session.
+         *
+         * Deliberately separate from the "WooCommerce checkout actions" setting:
+         * that switch governs replaying the actions that fire when an order is
+         * created, and turning it off must not quietly bring back wrong tax on
+         * the checkout. This is the escape hatch for the rare plugin that
+         * misbehaves on this specific action.
+         *
+         * @param bool   $enabled     Whether to fire it.
+         * @param string $posted_data Raw serialized checkout form.
+         */
+        if (!apply_filters('briqpay_fire_order_review_hook', true, $posted_data)) {
+            return;
+        }
+
+        // This is the one place in the payment flow where third-party code runs
+        // that never ran here before. A plugin fataling inside it would take the
+        // whole session sync down and leave the customer with no checkout at all,
+        // where degrading to the previous behaviour only risks the tax being
+        // wrong - which is what an error in the log is for. Mirrors the same
+        // guard fire_commit_hooks_fallback() puts around replayed actions.
+        try {
+            do_action('woocommerce_checkout_update_order_review', $posted_data);
+        } catch (\Throwable $e) {
+            Logger::error('A plugin threw on woocommerce_checkout_update_order_review: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Whether the cart's customer is currently VAT exempt.
+     *
+     * Reads through WC_Cart::get_customer() rather than WC()->customer directly:
+     * it is the same object, and it is the one the cart itself asks when it
+     * calculates tax, so this can never disagree with the totals.
+     *
+     * @return bool
+     */
+    private function customer_is_vat_exempt()
+    {
+        if (null === WC() || null === WC()->cart || !is_callable(array(WC()->cart, 'get_customer'))) {
+            return false;
+        }
+
+        $customer = WC()->cart->get_customer();
+
+        if (!$customer || !is_callable(array($customer, 'get_is_vat_exempt'))) {
+            return false;
+        }
+
+        return (bool) $customer->get_is_vat_exempt();
+    }
+
+    /**
+     * Remember the VAT exemption behind the totals this request just produced.
+     *
+     * VAT exemption is not part of WC_Customer's saved data - it is a runtime
+     * property that some plugin has to set again on every single request. The
+     * decision request that builds the order posts nothing but a session ID, so
+     * there is no VAT number in it for such a plugin to act on and nothing
+     * restores the flag; asking the customer object there returns "not exempt"
+     * for a customer who very much is. Recording it here, in the request that
+     * had the form and computed the amount Briqpay was told to charge, means the
+     * order can be stamped with the exemption that actually priced it.
+     *
+     * @return void
+     */
+    private function remember_vat_exempt_state()
+    {
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        $exempt = $this->customer_is_vat_exempt() ? 'yes' : 'no';
+
+        // Writing marks the session dirty and costs a serialize plus a wc_sessions
+        // write at shutdown, and this runs on every sync - several per checkout.
+        if ($exempt === WC()->session->get('briqpay_is_vat_exempt')) {
+            return;
+        }
+
+        WC()->session->set('briqpay_is_vat_exempt', $exempt);
+    }
+
+    /**
+     * The VAT exemption to stamp onto an order being created.
+     *
+     * Prefers what remember_vat_exempt_state() recorded during the last session
+     * sync, because that is the state that produced the amount the customer
+     * agreed to pay. Falls back to the live customer object for flows that never
+     * ran a sync. It is refreshed on every sync, so a customer who removes their
+     * VAT number again is back to paying VAT on the very next one.
+     *
+     * @param \WC_Order $order The order being created.
+     * @return bool
+     */
+    private function resolve_is_vat_exempt($order)
+    {
+        $recorded = (null !== WC() && null !== WC()->session)
+            ? WC()->session->get('briqpay_is_vat_exempt')
+            : null;
+
+        if ('yes' === $recorded || 'no' === $recorded) {
+            $exempt = ('yes' === $recorded);
+        } else {
+            $exempt = $this->customer_is_vat_exempt();
+        }
+
+        /**
+         * Filter the VAT exemption stamped onto a Briqpay order.
+         *
+         * @param bool      $exempt Whether the order is VAT exempt.
+         * @param \WC_Order $order  The order being created.
+         */
+        return (bool) apply_filters('briqpay_order_is_vat_exempt', $exempt, $order);
+    }
+
+    /**
      * Set the order properties WC_Checkout sets that this flow used to drop.
      *
      * Neither of these runs third-party code, so both apply regardless of the
@@ -2106,6 +2294,9 @@ class Checkout_Handler
      *    while the saved order - and everything derived from it, including the
      *    order confirmation - does not. This is why the discrepancy is
      *    invisible in the Briqpay checkout itself and only shows up afterwards.
+     *    The value comes from resolve_is_vat_exempt() rather than straight off
+     *    the customer object, because by the time an order is built the request
+     *    has no checkout form in it and nothing has restored the flag.
      *  - customer_note: the order comments field. The customer types it into the
      *    checkout form, which this flow never read, so it was silently discarded
      *    on every Briqpay order.
@@ -2119,12 +2310,7 @@ class Checkout_Handler
             $order->set_cart_hash(WC()->cart->get_cart_hash());
         }
 
-        if (null !== WC() && null !== WC()->cart && is_callable(array(WC()->cart, 'get_customer'))) {
-            $cart_customer = WC()->cart->get_customer();
-            if ($cart_customer && is_callable(array($cart_customer, 'get_is_vat_exempt'))) {
-                $order->update_meta_data('is_vat_exempt', $cart_customer->get_is_vat_exempt() ? 'yes' : 'no');
-            }
-        }
+        $order->update_meta_data('is_vat_exempt', $this->resolve_is_vat_exempt($order) ? 'yes' : 'no');
 
         // Only fill an empty note: a reused draft may already carry one from the
         // Store API, and the customer's own text must win over a stale replay.

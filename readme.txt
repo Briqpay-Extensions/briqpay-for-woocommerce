@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.10
+Stable tag: 1.1.11
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,11 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.11 =
+* Fix: On a checkout using a third-party VAT plugin, a customer who entered a valid VAT number could be shown - and charged - the amount with VAT still on it. Three separate things had to be right for the ex-VAT amount to reach the payment window, and each could fail on its own. First, the checkout now fires WooCommerce's own `woocommerce_checkout_update_order_review` action while syncing the payment session, which is the action every plugin that adds a field to the checkout uses to apply that field - a VAT plugin sets the customer's VAT exemption there, and because the action was never fired, it never ran and the cart kept charging VAT. Second, the check that decides whether the cart needs recalculating now takes VAT exemption and the billing address into account; both change the tax on an otherwise identical cart, so the recalculation was being skipped and the earlier figure kept. Third, the browser now re-syncs the payment session whenever WooCommerce recalculates the cart, instead of only when a checkout field changed - a VAT number is validated in the background, so by the time the exemption is applied the form looks untouched and the sync was skipped, leaving the payment window showing the total from before.
+* Fix: A plugin that refreshes the checkout twice for one change - a VAT plugin does exactly this, once when the number is entered and again when its VIES lookup answers - could have the second refresh dropped. If it landed while the payment session was still being created it was discarded, and nothing came along afterwards to reconcile it, so the payment window kept the amount from before the lookup. The second refresh is now always picked up, whether it arrives during the session being created or while an earlier sync is still running.
+* Fix: The VAT exemption is now recorded when the amount is calculated and applied to the order from there. The request that creates the order carries only a payment session ID - there is no VAT number in it for a VAT plugin to act on - so asking at that point reported a customer who had proven their exemption as paying VAT, and the order and its confirmation were rebuilt with VAT the customer had been told they would not pay. Added the `briqpay_order_is_vat_exempt` filter to override it, and `briqpay_fire_order_review_hook` to stop firing the order review action for a plugin that misbehaves on it. A plugin that throws an error on that action is logged and stepped over rather than being allowed to take the whole checkout down with it.
 
 = 1.1.10 =
 * Fix: Entering (or removing) a VAT number in the Briqpay checkout showed the correct VAT-exempt total in the payment window itself, but the order confirmation and the admin order screen still showed VAT. WooCommerce's own checkout stamps the customer's VAT-exempt decision onto the order before totals are calculated; this plugin's own order-creation path skipped that step, so the order's own tax calculation never learned about the exemption even though Briqpay had already applied it. The exemption is now stamped onto the order the same way WooCommerce's native checkout does.

@@ -63,6 +63,9 @@ class Session_Reset_Handler
             WC()->session->set('briqpay_session_id', null);
             WC()->session->set('briqpay_customer_type', null);
             WC()->session->set('briqpay_prev_b2b_active', null);
+            // Recorded against the pre-login customer. Whoever just logged in
+            // gets their own answer on the next sync, before any order exists.
+            WC()->session->set('briqpay_is_vat_exempt', null);
         }
 
         // The next request creates a brand-new session, so a sync failure
