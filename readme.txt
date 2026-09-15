@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.11
+Stable tag: 1.1.12
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,10 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.12 =
+* Fix: Follow-up to 1.1.11, which stopped short of the moment the payment is completed. The VAT exemption is now also put back before the cart is recalculated as the payment is decided. That request carries only a payment session ID, so nothing re-applied the exemption and the cart was priced at full VAT for an exempt customer. That figure is what gets checked against the amount held by Briqpay, and a mismatch pushes the cart's figure back - so the customer could be charged VAT while the order was correctly recorded as exempt. Because 1.1.11 corrected the order but not this, the charge and the order could disagree with each other; they now agree.
+* Fix: A payment can no longer be decided while WooCommerce is in the middle of recalculating the checkout. It previously waited only for this plugin's own pending updates, so in the window between WooCommerce starting a refresh and finishing one - exactly when a VAT number validated in the background changes the total - a customer clicking pay had the purchase decided against the amount from before the refresh. It now waits for WooCommerce to settle, with a ten second ceiling measured from the moment the payment was held, so neither a refresh that never reports back nor a plugin that refreshes the checkout on a timer can leave the customer unable to complete the purchase. Added `briqpay_defer_decision_during_update` to switch this off on a live store without a rollback, should it ever need it.
 
 = 1.1.11 =
 * Fix: On a checkout using a third-party VAT plugin, a customer who entered a valid VAT number could be shown - and charged - the amount with VAT still on it. Three separate things had to be right for the ex-VAT amount to reach the payment window, and each could fail on its own. First, the checkout now fires WooCommerce's own `woocommerce_checkout_update_order_review` action while syncing the payment session, which is the action every plugin that adds a field to the checkout uses to apply that field - a VAT plugin sets the customer's VAT exemption there, and because the action was never fired, it never ran and the cart kept charging VAT. Second, the check that decides whether the cart needs recalculating now takes VAT exemption and the billing address into account; both change the tax on an otherwise identical cart, so the recalculation was being skipped and the earlier figure kept. Third, the browser now re-syncs the payment session whenever WooCommerce recalculates the cart, instead of only when a checkout field changed - a VAT number is validated in the background, so by the time the exemption is applied the form looks untouched and the sync was skipped, leaving the payment window showing the total from before.

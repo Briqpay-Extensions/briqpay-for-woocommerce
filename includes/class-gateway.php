@@ -240,6 +240,20 @@ class Gateway extends \WC_Payment_Gateway
         wp_localize_script('briqpay-checkout', 'briqpayParams', array(
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('briqpay_nonce'),
+            /**
+             * Filter whether completing a payment waits for WooCommerce to finish
+             * recalculating the checkout.
+             *
+             * On by default: between WooCommerce starting a refresh and finishing
+             * one the amount may be changing, and a payment decided in that window
+             * is decided against the amount from before it. The escape hatch is
+             * here because this sits on the pay button of every checkout - if some
+             * combination of plugins keeps the checkout permanently refreshing,
+             * turning this off restores the previous behaviour without a rollback.
+             *
+             * @param bool $enabled Whether to wait.
+             */
+            'defer_decision_during_update' => apply_filters('briqpay_defer_decision_during_update', true) ? 1 : 0,
         ));
     }
 

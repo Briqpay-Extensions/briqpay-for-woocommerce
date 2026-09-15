@@ -365,6 +365,83 @@ class NativeCheckoutParityTest extends TestCase
         );
     }
 
+    /**
+     * The decision request recalculates the cart but carries no checkout form, so
+     * nothing re-applies the exemption and WooCommerce does not persist it. The
+     * recalculated total then feeds the amount check against Briqpay - where a
+     * mismatch pushes the with-VAT figure back and charges the customer VAT -
+     * while the order itself is correctly stamped exempt. Both wrong is a bug;
+     * one right and one wrong is a bug that reconciles to nothing.
+     */
+    public function testRecordedExemptionIsPutBackBeforeTheDecisionRecalculates(): void
+    {
+        $restored = array();
+
+        $session = Mockery::mock('WC_Session');
+        $session->shouldReceive('get')->andReturnUsing(function ($key, $default = null) {
+            return 'briqpay_is_vat_exempt' === $key ? 'yes' : $default;
+        });
+        $session->shouldReceive('set')->andReturn(null);
+
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('set_is_vat_exempt')->andReturnUsing(function ($v) use (&$restored) {
+            $restored[] = $v;
+        });
+
+        $cart = Mockery::mock('WC_Cart');
+        $cart->shouldReceive('get_customer')->andReturn($customer);
+
+        $wc = Mockery::mock('WooCommerce');
+        $wc->session = $session;
+        $wc->cart = $cart;
+        WP_Mock::userFunction('WC', array('return' => $wc));
+
+        $this->invoke('restore_vat_exempt_state');
+
+        $this->assertSame(array(true), $restored);
+    }
+
+    public function testRestoringDoesNothingWhenNothingWasRecorded(): void
+    {
+        $restored = array();
+
+        $session = Mockery::mock('WC_Session');
+        $session->shouldReceive('get')->andReturn(null);
+
+        $customer = Mockery::mock('WC_Customer');
+        $customer->shouldReceive('set_is_vat_exempt')->andReturnUsing(function ($v) use (&$restored) {
+            $restored[] = $v;
+        });
+
+        $cart = Mockery::mock('WC_Cart');
+        $cart->shouldReceive('get_customer')->andReturn($customer);
+
+        $wc = Mockery::mock('WooCommerce');
+        $wc->session = $session;
+        $wc->cart = $cart;
+        WP_Mock::userFunction('WC', array('return' => $wc));
+
+        $this->invoke('restore_vat_exempt_state');
+
+        $this->assertSame(array(), $restored, 'A flow that never synced must be left alone.');
+    }
+
+    /**
+     * Order matters as much as the call itself: restored after the recalculation
+     * it is supposed to inform, it would change nothing.
+     */
+    public function testExemptionIsRestoredBeforeTheDecisionCartRecalculation(): void
+    {
+        $source = $this->methodSource(Checkout_Handler::class, 'ajax_make_decision');
+
+        $restore_pos = strpos($source, '$this->restore_vat_exempt_state();');
+        $recalc_pos = strpos($source, 'WC()->cart->calculate_totals();');
+
+        $this->assertNotFalse($restore_pos, 'ajax_make_decision() must restore the recorded exemption.');
+        $this->assertNotFalse($recalc_pos);
+        $this->assertLessThan($recalc_pos, $restore_pos);
+    }
+
     // ──────────────────────────────────────────────────────────────────────
     // woocommerce_checkout_update_order_review
     // ──────────────────────────────────────────────────────────────────────

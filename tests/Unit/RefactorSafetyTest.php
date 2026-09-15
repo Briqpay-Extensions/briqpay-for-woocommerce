@@ -73,6 +73,7 @@ class RefactorSafetyTest extends TestCase
             'customer_is_vat_exempt' => array(Checkout_Handler::class, 'customer_is_vat_exempt'),
             'remember_vat_exempt_state' => array(Checkout_Handler::class, 'remember_vat_exempt_state'),
             'resolve_is_vat_exempt' => array(Checkout_Handler::class, 'resolve_is_vat_exempt'),
+            'restore_vat_exempt_state' => array(Checkout_Handler::class, 'restore_vat_exempt_state'),
             'stash_posted_data' => array(Checkout_Handler::class, 'stash_posted_data'),
             'warn_on_total_drift' => array(Checkout_Handler::class, 'warn_on_total_drift'),
             'reserve_stock' => array(Checkout_Handler::class, 'reserve_stock'),

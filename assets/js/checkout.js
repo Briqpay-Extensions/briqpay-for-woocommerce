@@ -23,9 +23,17 @@ window.briqpayCheckout = {
     // fingerprint below only covers the checkout form, and the amount can move
     // without a single form field changing - see updateSession().
     _cartRecalculated: false,
+    // True between WooCommerce's update_checkout and updated_checkout - the
+    // window where the amount is already moving and nothing here knows it yet.
+    _wcUpdating: false,
+    _wcUpdatingTimer: null,
+    // Absolute deadline for releasing a deferred decision. Armed once, never
+    // re-armed - see _armDecisionDeadline().
+    _pendingDecisionTimer: null,
 
     init: function () {
         const $ = jQuery;
+        $(document.body).on('update_checkout', this.onWooUpdateStarted.bind(this));
         $(document.body).on('updated_checkout', this.onCartRecalculated.bind(this));
         $(document.body).on('checkout_error', this.onCheckoutError.bind(this));
         $(document.body).on('applied_coupon_in_checkout removed_coupon_in_checkout', function () {
@@ -130,6 +138,33 @@ window.briqpayCheckout = {
     },
 
     /**
+     * WooCommerce is about to recalculate the cart.
+     *
+     * Deferring a decision only while one of OUR syncs is scheduled or running
+     * leaves a hole: between this event and updated_checkout, WooCommerce is
+     * recalculating and the amount may already be changing, but nothing here is
+     * scheduled or in flight yet, so a customer clicking pay in that window had
+     * their purchase decided against the amount from before it. Anything that
+     * refreshes the checkout opens this window - a VAT number being validated in
+     * the background is simply the one that made it easy to hit.
+     */
+    onWooUpdateStarted: function () {
+        var self = this;
+
+        this._wcUpdating = true;
+
+        // updated_checkout is not guaranteed to arrive - a request can fail or be
+        // superseded - and a decision must never wait on it forever. Releasing
+        // late is recoverable; never releasing is a customer stuck on a spinner.
+        clearTimeout(this._wcUpdatingTimer);
+        this._wcUpdatingTimer = setTimeout(function () {
+            self._wcUpdating = false;
+            self._wcUpdatingTimer = null;
+            self._processPendingDecision();
+        }, 10000);
+    },
+
+    /**
      * WooCommerce has just recalculated the cart server-side.
      *
      * Note this separately from the form fingerprint: WooCommerce recalculates
@@ -138,6 +173,10 @@ window.briqpayCheckout = {
      */
     onCartRecalculated: function () {
         this._cartRecalculated = true;
+        // The window is closed. Any decision held open by it is released by the
+        // sync this triggers, through _finishUpdate(), so it is decided against
+        // the amount WooCommerce just settled on rather than the one before it.
+        this._wcUpdating = false;
         this.onUpdatedCheckout();
     },
 
@@ -453,16 +492,60 @@ window.briqpayCheckout = {
         }
     },
 
-    makeDecision: function (event) {
-        const $ = jQuery;
+    /**
+     * Guarantee a deferred decision is eventually released.
+     *
+     * Armed once and deliberately never re-armed. Anything that refreshes the
+     * checkout on a timer - a delivery-date picker, a stock countdown, a
+     * third-party field that polls - fires update_checkout again and again, and
+     * a deadline pushed out by each one would never arrive at all. The customer
+     * would sit on a spinner with no way to complete the purchase, which is far
+     * worse than deciding against an amount the server checks against Briqpay's
+     * own figure anyway before anything is charged.
+     */
+    _armDecisionDeadline: function () {
         var self = this;
 
-        // If an update is scheduled (debounce) or in-flight (AJAX), defer the decision.
-        if (this._updateDebounceTimer || this._isUpdating) {
-            console.log('Briqpay: Deferring decision until session sync complete.');
-            this._pendingDecision = event;
+        if (this._pendingDecisionTimer) {
             return;
         }
+
+        this._pendingDecisionTimer = setTimeout(function () {
+            self._pendingDecisionTimer = null;
+
+            if (!self._pendingDecision) {
+                return;
+            }
+
+            console.log('Briqpay: Releasing deferred decision on deadline.');
+            var event = self._pendingDecision;
+            self._pendingDecision = null;
+            self._sendDecision(event);
+        }, 10000);
+    },
+
+    makeDecision: function (event) {
+        // Waiting on WooCommerce can be switched off from PHP with the
+        // briqpay_defer_decision_during_update filter, without a rollback, if it
+        // ever misbehaves on a live store. Defaults to on; a missing param (an
+        // older cached script, say) also counts as on.
+        var waitForWoo = !(typeof briqpayParams !== 'undefined' && 0 === briqpayParams.defer_decision_during_update);
+
+        // Defer while the amount is in motion: one of our syncs scheduled
+        // (debounce) or in flight, or WooCommerce itself mid-recalculation.
+        if (this._updateDebounceTimer || this._isUpdating || (this._wcUpdating && waitForWoo)) {
+            console.log('Briqpay: Deferring decision until session sync complete.');
+            this._pendingDecision = event;
+            this._armDecisionDeadline();
+            return;
+        }
+
+        this._sendDecision(event);
+    },
+
+    _sendDecision: function (event) {
+        const $ = jQuery;
+        var self = this;
 
         $.ajax({
             url: briqpayParams.ajax_url,

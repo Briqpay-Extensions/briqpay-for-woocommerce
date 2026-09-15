@@ -1029,6 +1029,16 @@ class Checkout_Handler
         }
         $this->save_customer_if_changed();
 
+        // Put the VAT exemption back before anything is recalculated. This request
+        // carries no checkout form, so nothing else restores it, and WooCommerce
+        // does not persist it - the cart would otherwise be priced with VAT for a
+        // customer who is exempt. That figure then feeds two things that must not
+        // disagree: the amount checked against Briqpay's below (a mismatch pushes
+        // the with-VAT cart total back to Briqpay, so the customer is charged VAT)
+        // and the order, which resolve_is_vat_exempt() correctly stamps as exempt.
+        // Getting one right and the other wrong is worse than getting both wrong.
+        $this->restore_vat_exempt_state();
+
         // Robust re-calculation: Force shipping before totals to ensure sync.
         WC()->cart->calculate_shipping();
         WC()->cart->calculate_totals();
@@ -2237,6 +2247,46 @@ class Checkout_Handler
         }
 
         WC()->session->set('briqpay_is_vat_exempt', $exempt);
+    }
+
+    /**
+     * Put a recorded VAT exemption back onto the customer object.
+     *
+     * The counterpart to remember_vat_exempt_state(), for requests that have to
+     * recalculate the cart but carry no checkout form - the payment decision
+     * above being the one that matters. WooCommerce keeps VAT exemption as a
+     * runtime property rather than saved customer data, so without this the cart
+     * is recalculated at full VAT for a customer who has proven they are exempt.
+     *
+     * Does nothing when nothing was recorded, so a flow that never synced is
+     * left exactly as it was.
+     *
+     * @return void
+     */
+    private function restore_vat_exempt_state()
+    {
+        if (null === WC() || null === WC()->session || null === WC()->cart) {
+            return;
+        }
+
+        $recorded = WC()->session->get('briqpay_is_vat_exempt');
+
+        if ('yes' !== $recorded && 'no' !== $recorded) {
+            return;
+        }
+
+        if (!is_callable(array(WC()->cart, 'get_customer'))) {
+            return;
+        }
+
+        $customer = WC()->cart->get_customer();
+
+        if (!$customer || !is_callable(array($customer, 'set_is_vat_exempt'))) {
+            return;
+        }
+
+        $customer->set_is_vat_exempt('yes' === $recorded);
+        Logger::log('Restored recorded VAT exemption for the decision: ' . $recorded);
     }
 
     /**

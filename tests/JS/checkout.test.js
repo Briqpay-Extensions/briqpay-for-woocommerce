@@ -294,6 +294,99 @@ describe('Briqpay Checkout JS', () => {
         expect($('body').hasClass('briqpay-not-selected')).toBe(true);
     });
 
+    test('a decision during WooCommerce recalculation waits for the new amount', () => {
+        // The gap between update_checkout and updated_checkout: WooCommerce is
+        // recalculating, so the amount may already be moving, but no sync of ours
+        // is scheduled or running yet. A decision sent here is decided against the
+        // amount from before the recalculation.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        $.ajax.mockClear();
+
+        $(document.body).trigger('update_checkout');
+
+        window.briqpayCheckout.makeDecision({ sessionId: 'existing_session' });
+
+        // Held, not sent.
+        expect($.ajax).not.toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ action: 'briqpay_make_decision' })
+        }));
+        expect(window.briqpayCheckout._pendingDecision).not.toBeNull();
+
+        // WooCommerce settles; our sync runs and releases the decision after it.
+        $(document.body).trigger('updated_checkout');
+        jest.runAllTimers();
+
+        expect($.ajax).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ action: 'briqpay_make_decision' })
+        }));
+    });
+
+    test('a decision is never stranded if updated_checkout never arrives', () => {
+        // A failed or superseded request can leave updated_checkout unfired.
+        // Releasing late is recoverable; never releasing strands the customer.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        $.ajax.mockClear();
+
+        $(document.body).trigger('update_checkout');
+        window.briqpayCheckout.makeDecision({ sessionId: 'existing_session' });
+        expect(window.briqpayCheckout._pendingDecision).not.toBeNull();
+
+        // updated_checkout never comes.
+        jest.advanceTimersByTime(10000);
+        jest.runAllTimers();
+
+        expect($.ajax).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ action: 'briqpay_make_decision' })
+        }));
+    });
+
+    test('a deferred decision survives a checkout that keeps refreshing', () => {
+        // A plugin refreshing the checkout on a timer fires update_checkout over
+        // and over. A release deadline reset by each one would never arrive and
+        // the pay button would be dead for good - the worst failure this plugin
+        // has available to it.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        $.ajax.mockClear();
+
+        $(document.body).trigger('update_checkout');
+        window.briqpayCheckout.makeDecision({ sessionId: 'existing_session' });
+        expect(window.briqpayCheckout._pendingDecision).not.toBeNull();
+
+        // Something keeps refreshing, and updated_checkout never lands.
+        for (var i = 0; i < 10; i++) {
+            jest.advanceTimersByTime(3000);
+            $(document.body).trigger('update_checkout');
+        }
+
+        expect($.ajax).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ action: 'briqpay_make_decision' })
+        }));
+    });
+
+    test('the wait for WooCommerce can be switched off from PHP', () => {
+        // The escape hatch: this sits on the pay button of every checkout, so a
+        // live store must be able to fall back to the old behaviour without a
+        // rollback.
+        window.briqpayParams.defer_decision_during_update = 0;
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        $.ajax.mockClear();
+
+        $(document.body).trigger('update_checkout');
+        window.briqpayCheckout.makeDecision({ sessionId: 'existing_session' });
+
+        expect($.ajax).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ action: 'briqpay_make_decision' })
+        }));
+    });
+
     test('should attach listeners to SDK events', () => {
         window.briqpayCheckout.listenersAttached = false;
         window.briqpayCheckout.attachListeners();
