@@ -32,6 +32,15 @@ class Checkout_Handler
         add_filter('body_class', array($this, 'add_body_class'));
         add_action('wp_enqueue_scripts', array($this, 'enqueue_critical_assets'), 20);
         add_shortcode('briqpay_iframe', array($this, 'render_briqpay_iframe'));
+
+        // See sync_after_cart_recalculation() for why this exists: every previous
+        // fix in this area (VAT exemption timing, the recalculation fingerprint,
+        // the browser's decision-deferral) made our OWN guess about when to sync
+        // more reliable, but the sync itself still ran as a second, independent
+        // HTTP request racing whatever else was recalculating the cart - and each
+        // release found a new way to lose that race. Priority 99999 so this runs
+        // after every other plugin's own totals adjustment has already happened.
+        add_action('woocommerce_after_calculate_totals', array($this, 'sync_after_cart_recalculation'), 99999);
     }
 
     /**
@@ -854,15 +863,29 @@ class Checkout_Handler
         $new_hash = md5(wp_json_encode($address_data));
         $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_address_hash') : null;
 
-        if ($stored_hash !== $new_hash) {
-            WC()->cart->calculate_shipping();
-            WC()->cart->calculate_totals();
-            if (null !== WC()->session) {
-                WC()->session->set('briqpay_address_hash', $new_hash);
-            }
-            Logger::log('Recalculating shipping and totals because address or cart changed.');
-        } else {
-            Logger::log('Skipping shipping and totals recalculation (address and cart unchanged).');
+        // Always recalculate. This used to be skipped when the fingerprint above
+        // was unchanged, which asks the wrong question twice over.
+        //
+        // The fingerprint can only cover inputs it knows to look at, and every
+        // release has found another one it did not: VAT exemption, the billing
+        // address, and anything a third-party plugin changes. Worse, an
+        // unchanged fingerprint was taken to mean the totals already in the
+        // session were still right for it - and they need not be. This request
+        // runs concurrently with WooCommerce's own order review refresh, on the
+        // same session; whichever finishes last writes its totals, so a sync
+        // that skipped the recalculation could send figures another request had
+        // just overwritten. That is the shape of the bug where re-entering a VAT
+        // number left Briqpay holding the amount with VAT on it.
+        //
+        // Recalculating is what WooCommerce itself does on every order review
+        // refresh, and these syncs are debounced, so the cost is one cart
+        // calculation per real change - against sending a wrong amount to a
+        // payment provider.
+        WC()->cart->calculate_shipping();
+        WC()->cart->calculate_totals();
+
+        if (null !== WC()->session) {
+            WC()->session->set('briqpay_address_hash', $new_hash);
         }
 
         // Pin the exemption that produced the totals in this request, so the order
@@ -2128,6 +2151,131 @@ class Checkout_Handler
         }
 
         return true;
+    }
+
+    /**
+     * Reconcile the Briqpay session immediately after ANY cart recalculation,
+     * no matter what triggered it.
+     *
+     * This exists because the alternative - having the browser guess when to
+     * ask the server for a fresh session - cannot be made reliable. That guess
+     * runs as a separate HTTP request, concurrent with whatever else is
+     * recalculating the cart in its own separate request (most concretely: a
+     * VAT plugin's asynchronous VIES lookup, via its own admin-ajax.php call).
+     * Two independent PHP requests racing to write the same WooCommerce
+     * session have no ordering guarantee between them - whichever happens to
+     * finish last wins, regardless of which one is actually correct. Multiple
+     * past fixes here each made our own guess better (recalculating on more
+     * triggers, deferring the payment decision, widening what counts as
+     * "changed") and each one still left some sequence of events that could
+     * lose that race, because the race itself was never removed.
+     *
+     * woocommerce_after_calculate_totals fires synchronously, inside whichever
+     * single request actually called WC_Cart::calculate_totals() - ours, the
+     * VAT plugin's, WooCommerce's own order-review refresh, anyone's. Reacting
+     * to it here, at a very late priority, means this runs last within THAT
+     * SAME request, after every other plugin adjusting the cart has already
+     * had its turn - not in a follow-up request that might arrive before,
+     * after, or never. There is nothing left to race, because there is no
+     * second request: the same PHP process that produced the final totals is
+     * the one reconciling Briqpay with them, before it even returns.
+     *
+     * Deliberately does not create a session - only keeps an existing one in
+     * step. Creating one is the browser-triggered flow's job, because it has
+     * to hand back an iframe snippet to render; this hook has no browser
+     * request to answer, so firing here on every page that happens to
+     * calculate cart totals (a product page, a mini-cart widget) would call
+     * the Briqpay API from pages with nothing to do with paying at all.
+     *
+     * Update_session() already skips the network call when the payload has
+     * not actually changed (a hash comparison, no API round trip), so running
+     * this on every recalculation - including ones with nothing new to send,
+     * or a second time within a request that also syncs some other way -
+     * costs a cheap in-memory comparison, not a wasted HTTP call.
+     *
+     * @param \WC_Cart $cart WooCommerce cart, already recalculated.
+     * @return void
+     */
+    public function sync_after_cart_recalculation($cart)
+    {
+        static $syncing = false;
+
+        // Re-entrancy guard. update_session() does not itself recalculate the
+        // cart, so this should not be reachable in practice - kept because a
+        // hook this broadly triggered is exactly the kind of thing a future
+        // change elsewhere could accidentally make recurse.
+        if ($syncing) {
+            return;
+        }
+
+        /**
+         * Filter whether a cart recalculation reconciles the Briqpay session.
+         *
+         * Escape hatch: this fires on essentially every checkout AJAX request,
+         * so if it ever needs switching off on a live store, this does that
+         * without a rollback.
+         *
+         * @param bool $enabled Whether to sync.
+         */
+        if (!apply_filters('briqpay_sync_on_cart_recalculation', true)) {
+            return;
+        }
+
+        // Only during an AJAX request. The checkout page's own first, full
+        // render is already covered by the browser's initial session-creation
+        // call moments later; doing this here too would add a synchronous
+        // Briqpay API round trip to that page's first paint for no benefit -
+        // every scenario this hook exists for (a VAT plugin's validation
+        // landing, WooCommerce's own order-review refresh, a coupon or
+        // shipping change) happens over AJAX.
+        if (!wp_doing_ajax()) {
+            return;
+        }
+
+        if (null === WC() || null === WC()->session) {
+            return;
+        }
+
+        // Only keeps an existing session in step - see the docblock for why
+        // this never creates one.
+        $session_id = Session_Manager::get_session_id();
+        if (!$session_id) {
+            return;
+        }
+
+        // Scope to where a Briqpay session is actually relevant, using the same
+        // signals filter_order_button_html() above already relies on.
+        if (!is_checkout() || is_order_received_page()) {
+            return;
+        }
+        if (function_exists('is_cart') && is_cart()) {
+            return;
+        }
+        if ('briqpay' !== WC()->session->get('chosen_payment_method')) {
+            return;
+        }
+
+        $syncing = true;
+
+        try {
+            $result = (new Session_Manager())->update_session($session_id);
+
+            if (is_wp_error($result)) {
+                // Best-effort. A failure here is not fatal - it means this
+                // particular backstop attempt did not land, not that the
+                // customer's checkout is broken: the browser's own sync, and
+                // the emergency re-sync in ajax_make_decision(), still run
+                // independently and can still recover.
+                Logger::log('Post-recalculation Briqpay sync failed: ' . $result->get_error_message());
+            }
+        } catch (\Throwable $e) {
+            // This runs inside requests that have nothing to do with payment
+            // failure handling (a shipping method change, a coupon), so a
+            // problem here must never surface as a broken checkout.
+            Logger::error('Post-recalculation Briqpay sync threw: ' . $e->getMessage());
+        }
+
+        $syncing = false;
     }
 
     /**

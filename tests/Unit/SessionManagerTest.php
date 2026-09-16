@@ -91,6 +91,139 @@ class SessionManagerTest extends TestCase
      * authorization-time bug: it also became the rate Briqpay validates future
      * captures/refunds against.
      */
+    /**
+     * A VAT-exempt B2B customer is charged no VAT, but their products still sit
+     * in the 25% tax class. Looking the rate up from the class therefore sent
+     * Briqpay a line claiming taxRate 2500 while its own totalVatAmount was 0 -
+     * a line contradicting itself, and the value an ERP reads back off the
+     * order. The rate has to come from the tax actually applied.
+     */
+    public function testExemptLineReportsNoTaxRateRatherThanTheProductsClass(): void
+    {
+        $product = Mockery::mock('WC_Product');
+        $product->shouldReceive('get_tax_class')->andReturn('');
+
+        // WooCommerce leaves the applied tax empty for an exempt customer.
+        $cart_item = array('line_tax_data' => array('subtotal' => array(), 'total' => array()));
+
+        $rate = $this->invokeAppliedTaxRate($cart_item, $product);
+
+        $this->assertSame(0, $rate);
+    }
+
+    /**
+     * The ordinary case must be untouched: a rate that was actually charged is
+     * still reported, and still as the clean nominal value.
+     */
+    public function testTaxedLineStillReportsTheAppliedRate(): void
+    {
+        $product = Mockery::mock('WC_Product');
+
+        $wc_tax = Mockery::mock('alias:WC_Tax');
+        $wc_tax->shouldReceive('get_rate_percent_value')->with(1)->andReturn(25.00);
+
+        $cart_item = array('line_tax_data' => array('subtotal' => array(1 => 20.25)));
+
+        $this->assertSame(2500, $this->invokeAppliedTaxRate($cart_item, $product));
+    }
+
+    /**
+     * A rate id recorded with a zero amount is WooCommerce saying the rate did
+     * not apply, and reporting it would recreate the contradiction.
+     */
+    public function testRateIdWithZeroAmountIsNotReported(): void
+    {
+        $product = Mockery::mock('WC_Product');
+
+        $cart_item = array('line_tax_data' => array('subtotal' => array(1 => 0.0)));
+
+        $this->assertSame(0, $this->invokeAppliedTaxRate($cart_item, $product));
+    }
+
+    /**
+     * No tax data at all is the not-yet-calculated state rather than a zero-tax
+     * one, so the product's class is still the best answer available.
+     */
+    public function testMissingTaxDataFallsBackToTheProductsTaxClass(): void
+    {
+        $product = Mockery::mock('WC_Product');
+        $product->shouldReceive('get_tax_class')->andReturn('reduced-rate');
+
+        $wc_tax = Mockery::mock('alias:WC_Tax');
+        $wc_tax->shouldReceive('get_rates')->with('reduced-rate')->andReturn(array(5 => array('rate' => 12.0)));
+
+        $this->assertSame(1200, $this->invokeAppliedTaxRate(array(), $product));
+    }
+
+    /**
+     * Wiring guard: the cart line itself must use the applied rate. Testing the
+     * helper alone would keep passing if the line went back to the tax class.
+     */
+    public function testExemptCartLineIsSentWithoutATaxRate(): void
+    {
+        $product = Mockery::mock('WC_Product');
+        $product->shouldReceive('get_name')->andReturn('Pappersbagare');
+        $product->shouldReceive('get_sku')->andReturn('OM-101257');
+        $product->shouldReceive('get_id')->andReturn(13);
+        $product->shouldReceive('get_image_id')->andReturn(0);
+        $product->shouldReceive('get_tax_class')->andReturn('');
+
+        $cart = Mockery::mock('WC_Cart');
+        $wc = Mockery::mock('WooCommerce');
+        $wc->cart = $cart;
+        $wc->customer = Mockery::mock('WC_Customer');
+        $wc->customer->shouldReceive('get_billing_country')->andReturn('SE');
+        WP_Mock::userFunction('WC', array('return' => $wc));
+
+        // An exempt customer: 22.00 charged, no VAT, and no applied tax data -
+        // while the product still belongs to the store's 25% class.
+        $cart->shouldReceive('get_cart')->andReturn(array(
+            'key1' => array(
+                'data' => $product,
+                'quantity' => 1,
+                'line_subtotal' => 22.00,
+                'line_subtotal_tax' => 0.0,
+                'line_tax_data' => array('subtotal' => array(), 'total' => array()),
+            ),
+        ));
+        $cart->shouldReceive('get_shipping_total')->andReturn(0);
+        $cart->shouldReceive('get_shipping_tax')->andReturn(0);
+        $cart->shouldReceive('get_shipping_taxes')->andReturn(array());
+        $cart->shouldReceive('get_fees')->andReturn(array());
+        $cart->shouldReceive('get_applied_coupons')->andReturn(array());
+
+        WP_Mock::userFunction('__', array('return_arg' => 0));
+        WP_Mock::userFunction('apply_filters', array('return_arg' => 1));
+        WP_Mock::userFunction('wp_get_attachment_image_url', array('return' => ''));
+
+        $method = new \ReflectionMethod(Session_Manager::class, 'get_cart_items');
+        $method->setAccessible(true);
+        $lines = $method->invoke(new Session_Manager());
+
+        $line = null;
+        foreach ($lines as $candidate) {
+            if ('shipping' !== $candidate['reference']) {
+                $line = $candidate;
+            }
+        }
+
+        $this->assertNotNull($line, 'The product line must be present.');
+        $this->assertSame(0, $line['totalVatAmount'], 'No VAT was charged.');
+        $this->assertSame(
+            0,
+            $line['taxRate'],
+            'A line charging no VAT must not claim a 25% rate.'
+        );
+    }
+
+    private function invokeAppliedTaxRate($cart_item, $product)
+    {
+        $session_manager = new Session_Manager();
+        $method = new \ReflectionMethod(Session_Manager::class, 'get_applied_tax_rate');
+        $method->setAccessible(true);
+        return $method->invoke($session_manager, $cart_item, $product);
+    }
+
     public function testGetCartItemsUsesNominalTaxRateForShipping()
     {
         $cart = Mockery::mock('WC_Cart');

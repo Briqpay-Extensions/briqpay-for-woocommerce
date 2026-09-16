@@ -661,7 +661,7 @@ class Session_Manager
             $unit_price = $this->to_int($line_total_exc_tax / $quantity);
 
             // Tax rate (e.g. 2500 for 25%)
-            $tax_rate = $is_us ? 0 : $this->get_tax_rate($product);
+            $tax_rate = $is_us ? 0 : $this->get_applied_tax_rate($cart_item, $product);
 
             // Unit price including VAT
             $unit_price_inc_vat = $is_us ? $unit_price : $this->to_int($line_total_inc_tax / $quantity);
@@ -791,14 +791,22 @@ class Session_Manager
             $discount_tax = (float) $cart->get_coupon_discount_tax_amount($coupon_code);
 
             if ($discount_amount > 0 || $discount_tax > 0) {
-                // Get the actual tax rate from the first cart item's product
-                // instead of deriving it from amounts (which causes precision errors like 25.01%)
+                // Take the rate from the first cart line rather than deriving it
+                // from the amounts, which causes precision errors like 25.01%.
+                // Read from the tax actually applied to that line for the same
+                // reason the lines themselves do - a discount on a VAT-exempt
+                // cart must not be reported at the product's nominal 25%.
+                //
+                // Known limitation: a cart mixing VAT rates has its whole
+                // discount reported at the first line's rate. Correcting that
+                // means splitting the discount per rate, which changes the
+                // amounts themselves rather than just how they are labelled.
                 $coupon_tax_rate = 0;
                 $cart_contents = $cart->get_cart();
                 if (!empty($cart_contents)) {
                     $first_item = reset($cart_contents);
                     if (isset($first_item['data']) && $first_item['data'] instanceof \WC_Product) {
-                        $coupon_tax_rate = $this->get_tax_rate($first_item['data']);
+                        $coupon_tax_rate = $this->get_applied_tax_rate($first_item, $first_item['data']);
                     }
                 }
 
@@ -861,6 +869,60 @@ class Session_Manager
         }
 
         return (int) round(((float) $value) * 100);
+    }
+
+    /**
+     * The tax rate actually applied to a cart line, in Briqpay format.
+     *
+     * Read from the line's own tax data rather than looked up from the
+     * product's tax class, because the class says what the product would be
+     * taxed at, not what this customer was charged. The two part company
+     * exactly where it matters most: a VAT-exempt B2B customer is charged no
+     * VAT, but their products still belong to the 25% class, so the lookup
+     * reported taxRate 2500 on a line whose totalVatAmount was 0 - a line
+     * claiming a rate it had not charged. The same goes for a zero-rate
+     * product or a store with tax disabled.
+     *
+     * Falls back to the tax class only when the line has no tax data at all to
+     * read, which is the pre-calculation state rather than a zero-tax one.
+     *
+     * @param array       $cart_item WooCommerce cart item.
+     * @param \WC_Product $product   The line's product.
+     * @return int Rate in Briqpay format (2500 for 25%).
+     */
+    private function get_applied_tax_rate($cart_item, $product)
+    {
+        $tax_data = isset($cart_item['line_tax_data']) && is_array($cart_item['line_tax_data'])
+            ? $cart_item['line_tax_data']
+            : array();
+
+        // 'subtotal' is the pre-discount tax, which is what the line amounts are
+        // built from here; 'total' is the post-discount equivalent and carries
+        // the same rate ids, so it serves as a fallback.
+        foreach (array('subtotal', 'total') as $key) {
+            if (empty($tax_data[$key]) || !is_array($tax_data[$key])) {
+                continue;
+            }
+
+            foreach ($tax_data[$key] as $rate_id => $amount) {
+                // A rate id present with a zero amount is how WooCommerce
+                // records "this rate did not apply here" - reporting it would
+                // recreate the contradiction this method exists to avoid.
+                if (0.0 === (float) $amount) {
+                    continue;
+                }
+
+                return (int) round(((float) \WC_Tax::get_rate_percent_value($rate_id)) * 100);
+            }
+        }
+
+        // Tax data exists but nothing was charged: exempt, zero-rated, or taxes
+        // switched off. All three mean the same thing on the wire.
+        if (!empty($tax_data)) {
+            return 0;
+        }
+
+        return $this->get_tax_rate($product);
     }
 
     /**

@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.12
+Stable tag: 1.1.13
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,10 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.13 =
+* Fix: A VAT-exempt line was sent to Briqpay claiming the product's normal tax rate - `taxRate` 2500 next to a VAT amount of zero - because the rate was looked up from the product's tax class, which says what the product would be taxed at rather than what this customer was actually charged. The rate now comes from the tax applied to the line, so an exempt customer, a zero-rated product and a store with tax switched off all report zero, as they always should have. Coupon lines read the rate the same way. Note that a cart mixing several VAT rates still reports its whole discount at the first line's rate.
+* Fix: The recurring shape of the last several releases - the checkout showing the right amount, but only sometimes, in a way that depended on timing - is addressed at its root rather than patched again. Every previous fix in this area made the browser's own guess about when to ask the server for a fresh amount more reliable, but that guess still ran as a separate request, racing whatever else was recalculating the cart (most concretely, a VAT plugin's own background validation call) - and whichever request finished last won, regardless of which one was actually right. The Briqpay session is now reconciled from directly inside WooCommerce's own total-recalculation process itself, in the same request that computes the final amount, for every plugin's recalculation and not only this one's own - so there is no second request left to race. This runs alongside the existing sync rather than replacing it, and only while Briqpay is the checkout's chosen payment method. Added `briqpay_sync_on_cart_recalculation` to switch it off on a live store without a rollback, should it ever need it.
 
 = 1.1.12 =
 * Fix: Follow-up to 1.1.11, which stopped short of the moment the payment is completed. The VAT exemption is now also put back before the cart is recalculated as the payment is decided. That request carries only a payment session ID, so nothing re-applied the exemption and the cart was priced at full VAT for an exempt customer. That figure is what gets checked against the amount held by Briqpay, and a mismatch pushes the cart's figure back - so the customer could be charged VAT while the order was correctly recorded as exempt. Because 1.1.11 corrected the order but not this, the charge and the order could disagree with each other; they now agree.
