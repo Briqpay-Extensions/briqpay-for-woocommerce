@@ -305,7 +305,43 @@ window.briqpayCheckout = {
         }
 
         this._containerParked = true;
-        $(document.body).append($container.detach());
+
+        // Parking must be visually a no-op. The first version simply appended
+        // the container to <body>, which for the whole AJAX roundtrip put the
+        // iframe at the bottom of the page and collapsed the slot it had left
+        // to zero height - so on every refresh the iframe jumped and everything
+        // below the payment box shifted up by the iframe's height, then snapped
+        // back. On a store that refreshes often that reads as the iframe
+        // "bouncing around". Two things prevent it:
+        //
+        //  1. A spacer left behind in the slot, the container's exact height,
+        //     so the layout below does not move while the container is away.
+        //     It dies with the slot when WooCommerce replaces it, which is fine.
+        //  2. The parked container pinned with position:absolute at the exact
+        //     document coordinates it occupied, same width, so it keeps
+        //     rendering in precisely the same place. Coordinates are taken
+        //     relative to <body>'s own box so this holds whether or not a theme
+        //     gives <body> position:relative.
+        //
+        // restoreContainer() runs synchronously inside WooCommerce's own
+        // response handler, in the same task as its fragment replacement, so
+        // the browser never paints the in-between state either.
+        var rect = $container[0].getBoundingClientRect();
+        var bodyRect = document.body.getBoundingClientRect();
+
+        var $spacer = $('<div class="briqpay-iframe-spacer" aria-hidden="true"></div>')
+            .css('height', rect.height + 'px');
+        $container.after($spacer);
+
+        $container.detach().css({
+            position: 'absolute',
+            top: (rect.top - bodyRect.top) + 'px',
+            left: (rect.left - bodyRect.left) + 'px',
+            width: rect.width + 'px',
+            margin: '0',
+            zIndex: '1'
+        });
+        $(document.body).append($container);
 
         // updated_checkout is not guaranteed to arrive - a failed or superseded
         // request can leave it unfired, the same reasoning as the payment
@@ -340,6 +376,16 @@ window.briqpayCheckout = {
 
         var $container = $('#briqpay-iframe-container');
         var $slot = $('#briqpay-iframe-slot');
+
+        // Undo the in-place pinning from parkContainer(). Always, even if there
+        // is no slot to return to - a container left position:absolute at stale
+        // coordinates would be worse than one simply sitting at document.body.
+        $container.css({ position: '', top: '', left: '', width: '', margin: '', zIndex: '' });
+
+        // The spacer normally dies with the slot WooCommerce replaced. If the
+        // slot was never replaced (the deadline fired instead), it is still
+        // there and must go, or the container returns beneath a blank gap.
+        $('.briqpay-iframe-spacer').remove();
 
         if ($container.length && $slot.length) {
             $slot.empty().append($container);

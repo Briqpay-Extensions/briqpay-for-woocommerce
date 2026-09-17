@@ -429,6 +429,46 @@ describe('Briqpay Checkout JS', () => {
         expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
     });
 
+    test('parking is visually a no-op: layout held by a spacer, container pinned in place', () => {
+        // Regression seen live on a merchant's stage: the first version appended
+        // the parked container to <body>, so for the whole AJAX roundtrip the
+        // iframe sat at the bottom of the page and the slot it left collapsed to
+        // zero height - everything below shifted up, then snapped back. On a
+        // store that refreshes often that reads as the iframe "bouncing around".
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+
+        $(document.body).trigger('update_checkout');
+
+        // The slot keeps a spacer where the container was, so nothing below moves.
+        expect($('#briqpay-iframe-slot .briqpay-iframe-spacer').length).toBe(1);
+        // The container is pinned out of flow at its former coordinates.
+        expect($('#briqpay-iframe-container').css('position')).toBe('absolute');
+
+        $(document.body).trigger('updated_checkout');
+        jest.runAllTimers();
+
+        // Restored: pinning undone, spacer gone, back in normal flow inside the slot.
+        expect($('#briqpay-iframe-container').css('position')).not.toBe('absolute');
+        expect($('.briqpay-iframe-spacer').length).toBe(0);
+        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
+    });
+
+    test('a deadline restore also removes the spacer the slot was never replaced to clear', () => {
+        // If updated_checkout never arrives, WooCommerce never replaced the slot,
+        // so the spacer is still in it. Restoring without removing it would put
+        // the container back beneath a blank gap.
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+
+        $(document.body).trigger('update_checkout');
+        expect($('.briqpay-iframe-spacer').length).toBe(1);
+
+        jest.advanceTimersByTime(10000);
+
+        expect($('.briqpay-iframe-spacer').length).toBe(0);
+        expect($('#briqpay-iframe-container').css('position')).not.toBe('absolute');
+        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
+    });
+
     test('parking is a no-op with nothing live in the container yet', () => {
         // The very first render, or any point before a session exists: nothing to
         // protect, and detaching an empty container would just be pointless work.

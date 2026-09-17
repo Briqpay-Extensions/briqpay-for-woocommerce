@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.14
+Stable tag: 1.1.15
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,9 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.15 =
+* Fix: On the classic and B2B checkout, the payment window visibly jumped on every checkout refresh, and everything below it shifted up and snapped back. Regression in 1.1.14: to survive WooCommerce rebuilding the payment box, that release moved the live iframe out of the box for the duration of the refresh - but simply moved it to the end of the page, so for the whole request the iframe sat at the bottom of the page while the space it had left collapsed to nothing. On a store that refreshes the checkout often (a VAT plugin validating in the background, for instance) that reads as the payment window bouncing around. The move is now invisible: the space it leaves is held open at exactly its height, and the iframe itself is pinned at precisely the position it occupied, so nothing on the page moves at any point. The iframe still survives the refresh untouched, as 1.1.14 intended. Confirmed against the bounce reproduced live, before and after.
 
 = 1.1.14 =
 * Fix: Correcting a queued session sync during checkout produced a visible resume-then-suspend flicker in the payment window. The code released the iframe (which Briqpay's SDK refreshes on) before checking whether another update was already waiting, so a second update queued up behind the first immediately suspended it again a moment later. The iframe now stays suspended across the whole queue and is only released once, after the last update in it has actually finished.
