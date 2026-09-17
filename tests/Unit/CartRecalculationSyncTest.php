@@ -34,7 +34,7 @@ use Mockery;
  * context. Session_Manager is overload-mocked throughout, since the actual
  * payload building and network call are its own responsibility and are
  * covered by its own test suite - here every test asserts only whether
- * update_session() was reached, which is what the hook's own logic decides.
+ * sync_if_changed() was reached, which is what the hook's own logic decides.
  *
  * @runTestsInSeparateProcess
  * @preserveGlobalState disabled
@@ -108,7 +108,7 @@ class CartRecalculationSyncTest extends TestCase
     public function testSyncsWhenEverythingSaysThisIsALiveBriqpayCheckout(): void
     {
         $this->mockConditions();
-        $this->sessionManager->shouldReceive('update_session')->once()->with('sess_123')
+        $this->sessionManager->shouldReceive('sync_if_changed')->once()->with('sess_123')
             ->andReturn(array('sessionId' => 'sess_123'));
 
         $this->invoke();
@@ -124,7 +124,7 @@ class CartRecalculationSyncTest extends TestCase
         // from the browser's initial call moments later; doing it here too
         // would add a synchronous Briqpay round trip to that page's first paint.
         $this->mockConditions(array('doing_ajax' => false));
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -134,7 +134,7 @@ class CartRecalculationSyncTest extends TestCase
         // Creating one is the browser-triggered flow's job - it has to hand
         // back a snippet to render, which this hook has no request to answer.
         $this->mockConditions(array('session_id' => null));
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -144,7 +144,7 @@ class CartRecalculationSyncTest extends TestCase
         // A product page or a mini-cart widget also calls calculate_totals();
         // neither has anything to do with an in-progress payment.
         $this->mockConditions(array('is_checkout' => false));
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -152,7 +152,7 @@ class CartRecalculationSyncTest extends TestCase
     public function testDoesNotSyncOnTheOrderReceivedPage(): void
     {
         $this->mockConditions(array('is_order_received_page' => true));
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -163,7 +163,7 @@ class CartRecalculationSyncTest extends TestCase
         // shortcode's force_is_checkout filter) - is_cart() is the
         // authoritative exclusion, matching enqueue_critical_assets() above.
         $this->mockConditions(array('is_cart' => true));
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -171,7 +171,7 @@ class CartRecalculationSyncTest extends TestCase
     public function testDoesNotSyncWhenAnotherGatewayIsChosen(): void
     {
         $this->mockConditions(array('chosen_payment_method' => 'cod'));
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -180,7 +180,7 @@ class CartRecalculationSyncTest extends TestCase
     {
         $this->mockConditions();
         WP_Mock::onFilter('briqpay_sync_on_cart_recalculation')->with(true)->reply(false);
-        $this->sessionManager->shouldReceive('update_session')->never();
+        $this->sessionManager->shouldReceive('sync_if_changed')->never();
 
         $this->invoke();
     }
@@ -197,7 +197,7 @@ class CartRecalculationSyncTest extends TestCase
     public function testASessionManagerExceptionDoesNotEscapeTheHook(): void
     {
         $this->mockConditions();
-        $this->sessionManager->shouldReceive('update_session')->once()
+        $this->sessionManager->shouldReceive('sync_if_changed')->once()
             ->andThrow(new \RuntimeException('API unreachable'));
 
         $this->invoke();
@@ -206,14 +206,14 @@ class CartRecalculationSyncTest extends TestCase
     }
 
     /**
-     * update_session() returning a WP_Error (the normal failure path, not an
+     * sync_if_changed() returning a WP_Error (the normal failure path, not an
      * exception) must be logged and stepped over the same way.
      */
     public function testAWpErrorFromUpdateSessionDoesNotEscapeTheHook(): void
     {
         $this->mockConditions();
         WP_Mock::userFunction('is_wp_error', array('return' => true));
-        $this->sessionManager->shouldReceive('update_session')->once()
+        $this->sessionManager->shouldReceive('sync_if_changed')->once()
             ->andReturn(new \WP_Error('x', 'nope'));
 
         $this->invoke();
@@ -222,7 +222,7 @@ class CartRecalculationSyncTest extends TestCase
     }
 
     /**
-     * update_session() never itself recalculates the cart, so this should be
+     * sync_if_changed() never itself recalculates the cart, so this should be
      * unreachable in practice - the guard exists for a future change elsewhere
      * that might accidentally make it recurse.
      */
@@ -239,7 +239,7 @@ class CartRecalculationSyncTest extends TestCase
         // self-call pattern (the mocked method's own return callback invoking
         // the method under test again) does not appear to track correctly.
         $calls = 0;
-        $this->sessionManager->shouldReceive('update_session')->andReturnUsing(function () use ($handler, &$calls) {
+        $this->sessionManager->shouldReceive('sync_if_changed')->andReturnUsing(function () use ($handler, &$calls) {
             $calls++;
             // A second recalculation happening while the first sync from this
             // hook is still "in flight".

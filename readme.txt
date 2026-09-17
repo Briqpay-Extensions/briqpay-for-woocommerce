@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.13
+Stable tag: 1.1.14
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,11 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.14 =
+* Fix: Correcting a queued session sync during checkout produced a visible resume-then-suspend flicker in the payment window. The code released the iframe (which Briqpay's SDK refreshes on) before checking whether another update was already waiting, so a second update queued up behind the first immediately suspended it again a moment later. The iframe now stays suspended across the whole queue and is only released once, after the last update in it has actually finished.
+* Fix: The background session-reconciliation hook added in 1.1.13 called the same method the browser's own sync uses to decide whether anything needs sending - but that method's shortcut for "nothing changed, skip" only applies when the caller can prove the browser already has this exact session on screen, which a server-side hook reacting to a WordPress action never can. It therefore sent a PATCH to Briqpay on every single recalculation regardless of whether anything had actually changed, rather than the occasional one the earlier release described. Added a purpose-built method for a caller with no browser response to answer, whose shortcut depends on nothing but whether the payment-relevant data actually changed.
+* Fix: On the classic and B2B checkout layouts, WooCommerce rebuilds the entire payment methods box - every gateway's own fields included - on every single checkout refresh, unconditionally, by core design; a payment plugin has no way to opt a specific gateway out of it. That meant the Briqpay iframe was destroyed and rebuilt from scratch on every address, shipping or coupon change, not only losing the SDK's own state but, in principle, any card details a customer had already started typing directly into it. The live iframe now lives in a separate, permanent element that is pulled out of the payment box just before WooCommerce replaces it and moved back the instant the replacement finishes - a same-document move, so the iframe itself is never actually removed from the page and is never rebuilt. Not applicable to the WooCommerce Checkout Block, which renders and updates its payment area a different way that was never affected by this.
 
 = 1.1.13 =
 * Fix: A VAT-exempt line was sent to Briqpay claiming the product's normal tax rate - `taxRate` 2500 next to a VAT amount of zero - because the rate was looked up from the product's tax class, which says what the product would be taxed at rather than what this customer was actually charged. The rate now comes from the tax applied to the line, so an exempt customer, a zero-rated product and a store with tax switched off all report zero, as they always should have. Coupon lines read the rate the same way. Note that a cart mixing several VAT rates still reports its whole discount at the first line's rate.

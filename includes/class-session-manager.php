@@ -397,6 +397,75 @@ class Session_Manager
     }
 
     /**
+     * Reconcile the session ONLY if something billing-relevant actually
+     * changed, for a caller with no browser response to answer.
+     *
+     * update_session() only skips its PATCH when the caller can prove the
+     * browser already has this exact session rendered - either an
+     * $existing_session it was already holding, or a client_session_id it
+     * was told matches. A background caller (a fresh Session_Manager
+     * instance, reacting to a WordPress hook rather than a browser request)
+     * has neither, so calling update_session() from one always falls through
+     * to "patch anyway to obtain a snippet" and sends a wire-identical PATCH
+     * on every single call, regardless of whether anything changed. This
+     * method is the equivalent for a caller that needs neither branch: it
+     * never fetches or requires a snippet, so the hash comparison alone is
+     * enough to decide whether to send anything at all.
+     *
+     * @param string $session_id
+     * @return array|\WP_Error|null The API response, an error, or null when
+     *                               the payload was unchanged and nothing
+     *                               was sent.
+     */
+    public function sync_if_changed($session_id)
+    {
+        $data = $this->get_session_data(true);
+
+        /**
+         * Filter the update payload before this background PATCH.
+         *
+         * The same filter update_session() applies to its own PATCH, so
+         * anything that customises that payload applies here too.
+         *
+         * @param array  $data       Update payload.
+         * @param string $session_id Briqpay session ID.
+         */
+        $data = apply_filters('briqpay_update_session_data', $data, $session_id);
+
+        $new_hash = md5(wp_json_encode($data));
+        $stored_hash = null !== WC()->session ? WC()->session->get('briqpay_payload_hash') : null;
+
+        if ($stored_hash === $new_hash) {
+            Logger::log('Background sync: payload hash unchanged, skipping PATCH.');
+            return null;
+        }
+
+        /**
+         * Action before a Briqpay session is updated.
+         *
+         * @param string $session_id Briqpay session ID.
+         * @param array  $data       Update payload.
+         */
+        do_action('briqpay_before_update_session', $session_id, $data);
+
+        $result = $this->get_api()->update_session($session_id, $data);
+
+        if (!is_wp_error($result) && isset($result['sessionId']) && null !== WC()->session) {
+            WC()->session->set('briqpay_payload_hash', $new_hash);
+        }
+
+        /**
+         * Action after a Briqpay session is updated.
+         *
+         * @param array|WP_Error $result     API response.
+         * @param string         $session_id Briqpay session ID.
+         */
+        do_action('briqpay_after_update_session', $result, $session_id);
+
+        return $result;
+    }
+
+    /**
      * Prepare Session Data
      */
     public function get_session_data($update = false)

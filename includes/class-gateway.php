@@ -322,11 +322,22 @@ class Gateway extends \WC_Payment_Gateway
 
     /**
      * Output the container for the Briqpay iframe.
+     *
+     * This markup is disposable by design - WooCommerce calls payment_fields()
+     * again, from scratch, on every single order-review refresh for every
+     * gateway (core behaviour, not something a payment plugin can opt out of),
+     * and replaces the WHOLE .woocommerce-checkout-payment box wholesale each
+     * time. The id is deliberately "slot", not "container": the live iframe
+     * itself is a separate, persistent element checkout.js creates once and
+     * only ever relocates into whichever slot currently exists - see
+     * parkContainer()/restoreContainer() there for why a fresh, empty div here
+     * on every refresh is fine, and a container the iframe actually lives in
+     * being one and the same as this div would not be.
      */
     public function payment_fields()
     {
         Logger::log('payment_fields() called.');
-        echo '<div id="briqpay-iframe-container"></div>';
+        echo '<div id="briqpay-iframe-slot"></div>';
     }
 
     /**

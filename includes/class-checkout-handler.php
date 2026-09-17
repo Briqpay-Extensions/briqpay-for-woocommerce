@@ -2187,11 +2187,15 @@ class Checkout_Handler
      * calculate cart totals (a product page, a mini-cart widget) would call
      * the Briqpay API from pages with nothing to do with paying at all.
      *
-     * Update_session() already skips the network call when the payload has
-     * not actually changed (a hash comparison, no API round trip), so running
-     * this on every recalculation - including ones with nothing new to send,
-     * or a second time within a request that also syncs some other way -
-     * costs a cheap in-memory comparison, not a wasted HTTP call.
+     * Calls Session_Manager::sync_if_changed() rather than the ordinary
+     * update_session() - that method only skips its PATCH when the caller can
+     * prove the browser already has this exact session rendered, which a
+     * background caller reacting to a WordPress hook never can. sync_if_changed()
+     * is the equivalent for a caller that needs no snippet: the hash
+     * comparison alone decides whether to send anything, so running this on
+     * every recalculation - including ones with nothing new to send, or a
+     * second time within a request that also syncs some other way - costs a
+     * cheap in-memory comparison, not a wasted HTTP call.
      *
      * @param \WC_Cart $cart WooCommerce cart, already recalculated.
      * @return void
@@ -2258,9 +2262,11 @@ class Checkout_Handler
         $syncing = true;
 
         try {
-            $result = (new Session_Manager())->update_session($session_id);
+            $result = (new Session_Manager())->sync_if_changed($session_id);
 
-            if (is_wp_error($result)) {
+            // null means sync_if_changed() found nothing to send - the
+            // common case on most recalculations - which is not a failure.
+            if (null !== $result && is_wp_error($result)) {
                 // Best-effort. A failure here is not fatal - it means this
                 // particular backstop attempt did not land, not that the
                 // customer's checkout is broken: the browser's own sync, and
@@ -3374,12 +3380,15 @@ class Checkout_Handler
     }
     /**
      * Render Briqpay Iframe Shortcode
-     * 
+     *
+     * A "slot", not the container the live iframe lives in - see
+     * Gateway::payment_fields() for why.
+     *
      * @return string
      */
     public function render_briqpay_iframe()
     {
-        return '<div id="briqpay-iframe-container"></div>';
+        return '<div id="briqpay-iframe-slot"></div>';
     }
 
     /**

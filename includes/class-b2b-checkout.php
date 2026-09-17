@@ -484,7 +484,9 @@ class B2b_Checkout
                         </div>
                     </div>
                     <div class="briqpay-b2b-iframe-column">
-                        <div id="briqpay-iframe-container">
+                        <?php // See Gateway::payment_fields() for why this is a "slot", not the
+                        // container the live iframe actually lives in. ?>
+                        <div id="briqpay-iframe-slot">
                             <div class="briqpay-loader" style="text-align: center; padding: 50px;">
                                 <span class="spinner is-active" style="float: none;"></span>
                                 <p><?php esc_html_e('Loading payment...', 'briqpay-for-woocommerce'); ?></p>

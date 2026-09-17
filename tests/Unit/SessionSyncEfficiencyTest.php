@@ -269,6 +269,93 @@ class SessionSyncEfficiencyTest extends TestCase
     }
 
     // ──────────────────────────────────────────────────────────────────────
+    // sync_if_changed() - the same skip, for a caller with no browser
+    // response to answer and therefore no snippet to fall back on
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * A background caller (a fresh Session_Manager reacting to a WordPress
+     * hook, not a browser request) can never satisfy update_session()'s two
+     * ways of proving the browser already holds this session - it has no
+     * $existing_session and never calls set_client_session_id(). Calling
+     * update_session() from one therefore always falls through to "patch
+     * anyway to obtain a snippet" and PATCHes on every single call, even when
+     * nothing changed. sync_if_changed() exists because its skip must stand
+     * on the hash alone, with nothing else gating it - the same defect this
+     * file's earlier tests already pin for update_session() itself.
+     */
+    public function testTheSkipStandsOnTheHashAloneWithNothingElseGatingIt(): void
+    {
+        $body = $this->methodBody('sync_if_changed');
+
+        $this->assertStringContainsString('if ($stored_hash === $new_hash) {', $body);
+        $this->assertStringNotContainsString('$existing_session', $body);
+        $this->assertStringNotContainsString('client_session_id', $body);
+    }
+
+    public function testSkippingReturnsNullRatherThanAnAmbiguousValue(): void
+    {
+        $body = $this->methodBody('sync_if_changed');
+
+        $skip_pos = strpos($body, 'if ($stored_hash === $new_hash) {');
+        $return_pos = strpos($body, 'return null;');
+
+        $this->assertNotFalse($skip_pos);
+        $this->assertNotFalse($return_pos);
+        $this->assertGreaterThan($skip_pos, $return_pos);
+        $this->assertLessThan(
+            $return_pos,
+            $skip_pos,
+            'The null return must sit behind the skip condition, not be reachable another way.'
+        );
+    }
+
+    /**
+     * A caller with nothing to render must never trigger the "fetch again for
+     * a fresh snippet" behaviour update_session() has - that would make this
+     * method exactly as wasteful as the one it exists to avoid.
+     */
+    public function testNeverFetchesOrNeedsASnippet(): void
+    {
+        $body = $this->methodBody('sync_if_changed');
+
+        $this->assertStringNotContainsString('htmlSnippet', $body);
+        $this->assertStringNotContainsString('get_session(', $body);
+    }
+
+    /**
+     * A successful send must still update the stored hash, or the very next
+     * call - possibly moments later, from the same unchanged cart - PATCHes
+     * again for no reason.
+     */
+    public function testASuccessfulSendStoresTheNewHash(): void
+    {
+        $body = $this->methodBody('sync_if_changed');
+
+        $this->assertStringContainsString("WC()->session->set('briqpay_payload_hash', \$new_hash)", $body);
+    }
+
+    /**
+     * Same reasoning as testTheSeededHashMirrorsTheUpdateComputation() above:
+     * a hash computed a different way from update_session()'s never matches,
+     * and the skip is dead for a second reason.
+     */
+    public function testTheHashMirrorsTheUpdateComputationHere(): void
+    {
+        $sync = $this->methodBody('sync_if_changed');
+        $update = $this->methodBody('update_session');
+
+        foreach (array(
+            '$this->get_session_data(true)',
+            "apply_filters('briqpay_update_session_data', \$data, \$session_id)",
+            'md5(wp_json_encode($data))',
+        ) as $fragment) {
+            $this->assertStringContainsString($fragment, $sync, 'sync_if_changed() must mirror: ' . $fragment);
+            $this->assertStringContainsString($fragment, $update, 'Sanity - update_session() really does use: ' . $fragment);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
     // Gateway availability is resolved once per request
     // ──────────────────────────────────────────────────────────────────────
 

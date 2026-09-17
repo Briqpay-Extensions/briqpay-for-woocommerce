@@ -30,10 +30,20 @@ window.briqpayCheckout = {
     // Absolute deadline for releasing a deferred decision. Armed once, never
     // re-armed - see _armDecisionDeadline().
     _pendingDecisionTimer: null,
+    // True while the live container is parked outside the payment box during
+    // an in-flight WooCommerce refresh - see parkContainer()/restoreContainer().
+    _containerParked: false,
+    _containerRestoreTimer: null,
 
     init: function () {
         const $ = jQuery;
         $(document.body).on('update_checkout', this.onWooUpdateStarted.bind(this));
+        // Pull the live container out BEFORE WooCommerce replaces the payment
+        // box, and put it back the moment the replacement finishes - registered
+        // ahead of onCartRecalculated so the container is back in place before
+        // initOrUpdate() (which onCartRecalculated leads to) looks at it.
+        $(document.body).on('update_checkout', this.parkContainer.bind(this));
+        $(document.body).on('updated_checkout', this.restoreContainer.bind(this));
         $(document.body).on('updated_checkout', this.onCartRecalculated.bind(this));
         $(document.body).on('checkout_error', this.onCheckoutError.bind(this));
         $(document.body).on('applied_coupon_in_checkout removed_coupon_in_checkout', function () {
@@ -230,6 +240,115 @@ window.briqpayCheckout = {
         this.initOrUpdate();
     },
 
+    /**
+     * Find or create the persistent element the live iframe actually lives in,
+     * inserting it into the current disposable slot if it does not exist yet
+     * (the very first render, or any state where it was lost some other way).
+     *
+     * "Find or create" rather than "always create": creating a fresh one
+     * unconditionally would be exactly the destroy-and-recreate this whole
+     * mechanism exists to avoid.
+     *
+     * @return jQuery The container, already in the DOM. Empty result only
+     *                 when there is no slot to put one in either (e.g. Blocks,
+     *                 which never renders #briqpay-iframe-slot at all).
+     */
+    ensureContainer: function () {
+        const $ = jQuery;
+        var $container = $('#briqpay-iframe-container');
+
+        if ($container.length) {
+            return $container;
+        }
+
+        var $slot = $('#briqpay-iframe-slot');
+        if (!$slot.length) {
+            return $container; // empty jQuery set
+        }
+
+        $container = $('<div id="briqpay-iframe-container"></div>');
+        $slot.empty().append($container);
+        return $container;
+    },
+
+    /**
+     * Pull the live container out of the payment box before WooCommerce
+     * replaces it.
+     *
+     * WooCommerce rebuilds the ENTIRE .woocommerce-checkout-payment box - every
+     * gateway's own fields included - on every single order-review refresh,
+     * unconditionally, by core design; a payment plugin has no way to opt a
+     * specific gateway out of that. Doing it by replacing that box's markup
+     * wholesale (not just updating what changed) means anything living inside
+     * it, including a live Briqpay iframe with a customer mid-typing a card
+     * number, is destroyed and rebuilt from scratch along with everything else.
+     *
+     * update_checkout is the event WooCommerce's own checkout.js listens for to
+     * START a refresh, so it fires strictly before any replacement happens -
+     * the only point with a genuine "before" to act on. Detaching here (not
+     * merely hiding) and reattaching after the replacement in restoreContainer()
+     * means the container is never a descendant of .woocommerce-checkout-payment
+     * at the moment WooCommerce actually replaces it - which is the only way
+     * an iframe survives a same-document DOM move: it must never be REMOVED
+     * from the document at all, even briefly, only relocated within it.
+     */
+    parkContainer: function () {
+        const $ = jQuery;
+
+        if (this._containerParked) {
+            return; // A second update_checkout before the first settles.
+        }
+
+        var $container = $('#briqpay-iframe-container');
+        if (!$container.length || !$container.children().length) {
+            return; // Nothing live to protect yet.
+        }
+
+        this._containerParked = true;
+        $(document.body).append($container.detach());
+
+        // updated_checkout is not guaranteed to arrive - a failed or superseded
+        // request can leave it unfired, the same reasoning as the payment
+        // deferral's own deadline. Restoring late is recoverable; leaving the
+        // payment box permanently blank is not.
+        var self = this;
+        clearTimeout(this._containerRestoreTimer);
+        this._containerRestoreTimer = setTimeout(function () {
+            self.restoreContainer();
+        }, 10000);
+    },
+
+    /**
+     * Move the parked container back into the current slot.
+     *
+     * The iframe inside it was never removed from the document by
+     * parkContainer() (only relocated, to document.body, which is why this
+     * works at all) and is not touched here either - restoring is just moving
+     * the same live element back to where it visually belongs, exactly as it
+     * was before the refresh.
+     */
+    restoreContainer: function () {
+        const $ = jQuery;
+
+        clearTimeout(this._containerRestoreTimer);
+        this._containerRestoreTimer = null;
+
+        if (!this._containerParked) {
+            return;
+        }
+        this._containerParked = false;
+
+        var $container = $('#briqpay-iframe-container');
+        var $slot = $('#briqpay-iframe-slot');
+
+        if ($container.length && $slot.length) {
+            $slot.empty().append($container);
+        }
+        // No slot found (Briqpay no longer rendered/selected) leaves the
+        // container parked at document.body; initOrUpdate()'s own existing
+        // checks (hasSession/hasIframe) take it from there next time it runs.
+    },
+
     initOrUpdate: function (data) {
         const $ = jQuery;
         var $container = $('#briqpay-iframe-container');
@@ -320,7 +439,9 @@ window.briqpayCheckout = {
                         window.briqpayCheckout.session = response.data.sessionId;
                         // Cached so a fragment refresh can redraw without a request.
                         window.briqpayCheckout._lastSnippet = snippet;
-                        $('#briqpay-iframe-container').html(snippet);
+                        // ensureContainer() rather than assuming it already exists:
+                        // the very first render has only the disposable slot so far.
+                        window.briqpayCheckout.ensureContainer().html(snippet);
                         window.briqpayCheckout.attachListeners();
                     } else {
                         // Success with no snippet leaves an empty checkout, and this
@@ -429,7 +550,7 @@ window.briqpayCheckout = {
 
                         window.briqpayCheckout.session = response.data.sessionId;
                         if (response.data.htmlSnippet) {
-                            $('#briqpay-iframe-container').html(response.data.htmlSnippet);
+                            window.briqpayCheckout.ensureContainer().html(response.data.htmlSnippet);
                             window.briqpayCheckout.listenersAttached = false;
 
                             // A brand-new iframe was just inserted, so the SDK does
@@ -470,9 +591,16 @@ window.briqpayCheckout = {
      * never decided against a session that is about to be updated again.
      */
     _finishUpdate: function () {
-        this.resume();
         this._isUpdating = false;
 
+        // Run a queued update WITHOUT resuming first. Briqpay's SDK documents
+        // resume() as refreshing the iframe's rendered data - resuming only to
+        // suspend again a moment later for the queued sync produced a visible
+        // resume -> suspend -> resume flicker, settling the iframe on data
+        // that was already known stale the instant it appeared. Resume once,
+        // only after the last queued update has actually run - matching the
+        // existing behaviour just below, which already withholds a pending
+        // decision the same way until this same "no more queue" point.
         if (this._queuedUpdate) {
             var queued = this._queuedUpdate;
             this._queuedUpdate = null;
@@ -480,6 +608,7 @@ window.briqpayCheckout = {
             return;
         }
 
+        this.resume();
         this._processPendingDecision();
     },
 
