@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.15
+Stable tag: 1.1.16
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,10 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.16 =
+* Fix: The payment window reloaded twice on every single checkout refresh, which is what was visible as it bouncing. 1.1.14 and 1.1.15 tried to protect the iframe from WooCommerce rebuilding the payment box by lifting it out just before and putting it back just after. Measured on a live checkout, each of those two moves reloaded it: taking an element out of the page, even for an instant, throws away the iframe inside it, and it starts again from scratch when it goes back. The element itself survived the trip, which is why the earlier check said it was fine, and why 1.1.15's attempt to stop the movement being visible could not help - the reload was the problem, not the movement. The iframe is now created once and never moved again for the life of the page, living outside the payment box entirely and simply kept lined up with the spot it belongs in. WooCommerce is free to rebuild that box as often as it likes. Verified by counting actual reloads through repeated refreshes: previously two per refresh, now none at all.
+* Fix: The payment window no longer locks and unlocks constantly while filling in the checkout. It was suspended for the duration of every session sync, including the great majority that finish in a fraction of a second having found nothing to change. The pause now waits a moment before taking effect, so those never lock the window at all, while any update that genuinely reaches Briqpay still suspends exactly as before, well before an amount could change under the customer.
 
 = 1.1.15 =
 * Fix: On the classic and B2B checkout, the payment window visibly jumped on every checkout refresh, and everything below it shifted up and snapped back. Regression in 1.1.14: to survive WooCommerce rebuilding the payment box, that release moved the live iframe out of the box for the duration of the refresh - but simply moved it to the end of the page, so for the whole request the iframe sat at the bottom of the page while the space it had left collapsed to nothing. On a store that refreshes the checkout often (a VAT plugin validating in the background, for instance) that reads as the payment window bouncing around. The move is now invisible: the space it leaves is held open at exactly its height, and the iframe itself is pinned at precisely the position it occupied, so nothing on the page moves at any point. The iframe still survives the refresh untouched, as 1.1.14 intended. Confirmed against the bounce reproduced live, before and after.

@@ -30,20 +30,21 @@ window.briqpayCheckout = {
     // Absolute deadline for releasing a deferred decision. Armed once, never
     // re-armed - see _armDecisionDeadline().
     _pendingDecisionTimer: null,
-    // True while the live container is parked outside the payment box during
-    // an in-flight WooCommerce refresh - see parkContainer()/restoreContainer().
-    _containerParked: false,
-    _containerRestoreTimer: null,
+    // Set once the permanently-mounted container has its position observers
+    // attached - see watchContainerPosition().
+    _containerWatched: false,
+    // Pending deferred suspend - see suspendSoon().
+    _suspendTimer: null,
 
     init: function () {
         const $ = jQuery;
         $(document.body).on('update_checkout', this.onWooUpdateStarted.bind(this));
-        // Pull the live container out BEFORE WooCommerce replaces the payment
-        // box, and put it back the moment the replacement finishes - registered
-        // ahead of onCartRecalculated so the container is back in place before
-        // initOrUpdate() (which onCartRecalculated leads to) looks at it.
-        $(document.body).on('update_checkout', this.parkContainer.bind(this));
-        $(document.body).on('updated_checkout', this.restoreContainer.bind(this));
+        // WooCommerce has just rebuilt the payment box, so the slot is a brand
+        // new element in a possibly different place. Re-align the (never moved,
+        // never reloaded) container with it. Registered ahead of
+        // onCartRecalculated, and synchronous, so the browser never paints the
+        // moment between the box being replaced and the container lining up.
+        $(document.body).on('updated_checkout', this.syncContainerPosition.bind(this));
         $(document.body).on('updated_checkout', this.onCartRecalculated.bind(this));
         $(document.body).on('checkout_error', this.onCheckoutError.bind(this));
         $(document.body).on('applied_coupon_in_checkout removed_coupon_in_checkout', function () {
@@ -263,137 +264,118 @@ window.briqpayCheckout = {
 
         var $slot = $('#briqpay-iframe-slot');
         if (!$slot.length) {
-            return $container; // empty jQuery set
+            return $container; // empty jQuery set (Blocks has its own container)
         }
 
+        // Mounted on <body>, ONCE, and never moved again.
+        //
+        // The iframe cannot live inside the payment box. WooCommerce replaces
+        // that box wholesale on every checkout refresh, and earlier releases
+        // tried to survive it by detaching the container just before and
+        // reattaching just after. Measured on a live checkout, that cost TWO
+        // iframe loads per refresh: detaching a node removes it from the
+        // document, and removing an iframe discards its browsing context, so
+        // it reloads from scratch when reattached. The element object survives
+        // the round trip, which is why an identity check said it was fine; the
+        // iframe inside it did not. That reloading is what the merchant saw as
+        // the payment window bouncing.
+        //
+        // So it is never moved at all. It sits on <body> for the life of the
+        // page, positioned over the slot by syncContainerPosition(), which the
+        // payment box is free to destroy and rebuild as often as it likes.
         $container = $('<div id="briqpay-iframe-container"></div>');
-        $slot.empty().append($container);
+        $(document.body).append($container);
+
+        this.watchContainerPosition();
+        this.syncContainerPosition();
+
         return $container;
     },
 
     /**
-     * Pull the live container out of the payment box before WooCommerce
-     * replaces it.
+     * Keep the permanently-mounted container sitting exactly over the slot.
      *
-     * WooCommerce rebuilds the ENTIRE .woocommerce-checkout-payment box - every
-     * gateway's own fields included - on every single order-review refresh,
-     * unconditionally, by core design; a payment plugin has no way to opt a
-     * specific gateway out of that. Doing it by replacing that box's markup
-     * wholesale (not just updating what changed) means anything living inside
-     * it, including a live Briqpay iframe with a customer mid-typing a card
-     * number, is destroyed and rebuilt from scratch along with everything else.
-     *
-     * update_checkout is the event WooCommerce's own checkout.js listens for to
-     * START a refresh, so it fires strictly before any replacement happens -
-     * the only point with a genuine "before" to act on. Detaching here (not
-     * merely hiding) and reattaching after the replacement in restoreContainer()
-     * means the container is never a descendant of .woocommerce-checkout-payment
-     * at the moment WooCommerce actually replaces it - which is the only way
-     * an iframe survives a same-document DOM move: it must never be REMOVED
-     * from the document at all, even briefly, only relocated within it.
+     * The slot is the disposable div payment_fields() renders inside the
+     * payment box: it marks where the iframe belongs, reserves its height so
+     * the surrounding layout is correct, and is replaced on every refresh.
+     * Nothing of value lives in it.
      */
-    parkContainer: function () {
-        const $ = jQuery;
+    syncContainerPosition: function () {
+        var container = document.getElementById('briqpay-iframe-container');
+        var slot = document.getElementById('briqpay-iframe-slot');
 
-        if (this._containerParked) {
-            return; // A second update_checkout before the first settles.
+        if (!container || !slot) {
+            return;
         }
 
-        var $container = $('#briqpay-iframe-container');
-        if (!$container.length || !$container.children().length) {
-            return; // Nothing live to protect yet.
+        var sr = slot.getBoundingClientRect();
+
+        // A hidden payment box (another gateway selected, or the box collapsed)
+        // measures zero. Positioning against that would strand the iframe at
+        // the top of the document, so leave it where it is and hide it instead.
+        if (!sr.width && !sr.height) {
+            container.style.visibility = 'hidden';
+            return;
         }
 
-        this._containerParked = true;
+        container.style.visibility = '';
 
-        // Parking must be visually a no-op. The first version simply appended
-        // the container to <body>, which for the whole AJAX roundtrip put the
-        // iframe at the bottom of the page and collapsed the slot it had left
-        // to zero height - so on every refresh the iframe jumped and everything
-        // below the payment box shifted up by the iframe's height, then snapped
-        // back. On a store that refreshes often that reads as the iframe
-        // "bouncing around". Two things prevent it:
+        // Relative to <body>'s own box, so this holds whether or not a theme
+        // gives <body> a position of its own.
+        var br = document.body.getBoundingClientRect();
+
+        container.style.position = 'absolute';
+        container.style.top = (sr.top - br.top) + 'px';
+        container.style.left = (sr.left - br.left) + 'px';
+        container.style.width = sr.width + 'px';
+
+        // The container is out of flow, so the slot has to hold its height or
+        // everything below the payment box sits too high.
         //
-        //  1. A spacer left behind in the slot, the container's exact height,
-        //     so the layout below does not move while the container is away.
-        //     It dies with the slot when WooCommerce replaces it, which is fine.
-        //  2. The parked container pinned with position:absolute at the exact
-        //     document coordinates it occupied, same width, so it keeps
-        //     rendering in precisely the same place. Coordinates are taken
-        //     relative to <body>'s own box so this holds whether or not a theme
-        //     gives <body> position:relative.
-        //
-        // restoreContainer() runs synchronously inside WooCommerce's own
-        // response handler, in the same task as its fragment replacement, so
-        // the browser never paints the in-between state either.
-        var rect = $container[0].getBoundingClientRect();
-        var bodyRect = document.body.getBoundingClientRect();
-
-        var $spacer = $('<div class="briqpay-iframe-spacer" aria-hidden="true"></div>')
-            .css('height', rect.height + 'px');
-        $container.after($spacer);
-
-        $container.detach().css({
-            position: 'absolute',
-            top: (rect.top - bodyRect.top) + 'px',
-            left: (rect.left - bodyRect.left) + 'px',
-            width: rect.width + 'px',
-            margin: '0',
-            zIndex: '1'
-        });
-        $(document.body).append($container);
-
-        // updated_checkout is not guaranteed to arrive - a failed or superseded
-        // request can leave it unfired, the same reasoning as the payment
-        // deferral's own deadline. Restoring late is recoverable; leaving the
-        // payment box permanently blank is not.
-        var self = this;
-        clearTimeout(this._containerRestoreTimer);
-        this._containerRestoreTimer = setTimeout(function () {
-            self.restoreContainer();
-        }, 10000);
+        // Measured AFTER the positioning above, and that order is load-bearing.
+        // Briqpay's own wrapper inside the container carries a bottom margin.
+        // While the container is in normal flow that margin collapses out of it
+        // and takes up space in the payment box; once the container is
+        // absolutely positioned it establishes its own formatting context and
+        // the margin is contained, making it taller. Measured on the merchant's
+        // checkout that is a 32px difference - reserve the before value and the
+        // payment box ends up 32px short, which is a layout shift on every
+        // single refresh. Measure it in its final, positioned state.
+        var height = container.offsetHeight;
+        if (height) {
+            slot.style.minHeight = height + 'px';
+        }
     },
 
     /**
-     * Move the parked container back into the current slot.
-     *
-     * The iframe inside it was never removed from the document by
-     * parkContainer() (only relocated, to document.body, which is why this
-     * works at all) and is not touched here either - restoring is just moving
-     * the same live element back to where it visually belongs, exactly as it
-     * was before the refresh.
+     * Re-sync whenever anything could have moved the slot: the iframe resizing
+     * itself (Briqpay's SDK does this as the customer moves through payment),
+     * the page reflowing, or the window changing size. updated_checkout is
+     * handled separately, synchronously, so no paint happens between
+     * WooCommerce replacing the box and the container lining up with it again.
      */
-    restoreContainer: function () {
-        const $ = jQuery;
+    watchContainerPosition: function () {
+        var self = this;
 
-        clearTimeout(this._containerRestoreTimer);
-        this._containerRestoreTimer = null;
-
-        if (!this._containerParked) {
+        if (this._containerWatched) {
             return;
         }
-        this._containerParked = false;
+        this._containerWatched = true;
 
-        var $container = $('#briqpay-iframe-container');
-        var $slot = $('#briqpay-iframe-slot');
+        var sync = function () { self.syncContainerPosition(); };
 
-        // Undo the in-place pinning from parkContainer(). Always, even if there
-        // is no slot to return to - a container left position:absolute at stale
-        // coordinates would be worse than one simply sitting at document.body.
-        $container.css({ position: '', top: '', left: '', width: '', margin: '', zIndex: '' });
+        jQuery(window).on('resize.briqpay orientationchange.briqpay', sync);
 
-        // The spacer normally dies with the slot WooCommerce replaced. If the
-        // slot was never replaced (the deadline fired instead), it is still
-        // there and must go, or the container returns beneath a blank gap.
-        $('.briqpay-iframe-spacer').remove();
-
-        if ($container.length && $slot.length) {
-            $slot.empty().append($container);
+        if (typeof ResizeObserver === 'function') {
+            var ro = new ResizeObserver(sync);
+            var container = document.getElementById('briqpay-iframe-container');
+            if (container) {
+                ro.observe(container);
+            }
+            ro.observe(document.body);
         }
-        // No slot found (Briqpay no longer rendered/selected) leaves the
-        // container parked at document.body; initOrUpdate()'s own existing
-        // checks (hasSession/hasIframe) take it from there next time it runs.
     },
+
 
     initOrUpdate: function (data) {
         const $ = jQuery;
@@ -566,8 +548,9 @@ window.briqpayCheckout = {
         // update rather than be swallowed by this one.
         this._cartRecalculated = false;
 
-        // Suspend the Briqpay iframe while we update the session
-        this.suspend();
+        // Suspend the Briqpay iframe while we update the session, but only if
+        // the update actually takes long enough to be worth it - see suspendSoon().
+        this.suspendSoon();
 
         var requestData = {
             action: 'briqpay_get_session',
@@ -825,6 +808,32 @@ window.briqpayCheckout = {
         }
     },
 
+    /**
+     * Suspend, but only if this update is still running a moment from now.
+     *
+     * Most syncs are no-ops: the server compares a payload hash and answers
+     * "nothing changed" without calling Briqpay at all, typically in well
+     * under a tenth of a second. Suspending for those means the customer sees
+     * the payment window lock and unlock constantly while they fill the form
+     * in, for updates that never changed anything. Waiting a moment first
+     * means a fast no-op finishes before the suspend ever happens, while a
+     * real update - which always takes longer, since it calls Briqpay - still
+     * suspends exactly as before, well before the amount could change under
+     * the customer.
+     */
+    suspendSoon: function () {
+        var self = this;
+
+        if (this._isSuspended || this._suspendTimer) {
+            return;
+        }
+
+        this._suspendTimer = setTimeout(function () {
+            self._suspendTimer = null;
+            self.suspend();
+        }, 150);
+    },
+
     suspend: function () {
         if (this._isSuspended) return;
         if (window._briqpay && window._briqpay.v3 && typeof window._briqpay.v3.suspend === 'function') {
@@ -834,6 +843,12 @@ window.briqpayCheckout = {
     },
 
     resume: function () {
+        // Cancel a deferred suspend that has not fired yet. Without this a fast
+        // update could finish first and the suspend would land afterwards, with
+        // nothing left to resume it.
+        clearTimeout(this._suspendTimer);
+        this._suspendTimer = null;
+
         if (!this._isSuspended) return;
         if (window._briqpay && window._briqpay.v3 && typeof window._briqpay.v3.resume === 'function') {
             window._briqpay.v3.resume();

@@ -396,145 +396,117 @@ describe('Briqpay Checkout JS', () => {
         }));
     });
 
-    test('the live iframe is parked before WooCommerce replaces the payment box, and restored after', () => {
-        // The bug this exists for: WooCommerce rebuilds the WHOLE payment box on
-        // every single order-review refresh, unconditionally, for every gateway -
-        // core behaviour, not something a payment plugin can opt out of. Simulate
-        // that literally: replace the slot's markup the way WooCommerce's own
-        // fragment replacement does, and confirm the live iframe (identified by a
-        // marker property only a real, never-destroyed DOM node would still carry)
-        // survives it.
-        const liveIframe = document.createElement('iframe');
-        liveIframe.markerOnlyTheRealNodeHas = 'still alive';
-        $('#briqpay-iframe-container').empty().append(liveIframe);
+    test('the iframe is never detached, so a refresh cannot reload it', () => {
+        // The regression this replaces: park/restore detached the container
+        // before each refresh and reattached it after. Measured on a live
+        // checkout that cost TWO iframe loads per refresh, because removing an
+        // iframe from the document discards its browsing context. The element
+        // object survived, which is why an identity check called it fine. The
+        // container must now never leave the document at all.
+        $('#briqpay-iframe-container').remove();
+        window.briqpayCheckout.ensureContainer();
+
+        const container = document.getElementById('briqpay-iframe-container');
+        container.appendChild(document.createElement('iframe'));
+
+        const observer = new MutationObserver(() => {});
+        observer.observe(document.body, { childList: true, subtree: true });
 
         $(document.body).trigger('update_checkout');
-
-        // Parked: pulled out of the slot before WooCommerce's replacement runs.
-        expect(document.getElementById('briqpay-iframe-container')).not.toBeNull();
-        expect($('#briqpay-iframe-slot').find('#briqpay-iframe-container').length).toBe(0);
-
-        // WooCommerce's own replacement: the slot's ENTIRE markup is discarded and
-        // rebuilt from scratch, exactly as payment_fields() being called again
-        // does. If the container were still inside it, this line would destroy it.
-        $('#briqpay-iframe-slot').html('<div id="briqpay-iframe-slot-inner"></div>');
-
+        // WooCommerce replacing the payment box: the slot is rebuilt from scratch.
+        $('#briqpay-iframe-slot').replaceWith('<div id="briqpay-iframe-slot"></div>');
         $(document.body).trigger('updated_checkout');
         jest.runAllTimers();
 
-        // Restored into the (new) slot, and it is the SAME node - not a rebuilt one.
-        const restoredIframe = document.querySelector('#briqpay-iframe-container iframe');
-        expect(restoredIframe).not.toBeNull();
-        expect(restoredIframe.markerOnlyTheRealNodeHas).toBe('still alive');
-        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
+        // takeRecords() drains synchronously. The callback would not have run
+        // yet - MutationObserver delivers on a microtask, so disconnecting
+        // first (as an earlier version of this test did) saw nothing at all
+        // and passed even with a detach round trip reintroduced.
+        let detached = 0;
+        observer.takeRecords().forEach(r => {
+            r.removedNodes.forEach(n => { if (n === container) detached++; });
+        });
+        observer.disconnect();
+
+        expect(detached).toBe(0);
+        expect(document.getElementById('briqpay-iframe-container')).toBe(container);
+        expect(container.querySelector('iframe')).not.toBeNull();
     });
 
-    test('parking is visually a no-op: layout held by a spacer, container pinned in place', () => {
-        // Regression seen live on a merchant's stage: the first version appended
-        // the parked container to <body>, so for the whole AJAX roundtrip the
-        // iframe sat at the bottom of the page and the slot it left collapsed to
-        // zero height - everything below shifted up, then snapped back. On a
-        // store that refreshes often that reads as the iframe "bouncing around".
-        $('#briqpay-iframe-container').html('<iframe></iframe>');
-
-        $(document.body).trigger('update_checkout');
-
-        // The slot keeps a spacer where the container was, so nothing below moves.
-        expect($('#briqpay-iframe-slot .briqpay-iframe-spacer').length).toBe(1);
-        // The container is pinned out of flow at its former coordinates.
-        expect($('#briqpay-iframe-container').css('position')).toBe('absolute');
-
-        $(document.body).trigger('updated_checkout');
-        jest.runAllTimers();
-
-        // Restored: pinning undone, spacer gone, back in normal flow inside the slot.
-        expect($('#briqpay-iframe-container').css('position')).not.toBe('absolute');
-        expect($('.briqpay-iframe-spacer').length).toBe(0);
-        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
-    });
-
-    test('a deadline restore also removes the spacer the slot was never replaced to clear', () => {
-        // If updated_checkout never arrives, WooCommerce never replaced the slot,
-        // so the spacer is still in it. Restoring without removing it would put
-        // the container back beneath a blank gap.
-        $('#briqpay-iframe-container').html('<iframe></iframe>');
-
-        $(document.body).trigger('update_checkout');
-        expect($('.briqpay-iframe-spacer').length).toBe(1);
-
-        jest.advanceTimersByTime(10000);
-
-        expect($('.briqpay-iframe-spacer').length).toBe(0);
-        expect($('#briqpay-iframe-container').css('position')).not.toBe('absolute');
-        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
-    });
-
-    test('parking is a no-op with nothing live in the container yet', () => {
-        // The very first render, or any point before a session exists: nothing to
-        // protect, and detaching an empty container would just be pointless work.
-        $('#briqpay-iframe-container').empty();
-
-        $(document.body).trigger('update_checkout');
-
-        expect(window.briqpayCheckout._containerParked).toBe(false);
-    });
-
-    test('a second update_checkout while already parked does not push the restore deadline out', () => {
-        // The same bug class the payment-decision deadline was fixed for: without
-        // the "already parked" guard, a repeated update_checkout re-arms the 10s
-        // deadline via the same clearTimeout()+setTimeout() pair parkContainer()
-        // uses to start it, so a checkout refreshing on a timer could push it out
-        // forever and leave the payment box permanently blank.
-        $('#briqpay-iframe-container').html('<iframe></iframe>');
-
-        $(document.body).trigger('update_checkout'); // t=0, deadline armed for t=10000
-        expect(window.briqpayCheckout._containerParked).toBe(true);
-
-        jest.advanceTimersByTime(3000); // t=3000
-        $(document.body).trigger('update_checkout'); // must NOT re-arm to t=13000
-
-        // Past the ORIGINAL deadline (t=10000) but not a reset one (t=13000) - this
-        // only elapses if the second trigger left the first deadline alone.
-        jest.advanceTimersByTime(7001); // t=10001
-
-        expect(window.briqpayCheckout._containerParked).toBe(false);
-        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
-    });
-
-    test('a parked container is restored even if updated_checkout never arrives', () => {
-        // The same reasoning as the payment-decision deadline: a failed or
-        // superseded request can leave updated_checkout unfired. Leaving the
-        // payment box permanently blank is worse than restoring late.
-        $('#briqpay-iframe-container').html('<iframe></iframe>');
-
-        $(document.body).trigger('update_checkout');
-        expect(window.briqpayCheckout._containerParked).toBe(true);
-
-        jest.advanceTimersByTime(10000);
-
-        expect(window.briqpayCheckout._containerParked).toBe(false);
-        expect($('#briqpay-iframe-container').parent().is('#briqpay-iframe-slot')).toBe(true);
-    });
-
-    test('restoring is a no-op when nothing was parked', () => {
-        // updated_checkout can fire for reasons that never involved a park (a
-        // sync triggered some other way) - must not move anything unexpectedly.
-        $('#briqpay-iframe-container').html('<iframe></iframe>');
-        const parentBefore = $('#briqpay-iframe-container').parent()[0];
-
-        $(document.body).trigger('updated_checkout');
-        jest.runAllTimers();
-
-        expect($('#briqpay-iframe-container').parent()[0]).toBe(parentBefore);
-    });
-
-    test('ensureContainer creates the container inside the slot when neither exists yet', () => {
+    test('ensureContainer mounts on body, not inside the replaceable slot', () => {
         $('#briqpay-iframe-container').remove();
 
         const $created = window.briqpayCheckout.ensureContainer();
 
         expect($created.attr('id')).toBe('briqpay-iframe-container');
-        expect($created.parent().is('#briqpay-iframe-slot')).toBe(true);
+        expect($created.parent().is('body')).toBe(true);
+        expect($created.parent().is('#briqpay-iframe-slot')).toBe(false);
+    });
+
+    test('a fast no-op sync never suspends the iframe', () => {
+        // Most syncs are no-ops the server answers in well under the deferral
+        // window. Suspending for those made the payment window lock and unlock
+        // constantly while the customer filled in the form.
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        window._briqpay.v3.suspend.mockClear();
+
+        // A genuine no-op: same session back, no new snippet, answered
+        // instantly - which is what the server does when the payload hash is
+        // unchanged. (The default mock returns a DIFFERENT session id, which is
+        // a session regeneration and should still suspend.)
+        $.ajax = jest.fn((options) => {
+            options.success({ success: true, data: { sessionId: 'existing_session' } });
+            return { done: jest.fn(), fail: jest.fn(), always: jest.fn() };
+        });
+
+        window.briqpayCheckout._cartRecalculated = true;
+        window.briqpayCheckout.updateSession();
+        jest.advanceTimersByTime(500);
+
+        expect(window._briqpay.v3.suspend).not.toHaveBeenCalled();
+    });
+
+    test('a slow update still suspends, well before it completes', () => {
+        $('#payment_method_briqpay').prop('checked', true);
+        window.briqpayCheckout.session = 'existing_session';
+        $('#briqpay-iframe-container').html('<iframe></iframe>');
+        window._briqpay.v3.suspend.mockClear();
+
+        let release;
+        $.ajax = jest.fn((options) => {
+            release = () => options.success({ success: true, data: { sessionId: 'existing_session' } });
+            return { done: jest.fn(), fail: jest.fn(), always: jest.fn() };
+        });
+
+        window.briqpayCheckout._cartRecalculated = true;
+        window.briqpayCheckout.updateSession();
+
+        jest.advanceTimersByTime(200);
+        expect(window._briqpay.v3.suspend).toHaveBeenCalled();
+
+        release();
+        jest.runAllTimers();
+        expect(window._briqpay.v3.resume).toHaveBeenCalled();
+    });
+
+    test('the slot height is measured after positioning, not before', () => {
+        // jsdom has no layout, so this pins the ORDER in the source rather than
+        // the measurement. It matters: Briqpay's wrapper inside the container
+        // has a bottom margin that collapses out while the container is in flow
+        // but is contained once it is absolutely positioned, making it taller.
+        // Measured on the merchant's real checkout that is 32px - reserving the
+        // pre-positioning height leaves the payment box short by exactly that
+        // on every refresh.
+        const src = window.briqpayCheckout.syncContainerPosition.toString();
+        const positionedAt = src.indexOf("style.position = 'absolute'");
+        const measuredAt = src.indexOf('container.offsetHeight');
+        const reservedAt = src.indexOf('minHeight');
+
+        expect(positionedAt).toBeGreaterThan(-1);
+        expect(measuredAt).toBeGreaterThan(positionedAt);
+        expect(reservedAt).toBeGreaterThan(measuredAt);
     });
 
     test('ensureContainer returns nothing when there is no slot either (e.g. Blocks)', () => {
