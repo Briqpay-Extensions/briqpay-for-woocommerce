@@ -43,6 +43,51 @@ body.briqpay-only-gateway .wc_payment_method.payment_method_briqpay {
     margin: 0 !important;
 }
 
+/*
+ * Strip WooCommerce's own payment-box chrome when Briqpay is the sole gateway.
+ *
+ * WooCommerce draws div.payment_box as a lilac panel with a ::before triangle
+ * pointing up at the payment method's radio button. We hide that radio above,
+ * so the triangle ends up pointing at nothing - it reads as a stray arrow in
+ * the top-left corner - and the panel wraps the iframe in a second, unthemed
+ * box. Its asymmetric padding (1em top, 1em bottom plus whatever bottom margin
+ * the theme gives #briqpay) also leaves the iframe sitting visibly high inside
+ * it.
+ *
+ * Only when Briqpay is the only gateway: with a radio list to point at, the
+ * triangle and the panel are doing their job and WooCommerce's own styling
+ * should stand.
+ */
+body.briqpay-only-gateway #payment div.payment_box.payment_method_briqpay {
+    background: none;
+    padding: 0;
+    margin: 0;
+    border-radius: 0;
+}
+
+body.briqpay-only-gateway #payment div.payment_box.payment_method_briqpay::before {
+    display: none;
+}
+
+/*
+ * With the panel gone, the only thing framing the checkout is the theme's own
+ * layout - so the plugin must not leave uneven spacing of its own inside it.
+ *
+ * The container's top padding was breathing room under the payment method's
+ * label, which is hidden in this case. The bottom margin is whatever the theme
+ * puts on #briqpay to separate it from what follows; nothing follows it here,
+ * so it only pushes the checkout up inside the box. Between them they left the
+ * iframe sitting visibly high. Both are ordinary rules, so a theme that wants
+ * either back can say so.
+ */
+body.briqpay-only-gateway #briqpay-iframe-container {
+    padding-top: 0;
+}
+
+body.briqpay-only-gateway #briqpay-iframe-container > #briqpay:last-child {
+    margin-bottom: 0;
+}
+
 /* Checkout Overlay */
 #briqpay-overlay {
     display: none;

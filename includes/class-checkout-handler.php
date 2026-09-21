@@ -117,6 +117,34 @@ class Checkout_Handler
                 margin: 0 !important;
             }
 
+            /* Strip the lilac payment_box panel WooCommerce draws, and the ::before
+               triangle that points up at the radio button we just hid. With no radio
+               to point at, the triangle reads as a stray arrow above the top-left
+               corner of the iframe, and the panel is a second, unthemed box around
+               the checkout. Only when Briqpay is the sole gateway - a real radio list
+               needs both. */
+            body.briqpay-only-gateway #payment div.payment_box.payment_method_briqpay {
+                background: none;
+                padding: 0;
+                margin: 0;
+                border-radius: 0;
+            }
+            body.briqpay-only-gateway #payment div.payment_box.payment_method_briqpay::before {
+                display: none;
+            }
+
+            /* With the panel gone the theme owns the framing, so the plugin must not
+               leave uneven spacing of its own inside it: the container top padding was
+               breathing room under the label we hide, and the bottom margin is whatever
+               the theme puts on #briqpay to separate it from what follows - nothing
+               follows it here. Together they left the iframe sitting visibly high. */
+            body.briqpay-only-gateway #briqpay-iframe-container {
+                padding-top: 0;
+            }
+            body.briqpay-only-gateway #briqpay-iframe-container > #briqpay:last-child {
+                margin-bottom: 0;
+            }
+
             /* When Briqpay is selected but NOT the only gateway, hide the iframe container for non-Briqpay methods */
             body.briqpay-not-selected #briqpay-iframe-container {
                 display: none !important;

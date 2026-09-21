@@ -245,7 +245,10 @@ class Briqpay_Test_Options
 
 if (!function_exists('get_option')) {
     function get_option($option, $default = false) {
-        if ($option === 'woocommerce_briqpay_settings') {
+        // The store wins even for the gateway settings, so a test that needs a
+        // particular setting (say, enabled = yes) can put one there; the defaults
+        // below stand for every test that does not care.
+        if ($option === 'woocommerce_briqpay_settings' && !array_key_exists($option, Briqpay_Test_Options::$store)) {
             return array('logging' => 'yes', 'merchant_id' => '123', 'shared_secret' => '456', 'testmode' => 'yes');
         }
         if (array_key_exists($option, Briqpay_Test_Options::$store)) {
