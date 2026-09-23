@@ -96,8 +96,9 @@ class Hosted_Payment_Page
             self::FLOW_B2B_CHECKOUT => array(
                 'customerType' => 'business',
                 // Mirrors B2b_Checkout::filter_b2b_session_data() so the storefront
-                // and hosted-page B2B experiences stay consistent.
-                'loadModules' => array('company_lookup', 'billing', 'shipping', 'payment'),
+                // and hosted-page B2B experiences stay consistent, plus order_note:
+                // a hosted page has no WooCommerce checkout form to take the note.
+                'loadModules' => array('company_lookup', 'billing', 'shipping', 'payment', 'order_note'),
                 'label' => __('Business - Full Checkout', 'briqpay-for-woocommerce'),
             ),
         );
@@ -624,6 +625,15 @@ class Hosted_Payment_Page
 
         $shipping = isset($session_data['shipping']) ? $session_data['shipping'] : array();
         $this->apply_address_to_order($order, $shipping, 'shipping');
+
+        // apply_address_to_order() maps person and street fields only; the
+        // recipient's company is reported alongside them.
+        if (!empty($shipping['companyName'])) {
+            $order->set_shipping_company(sanitize_text_field($shipping['companyName']));
+        }
+
+        // The order_note module this flow loads, and any custom form fields.
+        Session_Order_Data::apply_custom_fields($order, $session);
 
         Legacy_B2b_Meta::apply($order, $session);
 

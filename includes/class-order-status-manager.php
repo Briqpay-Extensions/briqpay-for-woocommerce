@@ -175,50 +175,69 @@ class Order_Status_Manager
                 continue;
             }
 
-            $status = $session['status'] ?? '';
-
-            // A 'completed' session means the customer finished the checkout, NOT
-            // that the money is secured - the underlying transaction can still be
-            // pending or rejected. Promoting on the session status alone marked
-            // unpaid orders as processing, so require an approved transaction and
-            // then let WooCommerce record the payment properly.
-            // Never move an order a human is holding, and never complete one
-            // Briqpay has flagged for review.
-            if (Order_Management::is_held_for_merchant($order)) {
-                Logger::log('Janitor: Order ' . $order->get_id() . ' is on hold - leaving it for manual release.');
+            // Never race the return handler or a webhook for the same order. A
+            // busy order is being handled right now; the next run picks it up
+            // if it still needs anything.
+            $lock = Lock::order_key($order->get_id());
+            if (!Lock::acquire($lock, 60)) {
+                Logger::log('Janitor: Order ' . $order->get_id() . ' is being processed elsewhere. Skipping.');
                 continue;
             }
 
-            if (Order_Management::session_requires_manual_review($session)) {
-                Logger::log('Janitor: Session ' . $session_id . ' is flagged for manual review - holding order ' . $order->get_id() . '.');
-                $order->update_status(
-                    'on-hold',
-                    __('Briqpay: Flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
-                );
-                continue;
-            }
-
-            if ($status === 'completed') {
-                // Strictest of the three call sites: this is a recovery path, so
-                // only an explicitly approved transaction justifies acting. No
-                // transaction data means no signal, and the webhook is better
-                // placed to resolve it.
-                if ('approved' === Order_Management::transaction_approval_state($session)) {
-                    Logger::log('Janitor: Session completed with an approved transaction. Recording payment.');
-                    $order->payment_complete($session_id);
-                    $order->add_order_note(__('Briqpay Janitor: Recovered completed session with an approved transaction.', 'briqpay-for-woocommerce'));
-                } else {
-                    Logger::log('Janitor: Session is completed but no transaction is approved. Leaving the order as-is for the webhook to resolve.');
+            try {
+                $order = Order_Management::reload_order($order);
+                if (!$order->has_status('pending')) {
+                    Logger::log('Janitor: Order ' . $order->get_id() . ' is no longer pending. Skipping.');
+                    continue;
                 }
-                continue;
-            }
 
-            $cancellable_states = array('expired', 'cancelled', 'failed', 'rejected');
-            if (in_array($status, $cancellable_states, true)) {
-                $order->update_status('cancelled', __('Briqpay Janitor: Order cancelled due to inactivity (5h threshold).', 'briqpay-for-woocommerce'));
-                Logger::log('Janitor: Order ' . $order->get_id() . ' cancelled.');
-            } else {
-                Logger::log('Janitor: Session ' . $session_id . ' status is "' . $status . '". Not cancelling.');
+                $status = $session['status'] ?? '';
+
+                // A 'completed' session means the customer finished the checkout, NOT
+                // that the money is secured - the underlying transaction can still be
+                // pending or rejected. Promoting on the session status alone marked
+                // unpaid orders as processing, so require an approved transaction and
+                // then let WooCommerce record the payment properly.
+                // Never move an order a human is holding, and never complete one
+                // Briqpay has flagged for review.
+                if (Order_Management::is_held_for_merchant($order)) {
+                    Logger::log('Janitor: Order ' . $order->get_id() . ' is on hold - leaving it for manual release.');
+                    continue;
+                }
+
+                if (Order_Management::session_requires_manual_review($session)) {
+                    Logger::log('Janitor: Session ' . $session_id . ' is flagged for manual review - holding order ' . $order->get_id() . '.');
+                    Order_Management::hold_for_manual_review(
+                        $order,
+                        __('Briqpay: Flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
+                    );
+                    continue;
+                }
+
+                if ($status === 'completed') {
+                    // Strictest of the three call sites: this is a recovery path, so
+                    // only an explicitly approved transaction justifies acting. No
+                    // transaction data means no signal, and the webhook is better
+                    // placed to resolve it.
+                    if ('approved' === Order_Management::transaction_approval_state($session)) {
+                        Logger::log('Janitor: Session completed with an approved transaction. Recording payment.');
+                        $order->payment_complete($session_id);
+                        $order->add_order_note(__('Briqpay Janitor: Recovered completed session with an approved transaction.', 'briqpay-for-woocommerce'));
+                    } else {
+                        Logger::log('Janitor: Session is completed but no transaction is approved. Leaving the order as-is for the webhook to resolve.');
+                    }
+                    continue;
+                }
+
+                $cancellable_states = array('expired', 'cancelled', 'failed', 'rejected');
+                if (in_array($status, $cancellable_states, true)) {
+                    $order->update_status('cancelled', __('Briqpay Janitor: Order cancelled due to inactivity (5h threshold).', 'briqpay-for-woocommerce'));
+                    Logger::log('Janitor: Order ' . $order->get_id() . ' cancelled.');
+                } else {
+                    Logger::log('Janitor: Session ' . $session_id . ' status is "' . $status . '". Not cancelling.');
+                }
+            } finally {
+                Lock::release($lock);
             }
         }
 

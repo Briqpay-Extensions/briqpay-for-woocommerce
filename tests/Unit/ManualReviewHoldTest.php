@@ -292,6 +292,9 @@ class ManualReviewHoldTest extends TestCase
         $order = Mockery::mock('WC_Order');
         $order->shouldReceive('get_id')->andReturn(901);
         $order->shouldReceive('has_status')->with('pending')->andReturn(true);
+        $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        $order->shouldReceive('get_meta')->with(Order_Management::META_MANUAL_REVIEW_HELD)->andReturn('');
+        $order->shouldReceive('update_meta_data')->with(Order_Management::META_MANUAL_REVIEW_HELD, Mockery::type('string'))->once();
         $order->shouldReceive('update_status')
             ->with('on-hold', Mockery::any())
             ->once();

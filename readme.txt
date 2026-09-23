@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.18
+Stable tag: 1.1.19
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,15 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.19 =
+* Fix: Hosted payment pages sent with the "Business - Full Checkout" flow gave the customer no way to leave an order note. The storefront checkout takes the note in WooCommerce's own form, but a hosted page has no such form, so the note field was simply missing. The flow now also loads Briqpay's order note module.
+* Fix: The shipping address's company was always overwritten with the buying company's name. Briqpay reports the recipient's company on the shipping address separately, and on a B2B order that is often a different company - so orders showed the wrong recipient. The shipping company now comes from the shipping address, falling back to the buying company only when Briqpay reports none. Applies to the storefront checkout and to hosted payment pages.
+* Fix: Fields the merchant collects in the Briqpay checkout - such as a reference, an own order number or an alternative email - were never saved to the order. The plugin now reads them from the order note module and the custom form, stores each one as order meta (_briqpay_order_note_<key> and _briqpay_custom_form_<key>), and adds one order note listing them so they are visible on the order screen.
+* Fix: An order Briqpay flagged for manual review could have its stock reduced twice and the customer sent two "order on hold" emails. The customer's return to the store and Briqpay's webhook often arrive in the same second, and both put the order on hold - each one triggering WooCommerce's stock reduction and email. Every path that changes a Briqpay order's status (the return, the webhooks and the stale-order cleanup) now takes the same per-order lock and re-reads the order once it has it, so only one of them acts. The manual-review hold is also applied only once per order: an order the merchant has already released is never put back on hold.
+* Fix: If Briqpay's webhook put an order on hold before the customer got back to the store, the return reset it to "Pending payment", undoing the hold. The return now leaves an on-hold order as it is.
+* Fix: The plugin's internal locks were built on WordPress's add_option(), which is not atomic: two requests could both take the same lock, and a request waiting for a lock kept seeing it as taken after it was released. Locks now use a single database insert that only one request can win, and read the database directly. This also hardens the existing duplicate-webhook check, which uses the same lock.
+* Fix: When a request re-read an order after taking its lock, WordPress could hand back the copy it had cached earlier in the same request - still showing the old status and the old "stock reduced" flag. The order's cache is now cleared first, for both WooCommerce order storage types, so the re-read reflects what other requests have saved.
 
 = 1.1.18 =
 * Change: The company block on order confirmation pages, emails and the admin order screen was headed "Company (Briqpay)". It now reads simply "Company", in every shipped language. The payment provider has no business in a heading the customer reads on their receipt.

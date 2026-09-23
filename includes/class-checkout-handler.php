@@ -385,6 +385,23 @@ class Checkout_Handler
             exit;
         }
 
+        // The webhook for this order routinely arrives in the same second as the
+        // customer. Both read the status and write a new one, so without the
+        // shared order lock both acted on the same stale status - two on-hold
+        // transitions, two stock reductions, two emails. Every exit below is an
+        // exit(), which skips finally blocks, so the release runs at shutdown.
+        $order_lock = Lock::order_key($order->get_id());
+        /** This filter is documented in includes/class-webhooks.php */
+        $lock_wait = (int) apply_filters('briqpay_order_lock_wait', 10, 'return');
+        if (Lock::acquire_wait($order_lock, 30, $lock_wait)) {
+            register_shutdown_function(array(Lock::class, 'release'), $order_lock);
+        } else {
+            Logger::error(sprintf('Order %s is still locked by another Briqpay process after %ds - continuing without the lock.', $order->get_id(), $lock_wait));
+        }
+
+        // Whatever held the lock may have changed the order meanwhile.
+        $order = Order_Management::reload_order($order);
+
         // Fully robust PSP name lookup
         $psp_name = 'Briqpay';
 
@@ -438,8 +455,10 @@ class Checkout_Handler
 
         $order->save();
 
-        // If already upgraded to pending, run cleanup and redirect
-        if ($order->has_status(array('pending', 'processing', 'completed'))) {
+        // If already upgraded to pending, run cleanup and redirect. on-hold is
+        // kept too: a webhook may have held the order before the customer got
+        // back, and falling through would reset it to pending below.
+        if ($order->has_status(array('pending', 'on-hold', 'processing', 'completed'))) {
             Logger::log('Order already processed. Running cleanup before redirect.');
 
             // This is the path a normal purchase actually takes: the order was
@@ -530,10 +549,12 @@ class Checkout_Handler
         }
 
         // Upgrade order status if not already processed
-        if (!$order->has_status(array('pending', 'processing', 'completed'))) {
+        if (!$order->has_status(array('pending', 'on-hold', 'processing', 'completed'))) {
             $order->update_status('pending', __('Briqpay session verified. Awaiting webhook confirmation.', 'briqpay-for-woocommerce'));
             $order->save();
             Logger::log('Order upgraded to pending: ' . $order->get_id());
+
+            $this->maybe_hold_for_manual_review($order, $session);
 
             $this->fire_payment_complete($order, $session);
 
@@ -1061,10 +1082,14 @@ class Checkout_Handler
         }
 
         // Sync company name to WC customer (B2B: used for thank-you page and order details).
+        // The shipping company is the recipient's, which Briqpay reports separately.
         $company_name = $session['data']['company']['name'] ?? '';
         if ($company_name) {
             WC()->customer->set_billing_company(sanitize_text_field($company_name));
-            WC()->customer->set_shipping_company(sanitize_text_field($company_name));
+        }
+        $shipping_company = Session_Order_Data::shipping_company($session);
+        if ($shipping_company) {
+            WC()->customer->set_shipping_company($shipping_company);
         }
 
         if (isset($session['data']['shipping'])) {
@@ -1118,10 +1143,14 @@ class Checkout_Handler
             }
 
             // Set company name on order (B2B: visible in order details and thank-you page).
+            // The shipping company is the recipient's, which Briqpay reports separately.
             $company_name = $session['data']['company']['name'] ?? '';
             if ($company_name) {
                 $order->set_billing_company(sanitize_text_field($company_name));
-                $order->set_shipping_company(sanitize_text_field($company_name));
+            }
+            $shipping_company = Session_Order_Data::shipping_company($session);
+            if ($shipping_company) {
+                $order->set_shipping_company($shipping_company);
             }
 
             if (isset($session['data']['shipping']) && !empty($session['data']['shipping'])) {
@@ -1135,6 +1164,10 @@ class Checkout_Handler
                 $order->set_shipping_state($s['region'] ?? '');
                 $order->set_shipping_country($s['country'] ?? '');
             }
+
+            // Reference, own order number, alternative email and whatever else the
+            // merchant collects in the Briqpay checkout.
+            Session_Order_Data::apply_custom_fields($order, $session);
 
             $this->apply_order_attribution_to_order($order);
 
@@ -1672,10 +1705,14 @@ class Checkout_Handler
         }
 
         // Set company name on order (B2B: visible in order details and thank-you page).
+        // The shipping company is the recipient's, which Briqpay reports separately.
         $company_name = $session['data']['company']['name'] ?? '';
         if ($company_name) {
             $order->set_billing_company(sanitize_text_field($company_name));
-            $order->set_shipping_company(sanitize_text_field($company_name));
+        }
+        $shipping_company = Session_Order_Data::shipping_company($session);
+        if ($shipping_company) {
+            $order->set_shipping_company($shipping_company);
         }
 
         $s = $session['data']['shipping'] ?? array();
@@ -1694,6 +1731,8 @@ class Checkout_Handler
         // flow previously dropped. Unconditional: neither runs third-party code,
         // and losing a note the customer typed is simply a defect.
         $this->apply_native_order_properties($order);
+
+        Session_Order_Data::apply_custom_fields($order, $session);
 
         // Calculate totals with tax AFTER addresses are set so tax rules resolve correctly
         $order->calculate_totals(true);
@@ -2816,8 +2855,8 @@ class Checkout_Handler
 
         Logger::log(sprintf('Order %s is flagged for manual review - holding at return.', $order->get_id()));
 
-        $order->update_status(
-            'on-hold',
+        Order_Management::hold_for_manual_review(
+            $order,
             __('Briqpay: Flagged for manual review. Release the order manually once reviewed.', 'briqpay-for-woocommerce')
         );
     }

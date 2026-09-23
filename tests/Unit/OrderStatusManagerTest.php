@@ -39,6 +39,8 @@ class OrderStatusManagerTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_123');
         // Not held by the merchant, so the janitor is free to act.
         $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        // Still pending when the janitor re-reads it under the order lock.
+        $order->shouldReceive('has_status')->with('pending')->andReturn(true);
         $order->shouldReceive('update_status')->with('cancelled', Mockery::any())->once();
 
         // Mock wc_get_orders
@@ -76,6 +78,8 @@ class OrderStatusManagerTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_rec');
         // Not held by the merchant, so the janitor is free to act.
         $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        // Still pending when the janitor re-reads it under the order lock.
+        $order->shouldReceive('has_status')->with('pending')->andReturn(true);
         $order->shouldReceive('payment_complete')->with('sess_rec')->once();
         $order->shouldReceive('add_order_note')->once();
         $order->shouldReceive('update_status')->never();
@@ -117,6 +121,8 @@ class OrderStatusManagerTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_pending_tx');
         // Not held by the merchant, so the janitor is free to act.
         $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        // Still pending when the janitor re-reads it under the order lock.
+        $order->shouldReceive('has_status')->with('pending')->andReturn(true);
         $order->shouldReceive('payment_complete')->never();
         $order->shouldReceive('update_status')->never();
         $order->shouldReceive('add_order_note')->never();
@@ -155,6 +161,8 @@ class OrderStatusManagerTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_no_tx');
         // Not held by the merchant, so the janitor is free to act.
         $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        // Still pending when the janitor re-reads it under the order lock.
+        $order->shouldReceive('has_status')->with('pending')->andReturn(true);
         $order->shouldReceive('payment_complete')->never();
         $order->shouldReceive('update_status')->never();
         $order->shouldReceive('add_order_note')->never();
@@ -187,6 +195,8 @@ class OrderStatusManagerTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_future');
         // Not held by the merchant, so the janitor is free to act.
         $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        // Still pending when the janitor re-reads it under the order lock.
+        $order->shouldReceive('has_status')->with('pending')->andReturn(true);
         $order->shouldReceive('payment_complete')->never();
         $order->shouldReceive('update_status')->never();
         $order->shouldReceive('add_order_note')->never();
@@ -228,6 +238,8 @@ class OrderStatusManagerTest extends TestCase
         $order->shouldReceive('get_meta')->with('_briqpay_session_id')->andReturn('sess_hpp_1');
         // Not held by the merchant, so the janitor is free to act.
         $order->shouldReceive('has_status')->with('on-hold')->andReturn(false);
+        // Still pending when the janitor re-reads it under the order lock.
+        $order->shouldReceive('has_status')->with('pending')->andReturn(true);
         $order->shouldReceive('update_status')->never();
 
         WP_Mock::userFunction('wc_get_orders', array(

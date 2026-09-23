@@ -30,6 +30,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         // Mock wc_get_orders
         WP_Mock::userFunction('wc_get_orders', array(
@@ -96,6 +97,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         $order->shouldReceive('get_meta')->with('_briqpay_captures')->andReturn(array());
         $order->shouldReceive('add_order_note')->once();
@@ -157,6 +159,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         // Mock wc_get_orders to find our order
         WP_Mock::userFunction('wc_get_orders', array(
@@ -255,6 +258,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         // Mock wc_get_orders to return our order
         WP_Mock::userFunction('wc_get_orders', array(
@@ -311,6 +315,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         WP_Mock::userFunction('wc_get_orders', array(
             'return' => array($order)
@@ -383,6 +388,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         $order->shouldReceive('update_meta_data')->andReturn(null)->byDefault();
         $order->shouldReceive('update_meta_data')->with('_briqpay_auto_capture_enabled', 'yes')->once();
@@ -410,6 +416,7 @@ class WebhooksTest extends TestCase
     {
         $webhooks = new Webhooks();
         $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(100)->byDefault();
 
         $order->shouldReceive('update_meta_data')->andReturn(null)->byDefault();
         $order->shouldReceive('update_meta_data')->with('_briqpay_auto_capture_enabled', 'no')->once();

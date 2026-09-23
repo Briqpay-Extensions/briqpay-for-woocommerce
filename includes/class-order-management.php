@@ -1444,6 +1444,94 @@ class Order_Management
     }
 
     /**
+     * Order meta marking that the manual-review hold has been applied.
+     */
+    const META_MANUAL_REVIEW_HELD = '_briqpay_manual_review_held';
+
+    /**
+     * Put an order Briqpay flagged for manual review on hold - once.
+     *
+     * Every path that can apply the hold goes through here. It is applied at
+     * most once per order: already on hold means there is nothing to do, and an
+     * order that was held before and has since been released by the merchant is
+     * never put back. Callers hold Lock::order_key() and have re-read the order,
+     * so the status and the marker read here are current.
+     *
+     * @param \WC_Order $order The order.
+     * @param string    $note  Order note explaining the hold.
+     * @return bool True if the order was put on hold by this call.
+     */
+    public static function hold_for_manual_review($order, $note)
+    {
+        if ($order->has_status('on-hold')) {
+            Logger::log(sprintf('Order %s is flagged for manual review and already on hold - leaving it.', $order->get_id()));
+            return false;
+        }
+
+        if ($order->get_meta(self::META_MANUAL_REVIEW_HELD)) {
+            Logger::log(sprintf('Order %s was already held for manual review once - not holding it again.', $order->get_id()));
+            return false;
+        }
+
+        $order->update_meta_data(self::META_MANUAL_REVIEW_HELD, gmdate('Y-m-d H:i:s'));
+        $order->update_status('on-hold', $note);
+
+        return true;
+    }
+
+    /**
+     * Re-read an order from the database.
+     *
+     * The copy a request loaded before taking Lock::order_key() may be stale:
+     * another request can have changed the status while this one waited. Falls
+     * back to the copy in hand if the order cannot be loaded.
+     *
+     * @param \WC_Order $order The order.
+     * @return \WC_Order
+     */
+    public static function reload_order($order)
+    {
+        $order_id = (int) $order->get_id();
+
+        // wc_get_order() alone is not enough: the order row and its meta were
+        // cached in this request when it first loaded the order, before it had
+        // the lock, and a save by another request does not clear this request's
+        // copy. That stale copy still says 'pending', and WooCommerce's
+        // _order_stock_reduced check reads the same cache - so both would act.
+        self::flush_order_cache($order_id);
+
+        $fresh = wc_get_order($order_id);
+
+        return $fresh ? $fresh : $order;
+    }
+
+    /**
+     * Drop this request's cached copy of an order, for both storage engines.
+     *
+     * @param int $order_id Order id.
+     * @return void
+     */
+    private static function flush_order_cache($order_id)
+    {
+        // Posts storage: the post row (status) and post meta (stock-reduced flag).
+        if (function_exists('clean_post_cache')) {
+            clean_post_cache($order_id);
+        }
+
+        // HPOS: WooCommerce's order object cache and its order meta cache.
+        if (function_exists('wc_get_container') && class_exists('\Automattic\WooCommerce\Caches\OrderCache')) {
+            try {
+                wc_get_container()->get(\Automattic\WooCommerce\Caches\OrderCache::class)->remove($order_id);
+            } catch (\Throwable $e) {
+                Logger::log('Could not clear the WooCommerce order cache for order ' . $order_id . ': ' . $e->getMessage());
+            }
+        }
+        if (function_exists('wp_cache_delete') && class_exists('WC_Order') && method_exists('WC_Order', 'generate_meta_cache_key')) {
+            wp_cache_delete(\WC_Order::generate_meta_cache_key($order_id, 'orders'), 'orders');
+        }
+    }
+
+    /**
      * Has Briqpay flagged this session for manual review?
      *
      * Read from data.paymentTags.manual_review. An order carrying the tag must be

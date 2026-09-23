@@ -83,6 +83,38 @@ class HostedPageSyncTest extends TestCase
         $hpp->maybe_sync_from_session(array(), $session, $order);
     }
 
+    public function testB2bCheckoutOrderSyncsShippingCompanyAndCheckoutFields()
+    {
+        WP_Mock::userFunction('sanitize_textarea_field', array('return_arg' => 0));
+        WP_Mock::userFunction('sanitize_key', array('return_arg' => 0));
+        WP_Mock::userFunction('wp_json_encode', array(
+            'return' => function ($value) {
+                return json_encode($value);
+            },
+        ));
+        WP_Mock::userFunction('__', array('return_arg' => 0));
+
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_id')->andReturn(77);
+        $order->shouldReceive('get_meta')->with(Hosted_Payment_Page::META_HPP_FLOW)->andReturn(Hosted_Payment_Page::FLOW_B2B_CHECKOUT);
+        $order->shouldReceive('get_meta')->with('_briqpay_custom_fields')->andReturn('');
+        $order->shouldReceive('set_shipping_address_1')->with('Dock 3')->once();
+        $order->shouldReceive('set_shipping_company')->with('Recipient AB')->once();
+        $order->shouldReceive('update_meta_data')->with('_briqpay_order_note_reference', 'PO-9')->once();
+        $order->shouldReceive('update_meta_data');
+        $order->shouldReceive('add_order_note')->once();
+        $order->shouldReceive('save')->once();
+
+        $session = array('data' => array(
+            'company' => array('name' => 'Buyer AB'),
+            'shipping' => array('companyName' => 'Recipient AB', 'streetAddress' => 'Dock 3'),
+            'orderNote' => array('reference' => array('value' => 'PO-9', 'header' => 'Referens')),
+        ));
+
+        $hpp = new Hosted_Payment_Page();
+        $hpp->maybe_sync_from_session(array(), $session, $order);
+    }
+
     public function testNonB2bCheckoutFlowsDoNotOverwriteOrderAddresses()
     {
         foreach (array(Hosted_Payment_Page::FLOW_B2C, Hosted_Payment_Page::FLOW_B2B_PAYMENT) as $flow) {

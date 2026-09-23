@@ -312,14 +312,14 @@ class HostedPaymentPageTest extends TestCase
         $this->assertEquals(array('payment'), $payload['modules']['loadModules']);
     }
 
-    public function testB2bCheckoutFlowLoadsCompanyLookupBillingShippingAndPayment()
+    public function testB2bCheckoutFlowLoadsCompanyLookupBillingShippingPaymentAndOrderNote()
     {
         $hpp = $this->makeHpp();
         $order = $this->makeOrder();
         $payload = $hpp->build_session_payload($order, Hosted_Payment_Page::FLOW_B2B_CHECKOUT);
 
         $this->assertEquals('business', $payload['customerType']);
-        $this->assertEquals(array('company_lookup', 'billing', 'shipping', 'payment'), $payload['modules']['loadModules']);
+        $this->assertEquals(array('company_lookup', 'billing', 'shipping', 'payment', 'order_note'), $payload['modules']['loadModules']);
     }
 
     public function testDecisionIsAlwaysDisabledOnHostedPageSessions()
