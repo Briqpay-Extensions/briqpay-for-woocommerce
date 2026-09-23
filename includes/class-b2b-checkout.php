@@ -658,7 +658,7 @@ class B2b_Checkout
         ?>
         <div class="briqpay-company-info"
             style="margin-top:12px;padding:10px 12px;background:#f8f8f8;border-left:3px solid #2271b1;border-radius:2px;">
-            <strong><?php esc_html_e('Company (Briqpay)', 'briqpay-for-woocommerce'); ?></strong><br>
+            <strong><?php esc_html_e('Company', 'briqpay-for-woocommerce'); ?></strong><br>
             <?php if ($company_name): ?>
                 <?php esc_html_e('Name:', 'briqpay-for-woocommerce'); ?>             <?php echo esc_html($company_name); ?><br>
             <?php endif; ?>
@@ -694,7 +694,7 @@ class B2b_Checkout
         }
 
         if ($plain_text) {
-            echo esc_html__('Company (Briqpay)', 'briqpay-for-woocommerce') . "\n";
+            echo esc_html__('Company', 'briqpay-for-woocommerce') . "\n";
             if ($company_name) {
                 echo esc_html__('Name:', 'briqpay-for-woocommerce') . ' ' . esc_html($company_name) . "\n";
             }
@@ -706,7 +706,7 @@ class B2b_Checkout
         }
         ?>
         <p>
-            <strong><?php esc_html_e('Company (Briqpay)', 'briqpay-for-woocommerce'); ?></strong><br>
+            <strong><?php esc_html_e('Company', 'briqpay-for-woocommerce'); ?></strong><br>
             <?php if ($company_name): ?>
                 <?php esc_html_e('Name:', 'briqpay-for-woocommerce'); ?> <?php echo esc_html($company_name); ?><br>
             <?php endif; ?>

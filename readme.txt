@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.17
+Stable tag: 1.1.18
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,9 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.18 =
+* Change: The company block on order confirmation pages, emails and the admin order screen was headed "Company (Briqpay)". It now reads simply "Company", in every shipped language. The payment provider has no business in a heading the customer reads on their receipt.
 
 = 1.1.17 =
 * Fix: On stores where Briqpay is the only payment method, the checkout sat inside WooCommerce's own lilac payment panel with a small arrow floating above its top-left corner. That arrow is WooCommerce pointing at the payment method's radio button - which this plugin hides when there is only one method to choose, leaving it pointing at nothing - and the panel itself is a second, unstyled box around a checkout the theme has already styled. Its padding is also uneven once the theme adds spacing of its own below the iframe, which is what made the payment window look like it was sitting too high in the box. Both are now removed for that case, so the Briqpay checkout sits directly in the theme's own layout. Stores offering other payment methods alongside Briqpay are unchanged: there the arrow and the panel still do their job. A theme can put either back with a rule of its own.
