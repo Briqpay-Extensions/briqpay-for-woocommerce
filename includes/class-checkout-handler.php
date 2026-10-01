@@ -453,6 +453,13 @@ class Checkout_Handler
 
         Legacy_B2b_Meta::apply($order, $session);
 
+        // Again here, not only at the decision. The payment method's own fields -
+        // reference, own order number, alternative invoice email - are filled in by
+        // Briqpay AFTER the decision, seconds to a minute later, so the order was
+        // built before they existed. No-ops when nothing changed, and never throws
+        // out into the customer's order confirmation.
+        Session_Order_Data::try_apply_custom_fields($order, $session);
+
         $order->save();
 
         // If already upgraded to pending, run cleanup and redirect. on-hold is
@@ -474,6 +481,11 @@ class Checkout_Handler
             // order in 'pending' until a webhook arrives. Only ever promotes from
             // pending - an order already processing or completed is left alone.
             $this->maybe_hold_for_manual_review($order, $session);
+
+            // Our status work is done. Release now rather than at shutdown: the
+            // webhook for this same event is very likely waiting on this lock
+            // right now, and it gives up after a few seconds.
+            Lock::release($order_lock);
 
             // Idempotent cart and session cleanup
             if (null !== WC()->cart && !WC()->cart->is_empty()) {
@@ -551,6 +563,9 @@ class Checkout_Handler
         // Upgrade order status if not already processed
         if (!$order->has_status(array('pending', 'on-hold', 'processing', 'completed'))) {
             $order->update_status('pending', __('Briqpay session verified. Awaiting webhook confirmation.', 'briqpay-for-woocommerce'));
+
+            // Status written - let a waiting webhook through. See above.
+            Lock::release($order_lock);
             $order->save();
             Logger::log('Order upgraded to pending: ' . $order->get_id());
 
@@ -1176,10 +1191,14 @@ class Checkout_Handler
             // 3. Store session ID in WC session for return handler
             Session_Manager::set_session_id($session_id);
 
-            // 4. Update metadata with actual order ID
+            // 4. Update metadata with the order number. get_order_number() is what
+            // the merchant and the customer see on the order, and it honours
+            // sequential-order-number plugins; it falls back to the ID by itself
+            // when no such plugin is installed. Hosted payment pages already send
+            // the same thing.
             $api->update_metadata($session_id, array(
                 'references' => array(
-                    'reference1' => (string) $order->get_id()
+                    'reference1' => (string) $order->get_order_number()
                 )
             ));
 

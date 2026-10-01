@@ -287,6 +287,33 @@ class ManualReviewHoldTest extends TestCase
     // Return handler
     // ──────────────────────────────────────────────────────────────────────
 
+    /**
+     * The return handler used to hold the order lock until PHP shutdown - through
+     * the on-hold email, every plugin hooked to checkout completion, and the
+     * redirect. The webhook for the same event waits seconds, not that long. The
+     * lock must be released the moment our own status write is done, on both
+     * paths that write one.
+     */
+    public function testReturnHandlerReleasesTheOrderLockRightAfterItsStatusWrite(): void
+    {
+        $source = $this->methodSource(Checkout_Handler::class, 'handle_briqpay_return');
+
+        $hold_pos = strpos($source, '$this->maybe_hold_for_manual_review($order, $session);');
+        $pending_pos = strpos($source, "update_status('pending'");
+        $redirect_pos = strpos($source, 'wp_safe_redirect($order->get_checkout_order_received_url());');
+
+        $this->assertNotFalse($hold_pos);
+        $this->assertNotFalse($pending_pos);
+        $this->assertNotFalse($redirect_pos);
+
+        $release_after_hold = strpos($source, 'Lock::release($order_lock);', $hold_pos);
+        $this->assertNotFalse($release_after_hold, 'No release after the manual-review hold.');
+        $this->assertLessThan($redirect_pos, $release_after_hold, 'The release must come before the redirect, not be left to shutdown.');
+
+        $release_after_pending = strpos($source, 'Lock::release($order_lock);', $pending_pos);
+        $this->assertNotFalse($release_after_pending, 'No release after the pending write.');
+    }
+
     public function testReturnHandlerHoldsAFlaggedPendingOrder(): void
     {
         $order = Mockery::mock('WC_Order');

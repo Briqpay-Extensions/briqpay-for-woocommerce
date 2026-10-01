@@ -320,13 +320,28 @@ window.briqpayCheckout = {
 
         container.style.visibility = '';
 
-        // Relative to <body>'s own box, so this holds whether or not a theme
-        // gives <body> a position of its own.
-        var br = document.body.getBoundingClientRect();
-
+        // Where does top:0 / left:0 land for this element? That depends on its
+        // containing block - the document itself when <body> is static, which
+        // is the usual case, or <body>'s own padding box when a theme positions
+        // it - and on any margin or border <body> carries. The previous code
+        // assumed <body>'s box and subtracted its rect; on a static <body> that
+        // is only right when the body sits at the document origin. Every theme
+        // that keeps the browser's default 8px body margin put the iframe 8px up
+        // and 8px left, and a theme that centres <body> with margin: 0 auto put
+        // it a full gutter off to the left. Rather than model that, ask the
+        // browser: place the container at the origin, measure where it landed,
+        // and offset from there. Both reads happen after the writes, in one
+        // layout pass, so nothing paints in between and the slot is measured in
+        // the same layout the container is.
         container.style.position = 'absolute';
-        container.style.top = (sr.top - br.top) + 'px';
-        container.style.left = (sr.left - br.left) + 'px';
+        container.style.top = '0px';
+        container.style.left = '0px';
+
+        var origin = container.getBoundingClientRect();
+        sr = slot.getBoundingClientRect();
+
+        container.style.top = (sr.top - origin.top) + 'px';
+        container.style.left = (sr.left - origin.left) + 'px';
         container.style.width = sr.width + 'px';
 
         // The container is out of flow, so the slot has to hold its height or
@@ -344,6 +359,19 @@ window.briqpayCheckout = {
         var height = container.offsetHeight;
         if (height) {
             slot.style.minHeight = height + 'px';
+        }
+
+        // The B2B checkout ships its slot with a "Loading payment..." spinner.
+        // While the container was the slot's own content, rendering the snippet
+        // overwrote it; now the container lives outside the slot, so nothing did,
+        // and the spinner kept animating behind the iframe for the whole session
+        // - visible wherever the iframe is shorter than it, and read out by
+        // screen readers. Once the live iframe exists it has done its job.
+        if (container.children.length) {
+            var loader = slot.querySelector('.briqpay-loader');
+            if (loader) {
+                loader.parentNode.removeChild(loader);
+            }
         }
     },
 

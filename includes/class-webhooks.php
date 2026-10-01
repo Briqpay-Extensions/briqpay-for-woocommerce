@@ -10,6 +10,16 @@ if (!defined('ABSPATH')) {
  */
 class Webhooks
 {
+    /**
+     * Seconds before a webhook that found its order locked runs again.
+     */
+    const LOCK_RETRY_DELAY = 30;
+
+    /**
+     * How many times a webhook may find its order locked before the ordinary
+     * failure path takes over (ten at thirty seconds is five minutes).
+     */
+    const MAX_LOCK_RETRIES = 10;
 
     /**
      * Init
@@ -150,13 +160,24 @@ class Webhooks
          */
         $wait = (int) apply_filters('briqpay_order_lock_wait', 15, 'webhook');
         if (!Lock::acquire_wait($lock, 60, $wait)) {
-            $this->retry_or_fail_webhook($data, $retry_count, 'Order ' . $order->get_id() . ' is locked by another Briqpay process');
+            $this->reschedule_behind_lock($data, $order, $retry_count);
             return;
         }
 
         try {
             // Whatever held the lock may have changed the order meanwhile.
             $order = Order_Management::reload_order($order);
+
+            // The fields the payment method collects (reference, own order number,
+            // alternative invoice email) only exist once Briqpay has filled them
+            // in, after the decision that built this order. A customer who never
+            // comes back to the store has no return handler to catch them, so this
+            // is the only path that does. Under the lock and after the re-read, so
+            // it cannot race the status handling below; saves only when something
+            // actually changed, so a redelivered webhook writes nothing.
+            if (Session_Order_Data::try_apply_custom_fields($order, $session)) {
+                $order->save();
+            }
 
             /**
              * Fires for every verified Briqpay webhook, before event routing.
@@ -326,6 +347,48 @@ class Webhooks
         $data['_briqpay_retry_count'] = $retry_count + 1;
         as_schedule_single_action(time() + 300, 'briqpay_v3_process_webhook_callback', array('payload' => $data), 'briqpay');
         Logger::log(sprintf('Webhook processing failed (attempt %d/%d) for session %s: %s. Retrying in 5 minutes.', $retry_count + 1, $max_retries, $session_id, $message));
+    }
+
+    /**
+     * The order is being changed by another Briqpay process at this moment -
+     * almost always the customer's own return, which lands in the same second as
+     * the webhook for the same event and holds the order lock while it writes
+     * the status, sends the on-hold or processing email and runs every plugin
+     * hooked to checkout completion. That routinely outlasts the wait above.
+     *
+     * It is not a failure, and it used to be handled as one: counted against the
+     * three attempts and retried five minutes later. The merchant's log then
+     * read "Webhook processing failed" and the payment status lagged by five
+     * minutes on precisely the orders that had just been placed on hold. It now
+     * comes back in thirty seconds without using up an attempt, for up to five
+     * minutes, before the ordinary failure path takes over.
+     *
+     * @param array     $data        Webhook payload.
+     * @param \WC_Order $order       The locked order.
+     * @param int       $retry_count The ordinary attempt counter, left untouched.
+     * @return void
+     */
+    private function reschedule_behind_lock($data, $order, $retry_count)
+    {
+        $lock_retries = (int) ($data['_briqpay_lock_retries'] ?? 0);
+        $message = sprintf('Order %s is locked by another Briqpay process', $order->get_id());
+
+        if ($lock_retries >= self::MAX_LOCK_RETRIES || !function_exists('as_schedule_single_action')) {
+            $this->retry_or_fail_webhook($data, $retry_count, $message);
+            return;
+        }
+
+        $data['_briqpay_lock_retries'] = $lock_retries + 1;
+        as_schedule_single_action(time() + self::LOCK_RETRY_DELAY, 'briqpay_v3_process_webhook_callback', array('payload' => $data), 'briqpay');
+
+        Logger::log(sprintf(
+            '%s - the webhook for session %s will run again in %ds (%d/%d).',
+            $message,
+            $data['sessionId'] ?? '',
+            self::LOCK_RETRY_DELAY,
+            $lock_retries + 1,
+            self::MAX_LOCK_RETRIES
+        ));
     }
 
     /**

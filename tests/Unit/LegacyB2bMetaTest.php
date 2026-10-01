@@ -328,4 +328,156 @@ class LegacyB2bMetaTest extends TestCase
 
         $this->assertSame('112233-4455', Legacy_B2b_Meta::get_company_cin($order));
     }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // The admin field: visible on open, and following the payment method
+    //
+    // Reported: the organisation number only appeared once the billing address
+    // was being EDITED, because the field was rendered only as an input inside
+    // div.edit_address, which WooCommerce keeps hidden until the pencil is
+    // clicked. And on a manual order it did not appear at all until the order
+    // had been saved with Briqpay as the payment method.
+    // ──────────────────────────────────────────────────────────────────────
+
+    private function mockRenderFunctions(): void
+    {
+        WP_Mock::userFunction('esc_html_e', ['return' => function ($text) { echo $text; }]);
+        WP_Mock::userFunction('woocommerce_wp_text_input', ['return' => function ($args) {
+            echo '<input id="' . $args['id'] . '" value="' . $args['value'] . '">';
+        }]);
+    }
+
+    private function renderOrgNr($org_nr, $payment_method = 'briqpay'): string
+    {
+        $this->mockRenderFunctions();
+
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn($org_nr);
+        $order->shouldReceive('get_payment_method')->andReturn($payment_method);
+
+        ob_start();
+        Legacy_B2b_Meta::render_org_nr_field($order);
+
+        return (string) ob_get_clean();
+    }
+
+    public function testOrgNumberIsShownBeforeAnyoneClicksEdit(): void
+    {
+        $html = $this->renderOrgNr('5591202071');
+
+        $view_pos = strpos($html, '<div class="address">');
+        $edit_pos = strpos($html, '<div class="edit_address">');
+
+        $this->assertNotFalse($view_pos, 'There must be a view-mode block - that is what shows on open.');
+        $this->assertNotFalse($edit_pos, 'The input must still be there for editing.');
+        $this->assertLessThan($edit_pos, $view_pos);
+        $this->assertStringContainsString('5591202071', substr($html, $view_pos, $edit_pos - $view_pos), 'The number must be in the view block.');
+        $this->assertStringNotContainsString('display:none', $html, 'A Briqpay order shows the field.');
+    }
+
+    public function testNoViewBlockWhenThereIsNothingToShowYet(): void
+    {
+        $html = $this->renderOrgNr('');
+
+        $this->assertStringNotContainsString('<div class="address">', $html);
+        $this->assertStringContainsString('id="_billing_org_nr"', $html, 'The input stays so a number can be entered.');
+    }
+
+    /**
+     * Rendered for every order so the dropdown can reveal it, but a non-Briqpay
+     * order must not show it on load.
+     */
+    public function testFieldIsRenderedHiddenForOtherPaymentMethods(): void
+    {
+        $html = $this->renderOrgNr('5591202071', 'cod');
+
+        $this->assertStringContainsString('briqpay-admin-field', $html, 'The toggle script finds it by this class.');
+        $this->assertStringContainsString('display:none', $html);
+    }
+
+    public function testTheToggleScriptIsEnqueuedOnOrderScreensOnly(): void
+    {
+        if (!defined('BRIQPAY_WC_URL')) {
+            define('BRIQPAY_WC_URL', 'https://example.test/wp-content/plugins/briqpay/');
+        }
+        if (!defined('BRIQPAY_WC_VERSION')) {
+            define('BRIQPAY_WC_VERSION', 'test');
+        }
+
+        $enqueued = [];
+        WP_Mock::userFunction('wp_enqueue_script', ['return' => function ($handle) use (&$enqueued) { $enqueued[] = $handle; }]);
+        WP_Mock::userFunction('get_current_screen', ['return' => (object) ['post_type' => 'shop_order']]);
+
+        Legacy_B2b_Meta::admin_scripts('woocommerce_page_wc-orders');
+        Legacy_B2b_Meta::admin_scripts('post-new.php');
+        Legacy_B2b_Meta::admin_scripts('edit.php');
+
+        $this->assertSame(
+            ['briqpay-admin-order-fields', 'briqpay-admin-order-fields'],
+            $enqueued,
+            'HPOS and classic order screens get it; the orders list does not.'
+        );
+    }
+
+    /**
+     * The field is on every order's screen now. Saving a non-Briqpay order with
+     * the (empty) field present must not stamp empty meta on it.
+     */
+    public function testSavingAnEmptyNumberOnAnOrderWithoutOneWritesNothing(): void
+    {
+        $_POST['_billing_org_nr'] = '';
+        $_POST['woocommerce_meta_nonce'] = 'n';
+        WP_Mock::userFunction('wp_verify_nonce', ['return' => true]);
+        WP_Mock::userFunction('current_user_can', ['return' => true]);
+
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('');
+        $order->shouldNotReceive('update_meta_data');
+        $order->shouldNotReceive('save');
+
+        // The test bootstrap's wc_get_order() returns an object it is handed.
+        Legacy_B2b_Meta::save_org_nr_field($order);
+
+        unset($_POST['_billing_org_nr'], $_POST['woocommerce_meta_nonce']);
+        $this->assertTrue(true);
+    }
+
+    public function testATypedNumberIsSaved(): void
+    {
+        $_POST['_billing_org_nr'] = '5591202071';
+        $_POST['woocommerce_meta_nonce'] = 'n';
+        WP_Mock::userFunction('wp_verify_nonce', ['return' => true]);
+        WP_Mock::userFunction('current_user_can', ['return' => true]);
+
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('');
+        $order->shouldReceive('update_meta_data')->with('_billing_org_nr', '5591202071')->once();
+        $order->shouldReceive('save')->once();
+
+        Legacy_B2b_Meta::save_org_nr_field($order);
+
+        unset($_POST['_billing_org_nr'], $_POST['woocommerce_meta_nonce']);
+        $this->assertTrue(true);
+    }
+
+    /**
+     * Clearing a number that IS set must still go through.
+     */
+    public function testClearingAnExistingNumberStillSaves(): void
+    {
+        $_POST['_billing_org_nr'] = '';
+        $_POST['woocommerce_meta_nonce'] = 'n';
+        WP_Mock::userFunction('wp_verify_nonce', ['return' => true]);
+        WP_Mock::userFunction('current_user_can', ['return' => true]);
+
+        $order = Mockery::mock('WC_Order');
+        $order->shouldReceive('get_meta')->with('_billing_org_nr')->andReturn('5591202071');
+        $order->shouldReceive('update_meta_data')->with('_billing_org_nr', '')->once();
+        $order->shouldReceive('save')->once();
+
+        Legacy_B2b_Meta::save_org_nr_field($order);
+
+        unset($_POST['_billing_org_nr'], $_POST['woocommerce_meta_nonce']);
+        $this->assertTrue(true);
+    }
 }

@@ -88,6 +88,19 @@ body.briqpay-only-gateway #briqpay-iframe-container > #briqpay:last-child {
     margin-bottom: 0;
 }
 
+/*
+ * Checkout Block only. Its payment box is an accordion: the radio label is the
+ * top row and the content below it has side and bottom padding but none on
+ * top, because the label is expected to be there. With the label hidden (sole
+ * gateway) and the container's own top padding removed above, the iframe
+ * starts exactly on the box's top edge - an inset box-shadow - and paints over
+ * it, so the box appeared to have no top. Same inset as the block gives the
+ * sides. The classic checkout never matches this selector.
+ */
+body.briqpay-only-gateway .wc-block-components-radio-control-accordion-option #briqpay-iframe-container {
+    padding-top: 16px;
+}
+
 /* Checkout Overlay */
 #briqpay-overlay {
     display: none;

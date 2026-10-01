@@ -509,6 +509,93 @@ describe('Briqpay Checkout JS', () => {
         expect(reservedAt).toBeGreaterThan(measuredAt);
     });
 
+    // The container is absolutely positioned on <body>. Where top:0/left:0 lands
+    // depends on the containing block - the document for a static <body>, the
+    // body box for a positioned one - and on any body margin. Computing the
+    // offset from <body>'s rect was only right when <body> sat at the document
+    // origin: the browser's default 8px body margin put the iframe 8px up and
+    // left, and a centred <body> put it a whole gutter off to the left.
+    // jsdom has no layout, so the geometry is mocked: the container reports where
+    // it would land for a given style, with a fixed offset standing in for
+    // whatever the theme did to <body>.
+    function geometry(originTop, originLeft) {
+        const slot = document.getElementById('briqpay-iframe-slot');
+        const container = window.briqpayCheckout.ensureContainer()[0];
+        slot.getBoundingClientRect = () => ({ top: 500, left: 300, width: 600, height: 400, right: 900, bottom: 900 });
+        container.getBoundingClientRect = () => ({
+            top: originTop + (parseFloat(container.style.top) || 0),
+            left: originLeft + (parseFloat(container.style.left) || 0),
+            width: parseFloat(container.style.width) || 0, height: 0, right: 0, bottom: 0,
+        });
+        return { slot, container };
+    }
+
+    test('the container lands on the slot when <body> keeps its default 8px margin', () => {
+        const { container } = geometry(8, 8);
+
+        window.briqpayCheckout.syncContainerPosition();
+
+        expect(container.style.top).toBe('492px');
+        expect(container.style.left).toBe('292px');
+        expect(container.style.width).toBe('600px');
+        // The outcome that matters: where it actually ended up.
+        expect(container.getBoundingClientRect().top).toBe(500);
+        expect(container.getBoundingClientRect().left).toBe(300);
+    });
+
+    test('the container lands on the slot when the theme centres <body>', () => {
+        const { container } = geometry(0, 143);
+
+        window.briqpayCheckout.syncContainerPosition();
+
+        expect(container.getBoundingClientRect().left).toBe(300);
+        expect(container.getBoundingClientRect().top).toBe(500);
+    });
+
+    test('and still when <body> is at the document origin (the previous assumption)', () => {
+        const { container } = geometry(0, 0);
+
+        window.briqpayCheckout.syncContainerPosition();
+
+        expect(container.style.top).toBe('500px');
+        expect(container.style.left).toBe('300px');
+    });
+
+    test('the origin is measured with the container parked at 0,0, in one layout pass', () => {
+        // Pins the mechanism: zero first, measure where that lands, re-measure the
+        // slot in the same layout, then offset. Reading the slot before the move
+        // would use a layout the move itself may have changed.
+        const src = window.briqpayCheckout.syncContainerPosition.toString();
+        const zeroed = src.indexOf("style.top = '0px'");
+        const origin = src.indexOf('origin = container.getBoundingClientRect()');
+        const slotAgain = src.indexOf('sr = slot.getBoundingClientRect()', zeroed);
+        const placed = src.indexOf('sr.top - origin.top');
+
+        expect(zeroed).toBeGreaterThan(-1);
+        expect(origin).toBeGreaterThan(zeroed);
+        expect(slotAgain).toBeGreaterThan(origin);
+        expect(placed).toBeGreaterThan(slotAgain);
+        expect(src).not.toContain('document.body.getBoundingClientRect()');
+    });
+
+    test('the B2B slot\'s loading spinner is retired once the live iframe exists', () => {
+        // [briqpay_b2b_checkout] renders a spinner inside the slot. Rendering the
+        // snippet used to overwrite it; with the container outside the slot it
+        // stayed, animating behind the iframe for the whole session.
+        $('#briqpay-iframe-slot').append('<div class="briqpay-loader">Loading payment...</div>');
+        const { container } = geometry(0, 0);
+
+        // Not yet: an empty container means the iframe has not arrived, and the
+        // spinner is exactly what should be showing.
+        container.innerHTML = '';
+        window.briqpayCheckout.syncContainerPosition();
+        expect($('#briqpay-iframe-slot .briqpay-loader').length).toBe(1);
+
+        container.innerHTML = '<div id="briqpay"><iframe></iframe></div>';
+        window.briqpayCheckout.syncContainerPosition();
+        expect($('#briqpay-iframe-slot .briqpay-loader').length).toBe(0);
+    });
+
     test('ensureContainer returns nothing when there is no slot either (e.g. Blocks)', () => {
         $('#briqpay-iframe-container').remove();
         $('#briqpay-iframe-slot').remove();

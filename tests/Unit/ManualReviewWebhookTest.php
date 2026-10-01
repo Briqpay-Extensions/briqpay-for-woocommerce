@@ -348,6 +348,81 @@ class ManualReviewWebhookTest extends TestCase
         $this->assertTrue(true);
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // The order lock - a webhook that finds the order busy
+    //
+    // Reported as "webhook failing when set to on-hold". The customer's return
+    // holds the order lock while it writes on-hold and sends the customer email;
+    // the webhook for the same event lands in the same second, waited 15 s,
+    // then counted that as a FAILED attempt and came back five minutes later.
+    // ──────────────────────────────────────────────────────────────────────
+
+    public function testAWebhookBlockedByTheOrderLockIsRescheduledNotFailed(): void
+    {
+        $order = $this->mockOrder(false);
+        $order->shouldNotReceive('update_status');
+        $order->shouldNotReceive('payment_complete');
+        $this->mockApi($this->session());
+
+        // Another process - the return handler - holds this order right now.
+        $this->assertTrue(\Briqpay\WooCommerce\Lock::acquire(\Briqpay\WooCommerce\Lock::order_key(700), 60));
+        WP_Mock::onFilter('briqpay_order_lock_wait')->with(15, 'webhook')->reply(0);
+
+        $scheduled = null;
+        WP_Mock::userFunction('as_schedule_single_action', array(
+            'return' => function ($timestamp, $hook, $args, $group) use (&$scheduled) {
+                $scheduled = compact('timestamp', 'hook', 'args', 'group');
+                return 1;
+            },
+        ));
+
+        $before = time();
+        (new Webhooks())->process_webhook_callback(array('sessionId' => 'sess_mr', 'action' => 'session'));
+
+        $this->assertNotNull($scheduled, 'The webhook must be put back on the queue.');
+        $this->assertSame('briqpay_v3_process_webhook_callback', $scheduled['hook']);
+        $this->assertEqualsWithDelta($before + Webhooks::LOCK_RETRY_DELAY, $scheduled['timestamp'], 3, 'Back in thirty seconds, not five minutes.');
+        $this->assertSame(1, $scheduled['args']['payload']['_briqpay_lock_retries']);
+        $this->assertArrayNotHasKey(
+            '_briqpay_retry_count',
+            $scheduled['args']['payload'],
+            'Waiting for the lock must not use up one of the three real attempts.'
+        );
+    }
+
+    /**
+     * A lock that never clears is a real problem, so after five minutes of
+     * waiting the ordinary failure path - five-minute retries, then an error -
+     * takes over.
+     */
+    public function testAfterTheLockRetriesAreExhaustedTheOrdinaryFailurePathTakesOver(): void
+    {
+        $order = $this->mockOrder(false);
+        $this->mockApi($this->session());
+
+        $this->assertTrue(\Briqpay\WooCommerce\Lock::acquire(\Briqpay\WooCommerce\Lock::order_key(700), 60));
+        WP_Mock::onFilter('briqpay_order_lock_wait')->with(15, 'webhook')->reply(0);
+
+        $scheduled = null;
+        WP_Mock::userFunction('as_schedule_single_action', array(
+            'return' => function ($timestamp, $hook, $args, $group) use (&$scheduled) {
+                $scheduled = compact('timestamp', 'hook', 'args', 'group');
+                return 1;
+            },
+        ));
+
+        $before = time();
+        (new Webhooks())->process_webhook_callback(array(
+            'sessionId' => 'sess_mr',
+            'action' => 'session',
+            '_briqpay_lock_retries' => Webhooks::MAX_LOCK_RETRIES,
+        ));
+
+        $this->assertNotNull($scheduled);
+        $this->assertEqualsWithDelta($before + 300, $scheduled['timestamp'], 3, 'Now it is a real retry, five minutes out.');
+        $this->assertSame(1, $scheduled['args']['payload']['_briqpay_retry_count']);
+    }
+
     /**
      * The escape hatch has to actually work, or a merchant who needs the old
      * behaviour is stuck.

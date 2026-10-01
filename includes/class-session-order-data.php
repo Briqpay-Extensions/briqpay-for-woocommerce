@@ -11,9 +11,19 @@ if (!defined('ABSPATH')) {
  * input fields (reference, own order number, alternative email, ...).
  *
  * Those fields are configured per merchant in the Briqpay backoffice, on the
- * order note module or the custom form, so their keys are not known here. The
- * V3 session returns each one as data.orderNote.<key> / data.customForm1.<key>,
- * shaped { value, header } where header is the label the customer saw.
+ * order note module, the custom form or the payment method itself, so their keys
+ * are not known here. The V3 session returns each one as
+ * data.orderNote.<key> / data.customForm1.<key> /
+ * data.paymentAdditionalFields.<key>, shaped { value, header } where header is
+ * the label the customer saw.
+ *
+ * paymentAdditionalFields is the invoice payment method's own block - the
+ * reference, the customer's own order number, the alternative invoice email, the
+ * GLN. It behaves differently from the other two in one way that matters: Briqpay
+ * only fills it in AFTER the decision, between one and ninety-five seconds later.
+ * The order is built at the decision, so reading it only there finds nothing,
+ * which is why apply_custom_fields() also runs on the customer's return and on
+ * every webhook.
  */
 class Session_Order_Data
 {
@@ -26,6 +36,7 @@ class Session_Order_Data
      * Session blocks read, mapped to the prefix of their per-field meta keys.
      */
     const SOURCES = array(
+        'paymentAdditionalFields' => '_briqpay_payment_field_',
         'orderNote' => '_briqpay_order_note_',
         'customForm1' => '_briqpay_custom_form_',
     );
@@ -74,13 +85,23 @@ class Session_Order_Data
                     continue;
                 }
 
+                // Briqpay's own casing is kept - sanitize_key() would lowercase
+                // customerOrderNumber to customerordernumber, and an integration
+                // reading the meta key has to be able to predict it from the
+                // Briqpay field name. Only characters unsafe in a meta key are
+                // dropped, which can leave nothing to key on.
+                $meta_key = preg_replace('/[^A-Za-z0-9_\-]/', '', (string) $key);
+                if ('' === $meta_key) {
+                    continue;
+                }
+
                 $label = is_array($entry) && isset($entry['header']) && is_scalar($entry['header'])
                     ? (string) $entry['header']
                     : '';
 
                 $fields[] = array(
                     'source' => $source,
-                    'key' => sanitize_key((string) $key),
+                    'key' => $meta_key,
                     'label' => sanitize_text_field('' !== $label ? $label : (string) $key),
                     'value' => $value,
                 );
@@ -93,35 +114,49 @@ class Session_Order_Data
     /**
      * Write the collected fields onto the order.
      *
-     * Each field gets its own meta key (_briqpay_order_note_<key>,
-     * _briqpay_custom_form_<key>) for integrations, plus one order note listing
-     * them so the merchant sees them on the order screen. Runs on every sync, so
-     * the note is only added when the values have changed. Does not save the
-     * order - callers do.
+     * Each field gets its own meta key (_briqpay_payment_field_<key>,
+     * _briqpay_order_note_<key>, _briqpay_custom_form_<key>) for integrations,
+     * plus one order note listing them so the merchant sees them on the order
+     * screen. The order note also becomes WooCommerce's own customer note when the
+     * order has none, because that is where a merchant looks for it.
+     *
+     * Runs on every sync - at the decision, on the customer's return and on every
+     * webhook - so nothing is written at all unless the values actually changed.
+     * That is what keeps a redelivered webhook from adding a second identical
+     * order note. Does not save the order; the return value tells the caller
+     * whether there is anything to save.
      *
      * @param \WC_Order $order   The order.
      * @param array     $session Briqpay session.
-     * @return void
+     * @return bool True if the order was changed and needs saving.
      */
     public static function apply_custom_fields($order, array $session)
     {
         $fields = self::custom_fields($session);
         if (empty($fields)) {
-            return;
+            return false;
         }
 
-        foreach ($fields as $field) {
-            $order->update_meta_data(self::SOURCES[$field['source']] . $field['key'], $field['value']);
-        }
-
+        // Compared before anything is written, so an unchanged session is a true
+        // no-op: no meta writes, no note, and nothing for the caller to save.
         $encoded = wp_json_encode($fields);
         if ($encoded === $order->get_meta(self::META_FIELDS)) {
-            return;
+            return false;
         }
         $order->update_meta_data(self::META_FIELDS, $encoded);
 
         $lines = array();
         foreach ($fields as $field) {
+            $order->update_meta_data(self::SOURCES[$field['source']] . $field['key'], $field['value']);
+
+            // The note the customer typed belongs in WooCommerce's own field, not
+            // only in our meta. Never overwrites one that is already there: the
+            // checkout form's note wins over a later Briqpay sync.
+            if ('orderNote' === $field['source'] && 'note' === $field['key']
+                && '' === (string) $order->get_customer_note()) {
+                $order->set_customer_note($field['value']);
+            }
+
             $lines[] = $field['label'] . ': ' . $field['value'];
         }
 
@@ -130,6 +165,38 @@ class Session_Order_Data
         );
 
         Logger::log(sprintf('Applied %d Briqpay checkout field(s) to order %s.', count($fields), $order->get_id()));
+
+        return true;
+    }
+
+    /**
+     * apply_custom_fields(), with anything it throws swallowed and logged.
+     *
+     * For the two call sites where this is supplementary work attached to
+     * something far more important: the customer's return, which renders their
+     * order confirmation, and the webhook, which records the payment status. Both
+     * run this before that work. A failure to store a reference field must never
+     * cost the customer their confirmation page or the merchant a status update -
+     * the values stay in the Briqpay session either way, and the next sync
+     * retries.
+     *
+     * @param \WC_Order $order   The order.
+     * @param array     $session Briqpay session.
+     * @return bool True if the order was changed and needs saving.
+     */
+    public static function try_apply_custom_fields($order, array $session)
+    {
+        try {
+            return self::apply_custom_fields($order, $session);
+        } catch (\Throwable $e) {
+            Logger::error(sprintf(
+                'Could not apply Briqpay checkout fields to order %s: %s',
+                is_callable(array($order, 'get_id')) ? $order->get_id() : 'unknown',
+                $e->getMessage()
+            ));
+
+            return false;
+        }
     }
 
     /**

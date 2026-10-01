@@ -38,6 +38,32 @@ class Legacy_B2b_Meta
         add_action('woocommerce_admin_order_data_after_billing_address', array(__CLASS__, 'render_org_nr_field'));
         add_action('woocommerce_admin_order_data_after_shipping_address', array(__CLASS__, 'render_shipping_email'));
         add_action('woocommerce_process_shop_order_meta', array(__CLASS__, 'save_org_nr_field'), 45, 1);
+        add_action('admin_enqueue_scripts', array(__CLASS__, 'admin_scripts'));
+    }
+
+    /**
+     * Follow the payment method dropdown on the order edit screen, so the
+     * Briqpay-only fields appear as soon as Briqpay is chosen on a manual order.
+     *
+     * Deliberately not gated on the order already having Briqpay as its payment
+     * method - that is the whole point: a new manual order has none yet.
+     *
+     * @param string $hook Current admin page hook.
+     */
+    public static function admin_scripts($hook)
+    {
+        $is_order_screen = 'woocommerce_page_wc-orders' === $hook;
+
+        if (!$is_order_screen && in_array($hook, array('post.php', 'post-new.php'), true)) {
+            $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+            $is_order_screen = $screen && 'shop_order' === $screen->post_type;
+        }
+
+        if (!$is_order_screen) {
+            return;
+        }
+
+        wp_enqueue_script('briqpay-admin-order-fields', BRIQPAY_WC_URL . 'assets/js/admin-order-fields.js', array('jquery'), BRIQPAY_WC_VERSION, true);
     }
 
     /**
@@ -182,11 +208,29 @@ class Legacy_B2b_Meta
      */
     public static function render_org_nr_field($order)
     {
-        if ('briqpay' !== $order->get_payment_method()) {
-            return;
-        }
+        $org_nr = (string) $order->get_meta('_billing_org_nr');
+
+        // Rendered for every order, shown only for Briqpay ones. The saved payment
+        // method decides the initial state; admin-order-fields.js then follows the
+        // payment method dropdown, so on a manual order the field appears the
+        // moment Briqpay is chosen instead of only after the order is saved.
+        $hidden = 'briqpay' !== $order->get_payment_method();
         ?>
-        <div class="order_data_column" style="clear:both; float:none; width:100%;">
+        <div class="order_data_column briqpay-admin-field" style="clear:both; float:none; width:100%;<?php echo $hidden ? ' display:none;' : ''; ?>">
+            <?php if ('' !== $org_nr) : ?>
+                <?php
+                // WooCommerce shows div.address and hides div.edit_address until
+                // the pencil is clicked, then swaps them. Without this block the
+                // number only ever existed as an input inside edit_address, so it
+                // was invisible until someone started editing the billing address.
+                ?>
+                <div class="address">
+                    <p>
+                        <strong><?php esc_html_e('Billing Organization Number', 'briqpay-for-woocommerce'); ?>:</strong>
+                        <?php echo esc_html($org_nr); ?>
+                    </p>
+                </div>
+            <?php endif; ?>
             <div class="edit_address">
                 <?php
                 woocommerce_wp_text_input(
@@ -194,7 +238,7 @@ class Legacy_B2b_Meta
                         'id' => '_billing_org_nr',
                         'label' => __('Billing Organization Number', 'briqpay-for-woocommerce'),
                         'wrapper_class' => '_billing_company_field',
-                        'value' => $order->get_meta('_billing_org_nr'),
+                        'value' => $org_nr,
                     )
                 );
                 ?>
@@ -254,6 +298,13 @@ class Legacy_B2b_Meta
         }
 
         $org_number = sanitize_text_field(wp_unslash($_POST['_billing_org_nr']));
+
+        // The field is on every order's edit screen now, not only Briqpay ones.
+        // An empty value on an order that never had one is not a change.
+        if ('' === $org_number && '' === (string) $order->get_meta('_billing_org_nr')) {
+            return;
+        }
+
         $order->update_meta_data('_billing_org_nr', $org_number);
         $order->save();
     }

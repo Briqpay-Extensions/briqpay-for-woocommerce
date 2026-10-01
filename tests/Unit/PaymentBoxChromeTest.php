@@ -210,6 +210,36 @@ class PaymentBoxChromeTest extends TestCase
         }
     }
 
+    /**
+     * The Checkout Block's payment box is an accordion whose top row is the
+     * radio label. Hiding that label (sole gateway) and zeroing the container's
+     * top padding let the iframe start on the box's top edge and paint over it,
+     * so the box appeared to have no top. A blocks-only inset puts it back, and
+     * must outrank the padding-top: 0 rule it corrects - and never reach the
+     * classic checkout.
+     */
+    public function testTheCheckoutBlockGetsItsTopInsetBack(): void
+    {
+        $rules = $this->rules($this->css('stylesheet'));
+
+        $zero = $this->findRuleBySelector($rules, 'body.briqpay-only-gateway #briqpay-iframe-container');
+        $inset = $this->findRuleBySelector($rules, 'body.briqpay-only-gateway .wc-block-components-radio-control-accordion-option #briqpay-iframe-container');
+
+        $this->assertNotNull($zero);
+        $this->assertNotNull($inset, 'No blocks-only inset for the iframe container.');
+        $this->assertMatchesRegularExpression('/padding-top:\s*16px/', $inset['body']);
+        $this->assertGreaterThan(
+            $this->specificity($zero['selector']),
+            $this->specificity($inset['selector']),
+            'The inset must outrank the padding-top: 0 rule or it does nothing.'
+        );
+        $this->assertStringContainsString(
+            'wc-block-components-radio-control-accordion-option',
+            $inset['selector'],
+            'Scoped to the Checkout Block so the classic checkout is untouched.'
+        );
+    }
+
     // ──────────────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────────────
