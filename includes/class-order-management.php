@@ -446,16 +446,17 @@ class Order_Management
             );
         }
 
-        foreach ($order->get_items('coupon') as $coupon) {
-            $code = $coupon->get_code();
-            $discount = -1 * (float) $coupon->get_discount();
-            $discount_tax = -1 * (float) $coupon->get_discount_tax();
+        // One line per coupon and tax rate, matching what the session was
+        // created with - Briqpay validates a capture line exactly like a session
+        // line. See Discount_Lines.
+        foreach ($this->discount_lines($order) as $line) {
+            $discount = -1 * (float) $line['ex'];
+            $discount_tax = -1 * (float) $line['tax'];
             $add(
-                'discount_' . $code,
-                // translators: %s: coupon code
-                sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                $line['reference'],
+                $line['name'],
                 'physical',
-                $this->get_coupon_tax_rate($order),
+                (int) $line['rate'],
                 1,
                 $discount,
                 $discount + $discount_tax
@@ -1261,7 +1262,10 @@ class Order_Management
         $refund_coupon_items = $latest_refund->get_items('coupon');
 
         if (!empty($refund_coupon_items)) {
-            // Refund object explicitly includes coupon items — use them directly
+            // Refund object explicitly includes coupon items. Each is split the
+            // way the order's own coupon lines are split, so a refund line
+            // carries the rate of the line it reverses. See Discount_Lines.
+            $order_discount_lines = $this->discount_lines($order);
             foreach ($refund_coupon_items as $item) {
                 $code = $item->get_code();
                 $discount_amount = abs((float) $item->get_discount());
@@ -1271,25 +1275,24 @@ class Order_Management
                     $total_tax_to_refund -= $discount_tax;
                 }
 
-                $ref = 'discount_' . $code;
+                foreach (Discount_Lines::split_refund($order_discount_lines, $code, $discount_amount, $discount_tax) as $line) {
+                    $amount_enc_vat_val = ($line['ex'] + $line['tax']) * -1;
+                    $amount_ex_vat_val = $line['ex'] * -1;
+                    $vat_amount_val = $line['tax'] * -1;
 
-                $amount_enc_vat_val = ($discount_amount + $discount_tax) * -1;
-                $amount_ex_vat_val = $discount_amount * -1;
-                $vat_amount_val = $discount_tax * -1;
-
-                $items[] = array(
-                    'productType' => 'physical',
-                    'reference' => $ref,
-                    // translators: %s: coupon code
-                    'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
-                    'quantity' => 1,
-                    'quantityUnit' => 'pc',
-                    'unitPrice' => (int) round($amount_ex_vat_val * 100),
-                    'unitPriceIncVat' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                    'taxRate' => $is_us ? 0 : $this->get_coupon_tax_rate($order),
-                    'totalAmount' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
-                    'totalVatAmount' => $is_us ? 0 : (int) round($vat_amount_val * 100),
-                );
+                    $items[] = array(
+                        'productType' => 'physical',
+                        'reference' => $line['reference'],
+                        'name' => $line['name'],
+                        'quantity' => 1,
+                        'quantityUnit' => 'pc',
+                        'unitPrice' => (int) round($amount_ex_vat_val * 100),
+                        'unitPriceIncVat' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
+                        'taxRate' => $is_us ? 0 : (int) $line['rate'],
+                        'totalAmount' => $is_us ? (int) round($amount_ex_vat_val * 100) : (int) round($amount_enc_vat_val * 100),
+                        'totalVatAmount' => $is_us ? 0 : (int) round($vat_amount_val * 100),
+                    );
+                }
             }
         }
 
@@ -1787,25 +1790,22 @@ class Order_Management
             }
         }
 
-        // Coupons are now handled as separate lines
-        foreach ($order->get_items('coupon') as $coupon) {
-            $code = $coupon->get_code();
-            $ref = 'discount_' . $code;
-            if (!isset($captured_counts[$ref])) {
-                $discount_amount = (float) $coupon->get_discount();
-                $discount_tax = (float) $coupon->get_discount_tax();
-                $tax_rate = $this->get_coupon_tax_rate($order);
+        // Coupons are separate lines - one per coupon and tax rate, the same
+        // lines the session was created with. See Discount_Lines.
+        foreach ($this->discount_lines($order) as $line) {
+            if (!isset($captured_counts[$line['reference']])) {
+                $discount_amount = (float) $line['ex'];
+                $discount_tax = (float) $line['tax'];
 
                 $items_to_capture[] = array(
                     'productType' => 'physical',
-                    'reference' => $ref,
-                    // translators: %s: coupon code
-                    'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                    'reference' => $line['reference'],
+                    'name' => $line['name'],
                     'quantity' => 1,
                     'quantityUnit' => 'pc',
                     'unitPrice' => (int) round($discount_amount * -100),
                     'unitPriceIncVat' => $is_us ? (int) round($discount_amount * -100) : (int) round(($discount_amount + $discount_tax) * -100),
-                    'taxRate' => $is_us ? 0 : $tax_rate,
+                    'taxRate' => $is_us ? 0 : (int) $line['rate'],
                     'totalAmount' => $is_us ? (int) round($discount_amount * -100) : (int) round(($discount_amount + $discount_tax) * -100),
                     'totalVatAmount' => $is_us ? 0 : (int) round($discount_tax * -100),
                 );
@@ -1883,22 +1883,20 @@ class Order_Management
             );
         }
 
-        foreach ($order->get_items('coupon') as $coupon) {
-            $code = $coupon->get_code();
-            $discount_amount = (float) $coupon->get_discount();
-            $discount_tax = (float) $coupon->get_discount_tax();
-            $tax_rate = $this->get_coupon_tax_rate($order);
+        // One line per coupon and tax rate. See Discount_Lines.
+        foreach ($this->discount_lines($order) as $line) {
+            $discount_amount = (float) $line['ex'];
+            $discount_tax = (float) $line['tax'];
 
             $items[] = array(
                 'productType' => 'physical',
-                'reference' => 'discount_' . $code,
-                // translators: %s: coupon code
-                'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                'reference' => $line['reference'],
+                'name' => $line['name'],
                 'quantity' => 1,
                 'quantityUnit' => 'pc',
                 'unitPrice' => (int) round($discount_amount * -100),
                 'unitPriceIncVat' => (int) round(($discount_amount + $discount_tax) * -100),
-                'taxRate' => $tax_rate,
+                'taxRate' => (int) $line['rate'],
                 'totalAmount' => (int) round(($discount_amount + $discount_tax) * -100),
                 'totalVatAmount' => (int) round($discount_tax * -100),
             );
@@ -2001,13 +1999,21 @@ class Order_Management
      * so we use the first item's tax rate instead of deriving it
      * from amounts (which causes precision errors like 25.01%).
      */
-    private function get_coupon_tax_rate($order)
+    /**
+     * The order's coupon lines, one per coupon and tax rate.
+     *
+     * Replaces the former first-line-rate lookup, which stamped every coupon
+     * with the first line's rate - wrong for any coupon that did not touch that
+     * line, and the reason Briqpay refused mixed-rate carts.
+     *
+     * @param \WC_Order $order The order.
+     * @return array<int,array{reference:string,name:string,code:string,rate:int,ex:float,tax:float}>
+     */
+    public function discount_lines($order)
     {
-        $items = $order->get_items();
-        foreach ($items as $item) {
+        return Discount_Lines::from_order($order, function ($item) {
             return $this->get_item_tax_rate($item);
-        }
-        return 0;
+        });
     }
 
     /**

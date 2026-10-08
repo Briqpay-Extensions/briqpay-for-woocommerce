@@ -786,3 +786,13 @@ msgstr "Briqpay: bedrag/valuta van de vastlegging kloppen niet! BP: %s %s, WC: %
 #: includes/class-webhooks.php:622
 msgid "Briqpay: Refund approved."
 msgstr "Briqpay: terugbetaling goedgekeurd."
+
+#: includes/class-discount-lines.php:446
+#, php-format
+msgid "Discount (%s)"
+msgstr "Korting (%s)"
+
+#: includes/class-discount-lines.php:463
+#, php-format
+msgid "Coupon: %1$s (%2$s)"
+msgstr "Kortingscode: %1$s (%2$s)"

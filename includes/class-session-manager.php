@@ -853,49 +853,34 @@ class Session_Manager
                 $total_tax_amount_float += $fee->tax;
             }
         }
-        // Coupons/Discounts
-        foreach ($cart->get_applied_coupons() as $coupon_code) {
-            Logger::log('Processing coupon: ' . $coupon_code);
-            $discount_amount = (float) $cart->get_coupon_discount_amount($coupon_code);
-            $discount_tax = (float) $cart->get_coupon_discount_tax_amount($coupon_code);
+        // Coupons/Discounts - one line per coupon AND tax rate. Briqpay checks
+        // every line's taxRate against its VAT amount, and a coupon spanning
+        // products at different rates has no single rate; stamping it with the
+        // first cart line's rate (the previous behaviour) made Briqpay refuse the
+        // whole session on any mixed-rate cart. See Discount_Lines.
+        $discount_lines = Discount_Lines::from_cart($cart, function ($cart_item, $product) {
+            return $this->get_applied_tax_rate($cart_item, $product);
+        });
+        foreach ($discount_lines as $line) {
+            Logger::log(sprintf('Processing coupon line: %s (rate %d)', $line['reference'], $line['rate']));
+            $discount_amount = (float) $line['ex'];
+            $discount_tax = (float) $line['tax'];
 
-            if ($discount_amount > 0 || $discount_tax > 0) {
-                // Take the rate from the first cart line rather than deriving it
-                // from the amounts, which causes precision errors like 25.01%.
-                // Read from the tax actually applied to that line for the same
-                // reason the lines themselves do - a discount on a VAT-exempt
-                // cart must not be reported at the product's nominal 25%.
-                //
-                // Known limitation: a cart mixing VAT rates has its whole
-                // discount reported at the first line's rate. Correcting that
-                // means splitting the discount per rate, which changes the
-                // amounts themselves rather than just how they are labelled.
-                $coupon_tax_rate = 0;
-                $cart_contents = $cart->get_cart();
-                if (!empty($cart_contents)) {
-                    $first_item = reset($cart_contents);
-                    if (isset($first_item['data']) && $first_item['data'] instanceof \WC_Product) {
-                        $coupon_tax_rate = $this->get_applied_tax_rate($first_item, $first_item['data']);
-                    }
-                }
+            $items[] = array(
+                'productType' => 'physical',
+                'reference' => $line['reference'],
+                'name' => $line['name'],
+                'quantity' => 1,
+                'quantityUnit' => 'pc',
+                'unitPrice' => $this->to_int($discount_amount * -1),
+                'taxRate' => $is_us ? 0 : (int) $line['rate'],
+                'unitPriceIncVat' => $is_us ? $this->to_int($discount_amount * -1) : $this->to_int(($discount_amount + $discount_tax) * -1),
+                'totalVatAmount' => $is_us ? 0 : $this->to_int($discount_tax * -1),
+                'totalAmount' => $is_us ? $this->to_int($discount_amount * -1) : $this->to_int(($discount_amount + $discount_tax) * -1),
+            );
 
-                $items[] = array(
-                    'productType' => 'physical',
-                    'reference' => 'discount_' . $coupon_code,
-                    // translators: %s: coupon code
-                    'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $coupon_code),
-                    'quantity' => 1,
-                    'quantityUnit' => 'pc',
-                    'unitPrice' => $this->to_int($discount_amount * -1),
-                    'taxRate' => $is_us ? 0 : $coupon_tax_rate,
-                    'unitPriceIncVat' => $is_us ? $this->to_int($discount_amount * -1) : $this->to_int(($discount_amount + $discount_tax) * -1),
-                    'totalVatAmount' => $is_us ? 0 : $this->to_int($discount_tax * -1),
-                    'totalAmount' => $is_us ? $this->to_int($discount_amount * -1) : $this->to_int(($discount_amount + $discount_tax) * -1),
-                );
-
-                if ($is_us) {
-                    $total_tax_amount_float -= $discount_tax;
-                }
+            if ($is_us) {
+                $total_tax_amount_float -= $discount_tax;
             }
         }
 

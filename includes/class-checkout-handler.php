@@ -1406,6 +1406,17 @@ class Checkout_Handler
                                     $v_id = $p->get_type() === 'variation' ? $p->get_id() : 0;
                                     if ((int) $order_item->get_product_id() === (int) $p_id && (int) $order_item->get_variation_id() === (int) $v_id && (int) $order_item->get_quantity() === (int) $cart_item['quantity']) {
                                         $found = true;
+                                        // A Blocks draft was built by WooCommerce, not by the
+                                        // loop below, so its items carry no Briqpay reference.
+                                        // Capture and refund would then fall back to the bare
+                                        // SKU while the session was created with the
+                                        // SKU-price form - Briqpay rejects the capture with
+                                        // CART_ITEM_NOT_FOUND. Stamp the same reference the
+                                        // session got.
+                                        if (!$order_item->get_meta('_briqpay_item_reference')) {
+                                            $order_item->add_meta_data('_briqpay_item_reference', self::cart_item_reference($cart_item), true);
+                                            $order_item->save();
+                                        }
                                         break;
                                     }
                                 }
@@ -1591,21 +1602,13 @@ class Checkout_Handler
 
                 $item->set_backorder_meta();
 
-                $sku = $product->get_sku();
-                $id = $product->get_id();
-                $base_ref = !empty($sku) ? $sku : (string) $id;
-
                 // Mirror Session_Manager::get_cart_items()'s reference format so
                 // capture/refund lookups (which match session cart items to order
                 // items by reference) keep working when the same SKU appears at
                 // different prices in one cart (add-ons, bundles, personalization,
                 // role pricing). Store it so it survives even if the product is
                 // later deleted or its price changes.
-                $unit_price_minor_units = $values['quantity'] > 0
-                    ? (int) round(($values['line_subtotal'] / $values['quantity']) * 100)
-                    : 0;
-                $ref = $base_ref . '-' . $unit_price_minor_units;
-                $item->add_meta_data('_briqpay_item_reference', $ref);
+                $item->add_meta_data('_briqpay_item_reference', self::cart_item_reference($values));
 
                 // Add variation attributes as item meta (e.g. "Color: Blue")
                 if (!empty($values['variation'])) {
@@ -1781,6 +1784,29 @@ class Checkout_Handler
         do_action('briqpay_after_create_order', $order, $session);
 
         return $order;
+    }
+
+    /**
+     * The Briqpay line reference for a cart item: SKU (or product ID) plus
+     * the unit price in minor units, exactly as Session_Manager::get_cart_items()
+     * builds it. Order items are stamped with this so capture and refund send
+     * the reference the session was created with.
+     *
+     * @param array $values A WC()->cart->get_cart() entry.
+     * @return string
+     */
+    public static function cart_item_reference(array $values)
+    {
+        $product = $values['data'];
+        $sku = $product->get_sku();
+        $base_ref = !empty($sku) ? $sku : (string) $product->get_id();
+
+        $quantity = isset($values['quantity']) ? (int) $values['quantity'] : 0;
+        $unit_price_minor_units = $quantity > 0
+            ? (int) round((((float) ($values['line_subtotal'] ?? 0)) / $quantity) * 100)
+            : 0;
+
+        return $base_ref . '-' . $unit_price_minor_units;
     }
 
     /**

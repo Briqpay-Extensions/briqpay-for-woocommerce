@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.20
+Stable tag: 1.1.21
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,12 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.21 =
+* Fix: A cart mixing VAT rates - 25% goods together with 6% or 12% goods, say - could not be paid at all when a coupon was applied: Briqpay refused to create the session with "Cart item ... taxRate * unitPrice * quantity != totalVatAmount", and the payment window never appeared. Every coupon was reported at the rate of the first product in the cart, so a coupon that only discounted the 6% products was labelled 25% while carrying 6% VAT. Coupons are now reported the way WooCommerce actually calculates them: each coupon's share of every product is taxed at that product's rate, and a coupon that touches more than one rate is sent as one line per rate ("Coupon: SPRING (6%)", "Coupon: SPRING (25%)"). A coupon that touches a single rate is unchanged. The same applies to captures, refunds, the admin capture form and hosted payment pages, which build the same lines. Discounts from plugins that apply themselves as coupons (Discount Rules for WooCommerce, among others) are covered.
+* Fix: Captures of orders paid through the WooCommerce Blocks checkout could be refused by Briqpay with "CART_ITEM_NOT_FOUND ... has mismatching reference" when WooCommerce had created a draft order before the shopper paid. The plugin reuses that draft, but its items were built by WooCommerce and carried no Briqpay line reference, so the capture sent the bare SKU while the session had been created with "SKU-unitprice". Reused draft items now get the same reference the session got. Orders already stuck on hold from this can be captured again after updating.
+* Fix: Captures and refunds of orders discounted by a coupon plugin (Discount Rules for WooCommerce and others that apply their rules as virtual coupons) now rebuild the coupon from the snapshot WooCommerce stored on the order, exactly as WooCommerce's own "Recalculate" does, so the capture carries the same coupon lines as the session. Briqpay matches capture lines to the session by reference, name and unit price; a fallback line built from the order totals alone would be refused.
+* Translations: the new coupon line labels ("Coupon: CODE (6%)", "Discount (6%)") are translated in all eleven shipped languages, so a Swedish shop shows "Rabattkod: CODE (6%)" in the payment window, consistent with single-rate coupons.
 
 = 1.1.20 =
 * Fix: On the classic checkout, the payment window could sit off to the side and slightly too high - by exactly the theme's body margin. Since 1.1.16 the window is positioned over the spot it belongs in rather than placed inside it, and that position was computed relative to the page body, which is only right when the body starts at the very corner of the page. A theme that keeps the browser's default 8px body margin put it 8px up and 8px left; a theme that centres the body put it a whole gutter off to the left. The position is now taken from where the browser actually places the window, so it lands on the spot regardless of what the theme does to the body. Themes where the body starts at the corner, which is where this was built and tested, are unchanged.

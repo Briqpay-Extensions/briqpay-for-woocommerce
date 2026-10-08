@@ -786,3 +786,13 @@ msgstr "Briqpay: hævningens beløb/valuta stemmer ikke! BP: %s %s, WC: %s %s."
 #: includes/class-webhooks.php:622
 msgid "Briqpay: Refund approved."
 msgstr "Briqpay: refunderingen er godkendt."
+
+#: includes/class-discount-lines.php:446
+#, php-format
+msgid "Discount (%s)"
+msgstr "Rabat (%s)"
+
+#: includes/class-discount-lines.php:463
+#, php-format
+msgid "Coupon: %1$s (%2$s)"
+msgstr "Rabatkode: %1$s (%2$s)"

@@ -355,22 +355,20 @@ class Admin_Order_Meta_Box
             );
         }
 
-        // Coupons
-        foreach ($order->get_coupons() as $coupon) {
-            $code = $coupon->get_code();
-            $ref = 'discount_' . $code;
-            if (!isset($captured_counts[$ref])) {
-                $discount_amount = (float) $coupon->get_discount();
-                $discount_tax = (float) $coupon->get_discount_tax();
-                $tax_rate = $this->get_coupon_tax_rate($order);
-
+        // Coupons - the same per-coupon, per-rate lines the capture itself sends,
+        // so what the merchant ticks is what gets captured. See Discount_Lines.
+        $lines = Discount_Lines::from_order($order, function ($item) {
+            return $this->get_item_tax_rate($item);
+        });
+        foreach ($lines as $line) {
+            if (!isset($captured_counts[$line['reference']])) {
                 $remaining[] = array(
                     'productType' => 'physical',
-                    'reference' => $ref,
-                    'name' => sprintf(__('Coupon: %s', 'briqpay-for-woocommerce'), $code),
+                    'reference' => $line['reference'],
+                    'name' => $line['name'],
                     'quantity' => 1,
-                    'unitPriceIncVat' => (int) round(($discount_amount + $discount_tax) * -100),
-                    'taxRate' => $tax_rate,
+                    'unitPriceIncVat' => (int) round(($line['ex'] + $line['tax']) * -100),
+                    'taxRate' => (int) $line['rate'],
                 );
             }
         }
@@ -467,15 +465,4 @@ class Admin_Order_Meta_Box
         );
     }
 
-    /**
-     * Get tax rate for coupons from the order's first line item.
-     */
-    private function get_coupon_tax_rate($order)
-    {
-        $items = $order->get_items();
-        foreach ($items as $item) {
-            return $this->get_item_tax_rate($item);
-        }
-        return 0;
-    }
 }

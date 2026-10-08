@@ -786,3 +786,13 @@ msgstr "Briqpay: veloituksen summa/valuutta ei täsmää! BP: %s %s, WC: %s %s."
 #: includes/class-webhooks.php:622
 msgid "Briqpay: Refund approved."
 msgstr "Briqpay: hyvitys hyväksytty."
+
+#: includes/class-discount-lines.php:446
+#, php-format
+msgid "Discount (%s)"
+msgstr "Alennus (%s)"
+
+#: includes/class-discount-lines.php:463
+#, php-format
+msgid "Coupon: %1$s (%2$s)"
+msgstr "Kuponki: %1$s (%2$s)"

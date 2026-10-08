@@ -786,3 +786,13 @@ msgstr "Briqpay : le montant ou la devise de la capture ne correspond pas ! BP :
 #: includes/class-webhooks.php:622
 msgid "Briqpay: Refund approved."
 msgstr "Briqpay : remboursement approuvé."
+
+#: includes/class-discount-lines.php:446
+#, php-format
+msgid "Discount (%s)"
+msgstr "Remise (%s)"
+
+#: includes/class-discount-lines.php:463
+#, php-format
+msgid "Coupon: %1$s (%2$s)"
+msgstr "Code promo : %1$s (%2$s)"
