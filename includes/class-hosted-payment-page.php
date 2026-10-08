@@ -365,11 +365,6 @@ class Hosted_Payment_Page
             $data['data']['company'] = $company;
         }
 
-        $invoice_details = $this->get_invoice_details($order, $flow);
-        if (null !== $invoice_details) {
-            $data['data']['invoiceDetails'] = $invoice_details;
-        }
-
         /**
          * Filter the session payload used to back a hosted payment page.
          *
@@ -1045,46 +1040,6 @@ class Hosted_Payment_Page
         }
 
         return $company;
-    }
-
-    /**
-     * The invoice fields typed on the order in the admin (or collected by an
-     * earlier checkout), as Briqpay's invoiceDetails prefill, so they reach the
-     * invoice of a hosted-page purchase. Business flows only - the block belongs
-     * to the invoice payment method.
-     *
-     * Briqpay validates these: gln, reference and email must be 3-256
-     * characters, orderNumber 1-256. A value outside that range fails the whole
-     * session with 400 INVALID_DATA, so such a value is left out rather than
-     * sent.
-     *
-     * @param \WC_Order $order The order.
-     * @param string    $flow  One of b2c|b2b_payment_module|b2b_checkout.
-     * @return array<string,string>|null
-     */
-    private function get_invoice_details($order, $flow)
-    {
-        if (self::FLOW_B2C === $flow) {
-            return null;
-        }
-        $details = array();
-        foreach (array('reference', 'orderNumber', 'email', 'gln') as $key) {
-            $value = trim((string) $order->get_meta('_briqpay_payment_field_' . $key));
-            if ('' === $value) {
-                continue;
-            }
-            $length = function_exists('mb_strlen') ? mb_strlen($value) : strlen($value);
-            $min = 'orderNumber' === $key ? 1 : 3;
-            if ($length < $min || $length > 256) {
-                continue;
-            }
-            if ('email' === $key && !is_email($value)) {
-                continue;
-            }
-            $details[$key] = $value;
-        }
-
-        return empty($details) ? null : $details;
     }
 
     /**

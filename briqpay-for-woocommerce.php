@@ -3,7 +3,7 @@
  * Plugin Name: Briqpay for WooCommerce
  * Plugin URI: https://github.com/Briqpay-Extensions/briqpay-for-woocommerce
  * Description: Briqpay connects multiple payment providers like Adyen, Stripe, PayPal, and Klarna in one integration.
- * Version: 1.1.23
+ * Version: 1.1.24
  * Author: Briqpay
  * Author URI: https://briqpay.com
  * Text Domain: briqpay-for-woocommerce
@@ -21,11 +21,21 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Define plugin constants
-define('BRIQPAY_WC_VERSION', '1.1.23');
-define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
-define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
-define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
+// Define plugin constants. Guarded: WordPress includes this file a second
+// time in the same request when the plugin is updated or re-activated from
+// the admin, and an unguarded define() then logs "already defined" per constant.
+if (!defined('BRIQPAY_WC_VERSION')) {
+    define('BRIQPAY_WC_VERSION', '1.1.24');
+}
+if (!defined('BRIQPAY_WC_PLUGIN_FILE')) {
+    define('BRIQPAY_WC_PLUGIN_FILE', __FILE__);
+}
+if (!defined('BRIQPAY_WC_PATH')) {
+    define('BRIQPAY_WC_PATH', plugin_dir_path(__FILE__));
+}
+if (!defined('BRIQPAY_WC_URL')) {
+    define('BRIQPAY_WC_URL', plugin_dir_url(__FILE__));
+}
 
 /**
  * Main Briqpay Class
@@ -268,7 +278,6 @@ if (!class_exists('Briqpay_WooCommerce')) {
             (new \Briqpay\WooCommerce\Pay_Button_Handler())->init();
             (new \Briqpay\WooCommerce\Hosted_Payment_Page())->init();
             \Briqpay\WooCommerce\Legacy_B2b_Meta::init();
-            (new \Briqpay\WooCommerce\Admin_Order_Fields())->init();
         }
 
         /**

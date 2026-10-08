@@ -42,50 +42,6 @@ class Session_Order_Data
     );
 
     /**
-     * Option remembering every field the checkout has delivered to this shop:
-     * "<source>|<key>" => label. Briqpay's field set is configured per merchant,
-     * so this is how the admin order screen knows which fields to offer on an
-     * order built by hand.
-     */
-    const SEEN_OPTION = 'briqpay_seen_checkout_fields';
-
-    /**
-     * Fields seen on earlier orders, "<source>|<key>" => label.
-     *
-     * @return array<string,string>
-     */
-    public static function seen_fields()
-    {
-        $seen = get_option(self::SEEN_OPTION, array());
-        return is_array($seen) ? array_filter($seen, 'is_string') : array();
-    }
-
-    /**
-     * Record collected fields for the admin order screen. Labels follow the
-     * latest checkout; the list is capped so a runaway field set cannot grow it.
-     *
-     * @param array<int,array{source:string,key:string,label:string,value:string}> $fields
-     * @return void
-     */
-    public static function remember_fields(array $fields)
-    {
-        $seen = self::seen_fields();
-        $before = $seen;
-        foreach ($fields as $field) {
-            if (empty($field['source']) || empty($field['key'])) {
-                continue;
-            }
-            $seen[$field['source'] . '|' . $field['key']] = isset($field['label']) ? (string) $field['label'] : (string) $field['key'];
-        }
-        if (count($seen) > 50) {
-            $seen = array_slice($seen, -50, null, true);
-        }
-        if ($seen !== $before) {
-            update_option(self::SEEN_OPTION, $seen, false);
-        }
-    }
-
-    /**
      * The company to put on the shipping address.
      *
      * The shipping module has its own companyName - the recipient, which on a B2B
@@ -188,7 +144,6 @@ class Session_Order_Data
             return false;
         }
         $order->update_meta_data(self::META_FIELDS, $encoded);
-        self::remember_fields($fields);
 
         $lines = array();
         foreach ($fields as $field) {

@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.23
+Stable tag: 1.1.24
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,10 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.24 =
+* Removed: The "Briqpay checkout fields" block on the order edit screen, added in 1.1.23, duplicated fields shops had already built for the same data and could write a stale value back over an edit made in such a field. The block, the per-shop list of seen fields and the invoice-field prefill on business hosted payment pages are gone; the order screen and the hosted page behave as in 1.1.22. The organisation number field is unchanged. The checkout still stores every collected field on the order as before.
+* Fix: The plugin constants are now defined only once, so updating or re-activating the plugin from the admin no longer logs "Constant BRIQPAY_WC_VERSION already defined" and three similar notices for that request.
 
 = 1.1.23 =
 * Added: The rest of WooCommerce's checkout hooks, fired at the moment Briqpay approves a purchase, in the order WooCommerce fires them (all behind the existing "WooCommerce checkout actions" setting): the validation hooks `woocommerce_before_checkout_process`, `woocommerce_checkout_process`, `woocommerce_check_cart_items` and `woocommerce_after_checkout_validation`, plus the `woocommerce_checkout_posted_data` filter - a plugin that refuses the purchase on any of them (by an error notice, a WP_Error or an exception) now stops it, and its message is shown to the customer in the payment window; `woocommerce_checkout_update_customer` and `woocommerce_checkout_update_user_meta`, with the logged-in customer updated from the form as WooCommerce does it; the `woocommerce_checkout_customer_id` and `woocommerce_create_order` filters (with `woocommerce_resume_order`) around order creation; and `woocommerce_payment_successful_result` on the redirect after payment. Plugins that validate on `woocommerce_checkout_process` had silently never run for Briqpay orders. The validation hooks are classic-checkout only, as in WooCommerce; account creation at checkout is not offered. The setting must be on.
