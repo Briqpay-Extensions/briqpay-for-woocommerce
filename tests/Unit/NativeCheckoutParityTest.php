@@ -618,7 +618,7 @@ class NativeCheckoutParityTest extends TestCase
 
     public function testLineItemsCarryTheProductTaxClass(): void
     {
-        $source = $this->methodSource(Checkout_Handler::class, 'create_order_at_decision');
+        $source = $this->methodSource(Checkout_Handler::class, 'add_cart_line_items');
 
         $this->assertStringContainsString(
             '$item->set_tax_class($product->get_tax_class());',

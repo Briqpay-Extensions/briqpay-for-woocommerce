@@ -796,3 +796,15 @@ msgstr "Rabatt (%s)"
 #, php-format
 msgid "Coupon: %1$s (%2$s)"
 msgstr "Rabattkod: %1$s (%2$s)"
+
+#. translators: 1: order number, 2: error message
+#: includes/class-checkout-handler.php
+#, php-format
+msgid "Briqpay: the order number %1$s could not be stored on the Briqpay session (%2$s). The payment provider may show another reference for this order."
+msgstr "Briqpay: ordernumret %1$s kunde inte sparas på Briqpay-sessionen (%2$s). Betalningsleverantören kan visa en annan referens för den här ordern."
+
+#. translators: 1: number sent with the purchase, 2: current order number
+#: includes/class-checkout-handler.php
+#, php-format
+msgid "Briqpay: the order number changed from %1$s to %2$s after the purchase was approved. The Briqpay reference was updated, but payment providers that only take the reference with the purchase (for example Two) will still show %1$s."
+msgstr "Briqpay: ordernumret ändrades från %1$s till %2$s efter att köpet godkänts. Referensen hos Briqpay har uppdaterats, men betalningsleverantörer som bara tar emot referensen vid köpet (till exempel Two) visar fortfarande %1$s."

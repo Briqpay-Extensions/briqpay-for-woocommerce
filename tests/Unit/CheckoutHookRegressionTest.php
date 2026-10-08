@@ -58,6 +58,7 @@ class CheckoutHookRegressionTest extends TestCase
     public function testPreExistingItemHooksAreNotGated(): void
     {
         $source = $this->methodSource(Checkout_Handler::class, 'create_order_at_decision')
+            . $this->methodSource(Checkout_Handler::class, 'add_cart_line_items')
             . $this->methodSource(Checkout_Handler::class, 'add_shipping_items_from_cart')
             . $this->methodSource(Checkout_Handler::class, 'add_fee_items_from_cart')
             . $this->methodSource(Checkout_Handler::class, 'add_coupon_items_from_cart');
@@ -94,10 +95,10 @@ class CheckoutHookRegressionTest extends TestCase
      */
     public function testLineItemObjectFilterIsTypeChecked(): void
     {
-        $source = $this->methodSource(Checkout_Handler::class, 'create_order_at_decision');
+        $source = $this->methodSource(Checkout_Handler::class, 'add_cart_line_items');
 
         $this->assertStringContainsString(
-            "apply_filters(\n                        'woocommerce_checkout_create_order_line_item_object'",
+            "apply_filters(\n                    'woocommerce_checkout_create_order_line_item_object'",
             $source,
             'The filter must be applied at item construction.'
         );
@@ -110,7 +111,7 @@ class CheckoutHookRegressionTest extends TestCase
 
     public function testLineItemObjectFilterIsGated(): void
     {
-        $source = $this->methodSource(Checkout_Handler::class, 'create_order_at_decision');
+        $source = $this->methodSource(Checkout_Handler::class, 'add_cart_line_items');
 
         $this->assertStringContainsString(
             "hook_enabled('woocommerce_checkout_create_order_line_item_object')",

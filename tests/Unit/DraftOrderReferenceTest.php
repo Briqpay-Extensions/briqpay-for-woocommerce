@@ -69,7 +69,13 @@ class DraftOrderReferenceTest extends TestCase
             'A reused Blocks draft item must get the Briqpay reference the session was created with.'
         );
 
-        $new_item_loop = substr($source, strpos($source, 'Adding cart items to order'));
+        $this->assertStringContainsString(
+            '$this->add_cart_line_items($order, WC()->cart->get_cart());',
+            substr($source, strpos($source, 'Adding cart items to order')),
+            'The decision must still add the cart items when the order needs them.'
+        );
+
+        $new_item_loop = $this->methodSource(Checkout_Handler::class, 'add_cart_line_items');
         $this->assertStringContainsString(
             "add_meta_data('_briqpay_item_reference', self::cart_item_reference(\$values))",
             $new_item_loop,

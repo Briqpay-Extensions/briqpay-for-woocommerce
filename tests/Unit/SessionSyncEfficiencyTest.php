@@ -211,8 +211,10 @@ class SessionSyncEfficiencyTest extends TestCase
     {
         $body = $this->methodBody('create_session');
 
+        // The new session's id, not $session_id - which is undefined in
+        // create_session() and raised a warning on every session creation.
         $this->assertStringContainsString(
-            '$this->store_update_payload_hash($session_id);',
+            "\$this->store_update_payload_hash(\$session['sessionId']);",
             $body,
             'Without this the sync right after a create always PATCHes.'
         );

@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.21
+Stable tag: 1.1.22
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,14 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.22 =
+* Fix: Product add-ons and other per-item data from plugins were missing from orders the plugin created. When Briqpay approves a purchase the plugin builds the order itself, and its line items lacked the cart data that WooCommerce's own checkout attaches ($item->legacy_values and legacy_cart_item_key). Plugins that read that data while the line item is created - Product Add-Ons Ultimate (chosen add-ons), Discount Rules for WooCommerce (per-item rule details) and others - therefore saved nothing. Line items now carry it exactly as WooCommerce's checkout sets it. Orders created before this update cannot be repaired by the plugin, because the cart they came from no longer exists.
+* Fix: Variation attributes on orders the plugin created were stored under their raw cart key ("attribute_pa_color") instead of the attribute name WooCommerce uses ("pa_color"), so they could show up with the wrong label in the admin and emails and be missed by export and ERP plugins. They are now stored the way WooCommerce stores them.
+* Fix: The order number sent to Briqpay with the purchase (reference1) could be the WooCommerce order ID instead of the number the shop shows, when a sequential-order-number plugin assigns its number during checkout (for example SkyVerge's Sequential Order Numbers, which numbers orders on woocommerce_checkout_update_order_meta). The reference was sent before those checkout actions ran. It is now sent after them and still before the purchase is approved, so payment methods that only accept the reference with the purchase (such as Two) get the right one, and it is read from a freshly loaded order so a number another plugin just saved is not missed.
+* Fix: A failed update of that reference went unnoticed. It is now retried once - unless it timed out, so the customer never waits for two timeouts - and if it still fails, the error is logged and a note is added to the order. The purchase is never refused because of it. The reference sent is stored on the order (_briqpay_reference1).
+* New: If the order number changes after the purchase is approved (plugins that number orders only once they are paid), Briqpay is updated with the new number, for payment methods that accept a late update, and an order note records that methods which only take the reference with the purchase keep the original.
+* Fix: Four PHP warnings that showed up in the web server log during a checkout or on the admin order screen: an uninitialised variable when the plugin builds the order and nothing is in the WooCommerce session; the session-sync hash stored for a new session was handed an undefined session id; a Blocks checkout that sent shipping rates in an unexpected shape raised a warning and then cleared the chosen shipping methods; and a dynamic property on the gateway class that PHP 8.2 and later deprecate. None affected a completed purchase.
 
 = 1.1.21 =
 * Fix: A cart mixing VAT rates - 25% goods together with 6% or 12% goods, say - could not be paid at all when a coupon was applied: Briqpay refused to create the session with "Cart item ... taxRate * unitPrice * quantity != totalVatAmount", and the payment window never appeared. Every coupon was reported at the rate of the first product in the cart, so a coupon that only discounted the 6% products was labelled 25% while carrying 6% VAT. Coupons are now reported the way WooCommerce actually calculates them: each coupon's share of every product is taxed at that product's rate, and a coupon that touches more than one rate is sent as one line per rate ("Coupon: SPRING (6%)", "Coupon: SPRING (25%)"). A coupon that touches a single rate is unchanged. The same applies to captures, refunds, the admin capture form and hosted payment pages, which build the same lines. Discounts from plugins that apply themselves as coupons (Discount Rules for WooCommerce, among others) are covered.

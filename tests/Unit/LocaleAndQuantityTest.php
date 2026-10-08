@@ -335,7 +335,7 @@ class LocaleAndQuantityTest extends TestCase
      */
     public function testOrderItemQuantityIsStoredAsInt(): void
     {
-        $method = new \ReflectionMethod(Checkout_Handler::class, 'create_order_at_decision');
+        $method = new \ReflectionMethod(Checkout_Handler::class, 'add_cart_line_items');
         $lines = file($method->getFileName());
         $body = implode('', array_slice(
             $lines,

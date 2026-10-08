@@ -797,3 +797,15 @@ msgstr ""
 #, php-format
 msgid "Coupon: %1$s (%2$s)"
 msgstr ""
+
+#. translators: 1: order number, 2: error message
+#: includes/class-checkout-handler.php
+#, php-format
+msgid "Briqpay: the order number %1$s could not be stored on the Briqpay session (%2$s). The payment provider may show another reference for this order."
+msgstr ""
+
+#. translators: 1: number sent with the purchase, 2: current order number
+#: includes/class-checkout-handler.php
+#, php-format
+msgid "Briqpay: the order number changed from %1$s to %2$s after the purchase was approved. The Briqpay reference was updated, but payment providers that only take the reference with the purchase (for example Two) will still show %1$s."
+msgstr ""

@@ -487,6 +487,8 @@ class Checkout_Handler
             // right now, and it gives up after a few seconds.
             Lock::release($order_lock);
 
+            $this->resend_order_reference_if_changed($api, $session_id, $order);
+
             // Idempotent cart and session cleanup
             if (null !== WC()->cart && !WC()->cart->is_empty()) {
                 WC()->cart->empty_cart();
@@ -579,6 +581,8 @@ class Checkout_Handler
             // handle_order_status() calls this too, as a fallback for a customer
             // who pays and never returns; fire_once() keeps it to one run.
             $this->fire_commit_hooks($order);
+
+            $this->resend_order_reference_if_changed($api, $session_id, $order);
         }
 
         // Clear session data after successful placement to ensure second purchase starts fresh
@@ -737,8 +741,11 @@ class Checkout_Handler
                         WC()->customer->set_shipping_country(sanitize_text_field($s['country']));
                 }
 
-                // Update chosen shipping methods from blocks data if present
-                if (isset($blocks_data['shipping_rates'])) {
+                // Update chosen shipping methods from blocks data if present.
+                // Blocks hands this over in several shapes; only a package =>
+                // rate map can be applied. A bare string used to raise a
+                // warning and then clear the chosen methods with an empty array.
+                if (isset($blocks_data['shipping_rates']) && is_array($blocks_data['shipping_rates'])) {
                     $chosen_methods = array();
                     foreach ($blocks_data['shipping_rates'] as $package_index => $rate_id) {
                         $chosen_methods[$package_index] = $rate_id;
@@ -1191,17 +1198,6 @@ class Checkout_Handler
             // 3. Store session ID in WC session for return handler
             Session_Manager::set_session_id($session_id);
 
-            // 4. Update metadata with the order number. get_order_number() is what
-            // the merchant and the customer see on the order, and it honours
-            // sequential-order-number plugins; it falls back to the ID by itself
-            // when no such plugin is installed. Hosted payment pages already send
-            // the same thing.
-            $api->update_metadata($session_id, array(
-                'references' => array(
-                    'reference1' => (string) $order->get_order_number()
-                )
-            ));
-
             // 5. Make Decision
             /**
              * Filter the decision value before sending to Briqpay.
@@ -1284,6 +1280,16 @@ class Checkout_Handler
             // before the decision so the order is complete when it is authorized.
             if ($validation['valid']) {
                 $this->fire_checkout_data_hooks($order);
+            }
+
+            // 4. Stamp the order number on the session - after the data hooks,
+            // because sequential-order-number plugins assign it there (SkyVerge's
+            // on woocommerce_checkout_update_order_meta), and before the decision,
+            // because some payment methods (Two, for one) only take the reference
+            // with the purchase. Never blocks the decision; see the method. Not
+            // for a purchase about to be refused: the retry would be sent then.
+            if ($validation['valid']) {
+                $this->send_order_reference($api, $session_id, $order);
             }
 
             $decision = apply_filters('briqpay_decision_value', $initial_decision, $session_id, $session);
@@ -1376,6 +1382,7 @@ class Checkout_Handler
         }
 
         $needs_items = false; // Track whether we need to add cart items
+        $order = null;
 
         if ($order_id) {
             $order = wc_get_order($order_id);
@@ -1549,80 +1556,7 @@ class Checkout_Handler
         // Copy cart items with full metadata support (only if the order doesn't already have them)
         if ($needs_items) {
             Logger::log('Adding cart items to order.');
-            foreach (WC()->cart->get_cart() as $cart_item_key => $values) {
-                /** @var \WC_Product $product */
-                $product = $values['data'];
-
-                // Standard filter letting plugins substitute their own line-item
-                // class. Type-checked because core does not: a plugin returning
-                // something unexpected would otherwise fatal inside our AJAX
-                // handler rather than merely misbehaving during checkout.
-                if (self::hook_enabled('woocommerce_checkout_create_order_line_item_object')) {
-                    $item = apply_filters(
-                        'woocommerce_checkout_create_order_line_item_object',
-                        new \WC_Order_Item_Product(),
-                        $cart_item_key,
-                        $values,
-                        $order
-                    );
-                    if (!$item instanceof \WC_Order_Item_Product) {
-                        Logger::error('woocommerce_checkout_create_order_line_item_object returned an unusable value - falling back to a standard line item.');
-                        $item = new \WC_Order_Item_Product();
-                    }
-                } else {
-                    $item = new \WC_Order_Item_Product();
-                }
-
-                $item->set_name($product->get_name());
-
-                // Correctly set parent product ID and variation ID
-                if ($product->get_type() === 'variation') {
-                    $item->set_product_id($product->get_parent_id());
-                    $item->set_variation_id($product->get_id());
-                } else {
-                    $item->set_product_id($product->get_id());
-                    $item->set_variation_id(0);
-                }
-
-                // Cast: the cart stores whatever wc_stock_amount() returned, which
-                // is a string for a plain integer input. Storing that verbatim made
-                // get_quantity() hand a string to get_order_cart(), which then put
-                // "400" in the Briqpay payload where a number is required.
-                $item->set_quantity((int) $values['quantity']);
-                $item->set_subtotal($values['line_subtotal']);
-                $item->set_total($values['line_total']);
-                $item->set_subtotal_tax($values['line_subtotal_tax']);
-                $item->set_total_tax($values['line_tax']);
-                $item->set_taxes($values['line_tax_data']);
-
-                // Mirror WC_Checkout::create_order_line_items(). Without the tax
-                // class the item records no rate, so a later recalculation in the
-                // admin taxes a reduced-rate product at the standard rate.
-                $item->set_tax_class($product->get_tax_class());
-
-                $item->set_backorder_meta();
-
-                // Mirror Session_Manager::get_cart_items()'s reference format so
-                // capture/refund lookups (which match session cart items to order
-                // items by reference) keep working when the same SKU appears at
-                // different prices in one cart (add-ons, bundles, personalization,
-                // role pricing). Store it so it survives even if the product is
-                // later deleted or its price changes.
-                $item->add_meta_data('_briqpay_item_reference', self::cart_item_reference($values));
-
-                // Add variation attributes as item meta (e.g. "Color: Blue")
-                if (!empty($values['variation'])) {
-                    foreach ($values['variation'] as $attr_key => $attr_value) {
-                        $item->add_meta_data($attr_key, $attr_value);
-                    }
-                }
-
-                // Fire the standard hook that plugins like "Extra Product Options" use
-                // to attach their custom metadata to the order line item.
-                do_action('woocommerce_checkout_create_order_line_item', $item, $cart_item_key, $values, $order);
-
-                $order->add_item($item);
-            }
+            $this->add_cart_line_items($order, WC()->cart->get_cart());
 
             // Set shipping, fees, and coupons from the current cart
             $this->add_shipping_items_from_cart($order);
@@ -1784,6 +1718,236 @@ class Checkout_Handler
         do_action('briqpay_after_create_order', $order, $session);
 
         return $order;
+    }
+
+    /**
+     * The order number as WooCommerce shows it right now.
+     *
+     * Read from a freshly loaded order: a sequential-order-number plugin may
+     * have stored its number through its own copy of the order, which leaves
+     * the object we hold with stale meta and get_order_number() returning the ID.
+     *
+     * @param \WC_Order $order The order.
+     * @return string
+     */
+    private static function current_order_number($order)
+    {
+        $fresh = wc_get_order($order->get_id());
+
+        return (string) ($fresh ? $fresh : $order)->get_order_number();
+    }
+
+    /**
+     * Set the session's references.reference1 to the order number.
+     *
+     * Retried once. A failure is logged and noted on the order but never stops
+     * the purchase: the customer has already clicked buy, and a payment with the
+     * wrong reference is recoverable where a refused one is a lost sale. What was
+     * sent is kept in _briqpay_reference1.
+     *
+     * @param API       $api        API client.
+     * @param string    $session_id Briqpay session ID.
+     * @param \WC_Order $order      The order.
+     * @return bool Whether Briqpay accepted it.
+     */
+    private function send_order_reference($api, $session_id, $order)
+    {
+        $number = self::current_order_number($order);
+        $data = array('references' => array('reference1' => $number));
+
+        $result = $api->update_metadata($session_id, $data);
+        // One retry for a quick failure. Not after a timeout: the customer is
+        // waiting for the decision, and a second timeout would double the wait.
+        if (is_wp_error($result) && !self::is_timeout($result)) {
+            Logger::log(sprintf('Setting reference1 %s on session %s failed (%s) - retrying once.', $number, $session_id, $result->get_error_message()));
+            $result = $api->update_metadata($session_id, $data);
+        }
+
+        if (is_wp_error($result)) {
+            Logger::error(sprintf('Could not set reference1 %s on session %s: %s. The purchase continues.', $number, $session_id, $result->get_error_message()));
+            $order->add_order_note(sprintf(
+                /* translators: 1: order number, 2: error message */
+                __('Briqpay: the order number %1$s could not be stored on the Briqpay session (%2$s). The payment provider may show another reference for this order.', 'briqpay-for-woocommerce'),
+                $number,
+                $result->get_error_message()
+            ));
+            return false;
+        }
+
+        $order->update_meta_data('_briqpay_reference1', $number);
+        $order->save_meta_data();
+
+        return true;
+    }
+
+    /**
+     * Whether a request failed by timing out (cURL error 28), as opposed to
+     * failing fast with an error response or a refused connection.
+     *
+     * @param \WP_Error $error The error.
+     * @return bool
+     */
+    private static function is_timeout($error)
+    {
+        return 'http_request_failed' === $error->get_error_code()
+            && (false !== stripos($error->get_error_message(), 'timed out')
+                || false !== stripos($error->get_error_message(), 'cURL error 28'));
+    }
+
+    /**
+     * After the purchase: resend the reference if the order number changed.
+     *
+     * Some plugins number an order only once it is paid or changes status, which
+     * is after the decision. Briqpay is updated so payment methods that accept a
+     * late reference (Klarna) carry the right one, and the order gets a note,
+     * because methods that only take it with the purchase (Two) keep the old one.
+     *
+     * @param API       $api        API client.
+     * @param string    $session_id Briqpay session ID.
+     * @param \WC_Order $order      The order.
+     * @return void
+     */
+    private function resend_order_reference_if_changed($api, $session_id, $order)
+    {
+        try {
+            // Both values from a fresh copy: the return URL is routinely hit twice
+            // in the same second, and the object each request holds predates the
+            // other's write.
+            $fresh = wc_get_order($order->get_id());
+            $current = $fresh ? $fresh : $order;
+
+            $sent = (string) $current->get_meta('_briqpay_reference1');
+            if ('' === $sent || '' === (string) $session_id) {
+                return;
+            }
+            $number = (string) $current->get_order_number();
+            if ($number === $sent) {
+                return;
+            }
+
+            // Once per order and number, so the two requests do not both send it
+            // and note it.
+            if (!Lock::claim_once('briqpay_reference_' . $order->get_id() . '_' . md5($number), 5 * MINUTE_IN_SECONDS)) {
+                return;
+            }
+
+            Logger::log(sprintf('Order %s: order number changed from %s to %s after the decision - updating reference1.', $order->get_id(), $sent, $number));
+            if ($this->send_order_reference($api, $session_id, $current)) {
+                $current->add_order_note(sprintf(
+                    /* translators: 1: number sent with the purchase, 2: current order number */
+                    __('Briqpay: the order number changed from %1$s to %2$s after the purchase was approved. The Briqpay reference was updated, but payment providers that only take the reference with the purchase (for example Two) will still show %1$s.', 'briqpay-for-woocommerce'),
+                    $sent,
+                    $number
+                ));
+            }
+        } catch (\Throwable $e) {
+            // Never let this reach the customer's order confirmation.
+            Logger::error('Order reference check failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Add the cart's products to the order as line items, the way
+     * WC_Checkout::create_order_line_items() does, plus the Briqpay line
+     * reference captures and refunds rely on.
+     *
+     * Not a call to create_order_line_items() itself: the
+     * woocommerce_checkout_create_order_line_item_object filter is gated on the
+     * checkout-hooks setting and type-checked here, and items need the
+     * _briqpay_item_reference. Everything a plugin can observe on
+     * woocommerce_checkout_create_order_line_item matches core.
+     *
+     * @param \WC_Order $order         The order.
+     * @param array     $cart_contents WC()->cart->get_cart().
+     */
+    private function add_cart_line_items($order, array $cart_contents)
+    {
+        foreach ($cart_contents as $cart_item_key => $values) {
+            /** @var \WC_Product $product */
+            $product = $values['data'];
+
+            // Standard filter letting plugins substitute their own line-item
+            // class. Type-checked because core does not: a plugin returning
+            // something unexpected would otherwise fatal inside our AJAX
+            // handler rather than merely misbehaving during checkout.
+            if (self::hook_enabled('woocommerce_checkout_create_order_line_item_object')) {
+                $item = apply_filters(
+                    'woocommerce_checkout_create_order_line_item_object',
+                    new \WC_Order_Item_Product(),
+                    $cart_item_key,
+                    $values,
+                    $order
+                );
+                if (!$item instanceof \WC_Order_Item_Product) {
+                    Logger::error('woocommerce_checkout_create_order_line_item_object returned an unusable value - falling back to a standard line item.');
+                    $item = new \WC_Order_Item_Product();
+                }
+            } else {
+                $item = new \WC_Order_Item_Product();
+            }
+
+            // Exactly as WC_Checkout::create_order_line_items() sets them, before
+            // the line-item action below. WooCommerce marks both deprecated, but
+            // add-on and discount plugins still read them on
+            // woocommerce_checkout_create_order_line_item (Product Add-Ons
+            // Ultimate's product_extras, Discount Rules for WooCommerce's
+            // per-item rule details). Without them those plugins saved nothing
+            // to Briqpay-built orders.
+            $item->legacy_values = $values;
+            $item->legacy_cart_item_key = $cart_item_key;
+
+            $item->set_name($product->get_name());
+
+            // Correctly set parent product ID and variation ID
+            if ($product->get_type() === 'variation') {
+                $item->set_product_id($product->get_parent_id());
+                $item->set_variation_id($product->get_id());
+            } else {
+                $item->set_product_id($product->get_id());
+                $item->set_variation_id(0);
+            }
+
+            // Cast: the cart stores whatever wc_stock_amount() returned, which
+            // is a string for a plain integer input. Storing that verbatim made
+            // get_quantity() hand a string to get_order_cart(), which then put
+            // "400" in the Briqpay payload where a number is required.
+            $item->set_quantity((int) $values['quantity']);
+            $item->set_subtotal($values['line_subtotal']);
+            $item->set_total($values['line_total']);
+            $item->set_subtotal_tax($values['line_subtotal_tax']);
+            $item->set_total_tax($values['line_tax']);
+            $item->set_taxes($values['line_tax_data']);
+
+            // Mirror WC_Checkout::create_order_line_items(). Without the tax
+            // class the item records no rate, so a later recalculation in the
+            // admin taxes a reduced-rate product at the standard rate.
+            $item->set_tax_class($product->get_tax_class());
+
+            $item->set_backorder_meta();
+
+            // Mirror Session_Manager::get_cart_items()'s reference format so
+            // capture/refund lookups (which match session cart items to order
+            // items by reference) keep working when the same SKU appears at
+            // different prices in one cart (add-ons, bundles, personalization,
+            // role pricing). Store it so it survives even if the product is
+            // later deleted or its price changes.
+            $item->add_meta_data('_briqpay_item_reference', self::cart_item_reference($values));
+
+            // Variation attributes as item meta (e.g. "Color: Blue"). set_variation()
+            // is what WooCommerce uses: it strips the "attribute_" prefix, so the
+            // meta key is "pa_color" / "farg" like on a native order. Adding the
+            // raw cart keys stored "attribute_farg", which WooCommerce, emails
+            // and order-export plugins do not recognise as the attribute.
+            if (!empty($values['variation']) && is_array($values['variation'])) {
+                $item->set_variation($values['variation']);
+            }
+
+            // Fire the standard hook that plugins like "Extra Product Options" use
+            // to attach their custom metadata to the order line item.
+            do_action('woocommerce_checkout_create_order_line_item', $item, $cart_item_key, $values, $order);
+
+            $order->add_item($item);
+        }
     }
 
     /**

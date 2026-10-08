@@ -35,6 +35,16 @@ class Gateway extends \WC_Payment_Gateway
     /**
      * Constructor
      */
+    /**
+     * Whether verbose logging is switched on in the settings.
+     *
+     * Declared: assigning it undeclared is deprecated on PHP 8.2+ and showed
+     * up as a notice on every admin order screen.
+     *
+     * @var bool
+     */
+    public $verbose_logging = false;
+
     public function __construct()
     {
         $this->id = 'briqpay';

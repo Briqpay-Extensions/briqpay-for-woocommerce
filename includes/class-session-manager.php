@@ -266,7 +266,7 @@ class Session_Manager
             // immediately after a create always PATCHed - re-sending a payload
             // byte-identical to the one just POSTed, and returning a fresh snippet
             // that made the front end rebuild the iframe it had only just drawn.
-            $this->store_update_payload_hash($session_id);
+            $this->store_update_payload_hash($session['sessionId']);
 
             /**
              * Action after a new Briqpay session is created.
