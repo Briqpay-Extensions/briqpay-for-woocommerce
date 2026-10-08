@@ -809,3 +809,31 @@ msgstr ""
 #, php-format
 msgid "Briqpay: the order number changed from %1$s to %2$s after the purchase was approved. The Briqpay reference was updated, but payment providers that only take the reference with the purchase (for example Two) will still show %1$s."
 msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "Reference"
+msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "Customer order number"
+msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "Invoice email"
+msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "GLN"
+msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "Briqpay checkout fields"
+msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "(cleared)"
+msgstr ""
+
+#: includes/class-admin-order-fields.php
+msgid "Briqpay: checkout fields edited in the admin:"
+msgstr ""

@@ -605,7 +605,10 @@ class B2b_Checkout
      */
     public function save_company_metadata(array $metadata, $order, array $session)
     {
-        if (!$this->is_b2b_active()) {
+        // The B2B flag marks the B2B shortcode page. A business purchase can
+        // also come through the ordinary checkout (company lookup on a
+        // customerType business session), and its company must be stored too.
+        if (!$this->is_b2b_active() && !Legacy_B2b_Meta::is_b2b_session($session)) {
             return $metadata;
         }
 

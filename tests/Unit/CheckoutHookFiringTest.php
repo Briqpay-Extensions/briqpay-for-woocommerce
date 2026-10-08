@@ -44,6 +44,8 @@ class CheckoutHookFiringTest extends TestCase
 
         WP_Mock::userFunction('current_time', array('return' => '2026-08-18 12:00:00'));
         WP_Mock::userFunction('__', array('return_arg' => 0));
+        // The customer hooks (1.1.22) read the current user; a guest here.
+        WP_Mock::userFunction('get_current_user_id', array('return' => 0));
     }
 
     public function tearDown(): void
@@ -182,11 +184,12 @@ class CheckoutHookFiringTest extends TestCase
 
         $this->assertSame(
             array(
+                'woocommerce_checkout_update_user_meta',
                 'woocommerce_checkout_create_order',
                 'woocommerce_checkout_update_order_meta',
             ),
             \Briqpay_Test_Actions::matching('woocommerce_checkout_'),
-            'create_order must precede update_order_meta, matching WC_Checkout.'
+            'process_customer, then create_order, then update_order_meta, matching WC_Checkout.'
         );
 
         $create_args = \Briqpay_Test_Actions::argsFor('woocommerce_checkout_create_order');
@@ -572,6 +575,18 @@ class CheckoutHookFiringTest extends TestCase
             'woocommerce_checkout_create_order_line_item_object',
             'woocommerce_store_api_checkout_update_order_meta',
             'woocommerce_store_api_checkout_order_processed',
+            // 1.1.22
+            'woocommerce_before_checkout_process',
+            'woocommerce_checkout_process',
+            'woocommerce_checkout_posted_data',
+            'woocommerce_check_cart_items',
+            'woocommerce_after_checkout_validation',
+            'woocommerce_checkout_update_customer',
+            'woocommerce_checkout_update_user_meta',
+            'woocommerce_checkout_customer_id',
+            'woocommerce_create_order',
+            'woocommerce_resume_order',
+            'woocommerce_payment_successful_result',
         );
     }
 }

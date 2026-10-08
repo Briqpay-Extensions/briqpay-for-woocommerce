@@ -783,6 +783,17 @@ class NativeCheckoutParityTest extends TestCase
             $source,
             'COGS is WooCommerce 9.5+, so it must be guarded.'
         );
+        // WC_Checkout::create_order() only calls it when has_cogs() and the
+        // feature are on; calling it on a shop with the feature off is a
+        // wc_doing_it_wrong notice per order (seen on every local purchase).
+        $this->assertStringContainsString('->has_cogs()', $source);
+        $this->assertStringContainsString('CostOfGoodsSoldController', $source);
+        $this->assertStringContainsString('->feature_is_enabled()', $source);
+        $this->assertLessThan(
+            strpos($source, '$order->calculate_cogs_total_value();'),
+            strpos($source, '->feature_is_enabled()'),
+            'The feature check must come before the call.'
+        );
     }
 
     public function testTaxItemHookIsOfferedAndGated(): void

@@ -808,3 +808,31 @@ msgstr "Briqpay: ordernumret %1$s kunde inte sparas på Briqpay-sessionen (%2$s)
 #, php-format
 msgid "Briqpay: the order number changed from %1$s to %2$s after the purchase was approved. The Briqpay reference was updated, but payment providers that only take the reference with the purchase (for example Two) will still show %1$s."
 msgstr "Briqpay: ordernumret ändrades från %1$s till %2$s efter att köpet godkänts. Referensen hos Briqpay har uppdaterats, men betalningsleverantörer som bara tar emot referensen vid köpet (till exempel Two) visar fortfarande %1$s."
+
+#: includes/class-admin-order-fields.php
+msgid "Reference"
+msgstr "Referens"
+
+#: includes/class-admin-order-fields.php
+msgid "Customer order number"
+msgstr "Ert ordernummer"
+
+#: includes/class-admin-order-fields.php
+msgid "Invoice email"
+msgstr "Fakturamail"
+
+#: includes/class-admin-order-fields.php
+msgid "GLN"
+msgstr "GLN"
+
+#: includes/class-admin-order-fields.php
+msgid "Briqpay checkout fields"
+msgstr "Briqpay kassafält"
+
+#: includes/class-admin-order-fields.php
+msgid "(cleared)"
+msgstr "(rensat)"
+
+#: includes/class-admin-order-fields.php
+msgid "Briqpay: checkout fields edited in the admin:"
+msgstr "Briqpay: kassafält redigerade i admin:"

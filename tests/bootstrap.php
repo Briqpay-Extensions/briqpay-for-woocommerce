@@ -58,9 +58,23 @@ class Briqpay_Test_Actions
     /**
      * Forget everything recorded so far. Call in setUp().
      */
+    /** @var array<string,callable[]> Callbacks a test wants run when an action fires. */
+    public static $listeners = array();
+
     public static function reset()
     {
         self::$fired = array();
+        self::$listeners = array();
+    }
+
+    /**
+     * Run $callback with the action's arguments whenever $tag fires. For the
+     * cases WP_Mock::onAction() cannot express: zero-argument actions and
+     * arguments (objects, arrays) that cannot be matched ahead of time.
+     */
+    public static function listen($tag, callable $callback)
+    {
+        self::$listeners[$tag][] = $callback;
     }
 
     /**
@@ -124,6 +138,10 @@ if (!function_exists('do_action')) {
 
         Briqpay_Test_Actions::$fired[] = array('tag' => $tag, 'args' => $args);
 
+        foreach (Briqpay_Test_Actions::$listeners[$tag] ?? array() as $listener) {
+            call_user_func_array($listener, $args);
+        }
+
         // Same delegation as WP_Mock's own implementation, so tests using
         // WP_Mock::expectAction() / onAction() are unaffected.
         return \WP_Mock::onAction($tag)->react($args);
@@ -150,6 +168,63 @@ if (!function_exists('remove_action')) {
     function remove_action($tag, $function_to_remove, $priority = 10)
     {
         return false;
+    }
+}
+
+// A WP_Error with WordPress's real surface, for every test. Several test files
+// carry a minimal guarded copy of their own; this one loads first and wins.
+if (!class_exists('WP_Error')) {
+    class WP_Error
+    {
+        public $errors = array();
+        public $error_data = array();
+        public function __construct($code = '', $message = '', $data = '')
+        {
+            if ('' !== $code) {
+                $this->add($code, $message, $data);
+            }
+        }
+        public function add($code, $message, $data = '')
+        {
+            $this->errors[$code][] = $message;
+            if ('' !== $data) {
+                $this->error_data[$code] = $data;
+            }
+        }
+        public function get_error_codes()
+        {
+            return array_keys($this->errors);
+        }
+        public function get_error_code()
+        {
+            $codes = $this->get_error_codes();
+            return $codes ? $codes[0] : '';
+        }
+        public function get_error_messages($code = '')
+        {
+            if ('' !== $code) {
+                return isset($this->errors[$code]) ? $this->errors[$code] : array();
+            }
+            $all = array();
+            foreach ($this->errors as $messages) {
+                $all = array_merge($all, $messages);
+            }
+            return $all;
+        }
+        public function get_error_message($code = '')
+        {
+            $code = '' !== $code ? $code : $this->get_error_code();
+            return isset($this->errors[$code][0]) ? $this->errors[$code][0] : '';
+        }
+        public function get_error_data($code = '')
+        {
+            $code = '' !== $code ? $code : $this->get_error_code();
+            return isset($this->error_data[$code]) ? $this->error_data[$code] : null;
+        }
+        public function has_errors()
+        {
+            return !empty($this->errors);
+        }
     }
 }
 
@@ -270,6 +345,14 @@ if (!function_exists('add_option')) {
     }
 }
 
+if (!function_exists('update_option')) {
+    function update_option($option, $value, $autoload = null) {
+        $changed = !array_key_exists($option, Briqpay_Test_Options::$store) || Briqpay_Test_Options::$store[$option] !== $value;
+        Briqpay_Test_Options::$store[$option] = $value;
+        return $changed;
+    }
+}
+
 if (!function_exists('delete_option')) {
     function delete_option($option) {
         if (!array_key_exists($option, Briqpay_Test_Options::$store)) {
@@ -280,10 +363,32 @@ if (!function_exists('delete_option')) {
     }
 }
 
+/**
+ * Orders a test wants wc_get_order() to find by id.
+ */
+class Briqpay_Test_Orders
+{
+    /** @var array<int,object> */
+    public static $by_id = array();
+
+    public static function register($id, $order)
+    {
+        self::$by_id[(int) $id] = $order;
+    }
+
+    public static function reset()
+    {
+        self::$by_id = array();
+    }
+}
+
 if (!function_exists('wc_get_order')) {
     function wc_get_order($id = false) {
         if (is_object($id)) {
             return $id;
+        }
+        if (is_numeric($id) && isset(Briqpay_Test_Orders::$by_id[(int) $id])) {
+            return Briqpay_Test_Orders::$by_id[(int) $id];
         }
         return null;
     }

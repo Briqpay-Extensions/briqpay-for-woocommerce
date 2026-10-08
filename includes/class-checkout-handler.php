@@ -497,7 +497,7 @@ class Checkout_Handler
             if (null !== WC()->session) {
                 WC()->session->save_data();
             }
-            wp_safe_redirect($order->get_checkout_order_received_url());
+            wp_safe_redirect($this->payment_success_redirect($order));
             exit;
         }
 
@@ -592,7 +592,7 @@ class Checkout_Handler
             WC()->session->set('briqpay_customer_type', null);
         }
 
-        wp_safe_redirect($order->get_checkout_order_received_url());
+        wp_safe_redirect($this->payment_success_redirect($order));
         exit;
     }
 
@@ -1241,6 +1241,18 @@ class Checkout_Handler
                 }
             }
 
+            // WooCommerce's own checkout validation hooks - the ones a plugin uses
+            // to refuse a purchase (woocommerce_checkout_process and friends). Core
+            // runs them before anything is created; here they run once our own
+            // integrity check has passed, and anything they object to is shown to
+            // the customer in the payment window instead of approving the purchase.
+            $hook_errors = $validation['valid'] ? $this->fire_validation_hooks() : array();
+            if (!empty($hook_errors)) {
+                Logger::log('Checkout validation hooks refused the purchase: ' . implode(' | ', $hook_errors));
+                $validation['valid'] = false;
+                $validation['errors'] = array_merge($validation['errors'], $hook_errors);
+            }
+
             $initial_decision = 'allow';
 
             if (!$validation['valid']) {
@@ -1262,7 +1274,9 @@ class Checkout_Handler
                 );
 
                 foreach ($validation['errors'] as $err) {
-                    if (in_array($err, $whitelist, true)) {
+                    // Messages from the validation hooks were written for the
+                    // customer by the plugin that raised them, as in core.
+                    if (in_array($err, $whitelist, true) || in_array($err, $hook_errors, true)) {
                         $initial_decision['softErrors'][] = array('message' => $err);
                         $has_user_error = true;
                     }
@@ -1534,11 +1548,16 @@ class Checkout_Handler
              */
             $created_via = apply_filters('briqpay_order_created_via', $created_via);
 
-            $order = wc_create_order(array(
-                'customer_id' => get_current_user_id() ?: 0,
-                'status' => 'pending',
-                'created_via' => $created_via,
-            ));
+            // Core applies woocommerce_create_order first thing in create_order():
+            // a plugin may hand back an order of its own to resume.
+            $order = $this->resume_order_from_filter();
+            if (!$order) {
+                $order = wc_create_order(array(
+                    'customer_id' => $this->checkout_customer_id(),
+                    'status' => 'pending',
+                    'created_via' => $created_via,
+                ));
+            }
 
             if (is_wp_error($order)) {
                 throw new \Exception('Could not create order');
@@ -1706,6 +1725,7 @@ class Checkout_Handler
         }
 
         Legacy_B2b_Meta::apply($order, $session);
+        $this->warn_if_company_number_missing($order, $session);
 
         $order->save();
 
@@ -1718,6 +1738,36 @@ class Checkout_Handler
         do_action('briqpay_after_create_order', $order, $session);
 
         return $order;
+    }
+
+    /**
+     * A business purchase whose session carries no organisation number: the
+     * merchant's ERP needs it, and the plugin can only store what Briqpay put
+     * in data.company.cin. Logged at error level - not behind the verbose
+     * setting - with what the company block did contain, so a report like
+     * "the org number was not saved" can be read off the log.
+     *
+     * @param \WC_Order $order   The order.
+     * @param array     $session Briqpay session.
+     * @return void
+     */
+    private function warn_if_company_number_missing($order, array $session)
+    {
+        if (!Legacy_B2b_Meta::is_b2b_session($session)) {
+            return;
+        }
+        $company = isset($session['data']['company']) && is_array($session['data']['company']) ? $session['data']['company'] : array();
+        if (!empty($company['cin'])) {
+            return;
+        }
+        Logger::error(sprintf(
+            'Business session %s (country %s) carries no company.cin, so order %s gets no organisation number. company keys: [%s], billing.companyName: %s.',
+            $session['sessionId'] ?? '?',
+            $session['country'] ?? '?',
+            $order->get_id(),
+            implode(', ', array_keys($company)),
+            isset($session['data']['billing']['companyName']) ? (string) $session['data']['billing']['companyName'] : '-'
+        ));
     }
 
     /**
@@ -2090,6 +2140,15 @@ class Checkout_Handler
     /**
      * WC session key holding the replayed checkout form data.
      */
+    /**
+     * The posted data after the woocommerce_checkout_posted_data filter ran at
+     * the decision, so every later hook sees what the filter returned - as in
+     * core, where one filtered array feeds the whole of process_checkout().
+     *
+     * @var array|null
+     */
+    private $filtered_hook_data = null;
+
     const POSTED_DATA_KEY = 'briqpay_posted_data';
 
     /**
@@ -2814,6 +2873,203 @@ class Checkout_Handler
     }
 
     /**
+     * WooCommerce's checkout validation hooks, in the order process_checkout()
+     * fires them, with whatever they object to returned as messages for the
+     * customer.
+     *
+     *   woocommerce_before_checkout_process
+     *   woocommerce_checkout_process
+     *   woocommerce_checkout_posted_data        (filter; its result feeds the later hooks)
+     *   woocommerce_check_cart_items
+     *   woocommerce_after_checkout_validation   ($data, WP_Error $errors)
+     *
+     * A plugin refuses a purchase on these by throwing, by wc_add_notice(...,
+     * 'error') or by $errors->add(). All three are collected; the notices are
+     * then put back as they were, because the decision answers the payment
+     * window, not a page that would render them. Classic checkout only -
+     * Blocks never fires these in core either.
+     *
+     * @return string[] Messages, empty when the purchase may proceed.
+     */
+    private function fire_validation_hooks()
+    {
+        if (!self::checkout_hooks_enabled() || 'classic' !== self::get_stashed_posted_data_source()) {
+            return array();
+        }
+
+        $data = $this->get_hook_data();
+        $messages = array();
+        $notices_before = function_exists('wc_get_notices') ? wc_get_notices() : array();
+        if (!is_array($notices_before)) {
+            $notices_before = array();
+        }
+
+        $this->with_posted_data($data, function () use (&$data, &$messages) {
+            try {
+                if (self::hook_enabled('woocommerce_before_checkout_process')) {
+                    do_action('woocommerce_before_checkout_process');
+                }
+                if (self::hook_enabled('woocommerce_checkout_process')) {
+                    do_action('woocommerce_checkout_process');
+                }
+                if (self::hook_enabled('woocommerce_checkout_posted_data')) {
+                    $filtered = apply_filters('woocommerce_checkout_posted_data', $data);
+                    if (is_array($filtered)) {
+                        $data = $filtered;
+                    }
+                }
+                if (self::hook_enabled('woocommerce_check_cart_items')) {
+                    do_action('woocommerce_check_cart_items');
+                }
+                if (self::hook_enabled('woocommerce_after_checkout_validation')) {
+                    $errors = new \WP_Error();
+                    do_action('woocommerce_after_checkout_validation', $data, $errors);
+                    foreach ($errors->get_error_messages() as $message) {
+                        $messages[] = $message;
+                    }
+                }
+            } catch (\Exception $e) {
+                // Core: wc_add_notice($e->getMessage(), 'error').
+                $messages[] = $e->getMessage();
+            }
+        });
+
+        $this->filtered_hook_data = $data;
+
+        if (function_exists('wc_get_notices')) {
+            $errors_before = isset($notices_before['error']) && is_array($notices_before['error']) ? $notices_before['error'] : array();
+            $errors_after = wc_get_notices('error');
+            foreach (array_slice(is_array($errors_after) ? $errors_after : array(), count($errors_before)) as $notice) {
+                $messages[] = is_array($notice) ? (string) ($notice['notice'] ?? '') : (string) $notice;
+            }
+            if (function_exists('wc_set_notices')) {
+                wc_set_notices($notices_before);
+            }
+        }
+
+        $messages = array_map(function ($message) {
+            return trim(wp_strip_all_tags((string) $message));
+        }, $messages);
+
+        return array_values(array_unique(array_filter($messages)));
+    }
+
+    /**
+     * WooCommerce's process_customer(), minus account creation: the Briqpay
+     * checkout has no "create an account" box, so a guest stays a guest. For a
+     * logged-in customer the posted address is written to the customer record
+     * and woocommerce_checkout_update_customer fires, exactly as in core; then
+     * woocommerce_checkout_update_user_meta fires for everyone (customer id 0
+     * for a guest, as core passes it).
+     *
+     * @param array $data Posted checkout data.
+     * @return void
+     */
+    private function fire_customer_hooks(array $data)
+    {
+        $customer_id = $this->checkout_customer_id();
+
+        if ($customer_id && self::hook_enabled('woocommerce_checkout_update_customer')) {
+            $checkout = (function_exists('WC') && WC() && method_exists(WC(), 'checkout')) ? WC()->checkout() : null;
+            if (apply_filters('woocommerce_checkout_update_customer_data', true, $checkout)) {
+                try {
+                    $customer = new \WC_Customer($customer_id);
+                    if (!empty($data['billing_first_name']) && '' === $customer->get_first_name()) {
+                        $customer->set_first_name($data['billing_first_name']);
+                    }
+                    if (!empty($data['billing_last_name']) && '' === $customer->get_last_name()) {
+                        $customer->set_last_name($data['billing_last_name']);
+                    }
+                    if (is_email($customer->get_display_name())) {
+                        $customer->set_display_name($customer->get_first_name() . ' ' . $customer->get_last_name());
+                    }
+                    foreach ($data as $key => $value) {
+                        if (is_callable(array($customer, "set_{$key}"))) {
+                            $customer->{"set_{$key}"}($value);
+                        } elseif (0 === stripos($key, 'billing_') || 0 === stripos($key, 'shipping_')) {
+                            $customer->update_meta_data($key, $value);
+                        }
+                    }
+                    do_action('woocommerce_checkout_update_customer', $customer, $data);
+                    $customer->save();
+                } catch (\Throwable $e) {
+                    // A bad value (core throws WC_Data_Exception on an invalid email)
+                    // must not stop the purchase the way it would stop core's form.
+                    Logger::error('woocommerce_checkout_update_customer could not be completed: ' . $e->getMessage());
+                }
+            }
+        }
+
+        if (self::hook_enabled('woocommerce_checkout_update_user_meta')) {
+            do_action('woocommerce_checkout_update_user_meta', $customer_id, $data);
+        }
+    }
+
+    /**
+     * The customer id core stamps on the order, through its filter.
+     *
+     * @return int
+     */
+    private function checkout_customer_id()
+    {
+        $customer_id = get_current_user_id() ?: 0;
+        if (self::hook_enabled('woocommerce_checkout_customer_id')) {
+            $customer_id = (int) apply_filters('woocommerce_checkout_customer_id', $customer_id);
+        }
+
+        return $customer_id;
+    }
+
+    /**
+     * An order a plugin hands back through woocommerce_create_order to resume,
+     * emptied of its items like core does, or null to create a new one.
+     *
+     * @return \WC_Order|null
+     */
+    private function resume_order_from_filter()
+    {
+        if (!self::hook_enabled('woocommerce_create_order')) {
+            return null;
+        }
+        $checkout = (function_exists('WC') && WC() && method_exists(WC(), 'checkout')) ? WC()->checkout() : null;
+        $order_id = apply_filters('woocommerce_create_order', null, $checkout);
+        if (!$order_id || !is_numeric($order_id)) {
+            return null;
+        }
+        $order = wc_get_order((int) $order_id);
+        if (!$order || !$order->has_status(array('pending', 'failed'))) {
+            return null;
+        }
+
+        Logger::log('Resuming order ' . $order_id . ' handed back by woocommerce_create_order.');
+        if (self::hook_enabled('woocommerce_resume_order')) {
+            do_action('woocommerce_resume_order', (int) $order_id);
+        }
+        $order->remove_order_items();
+
+        return $order;
+    }
+
+    /**
+     * Where the customer lands after a verified payment, through core's
+     * woocommerce_payment_successful_result filter so a plugin can redirect
+     * elsewhere, as it can for any other gateway.
+     *
+     * @param \WC_Order $order The order.
+     * @return string
+     */
+    private function payment_success_redirect($order)
+    {
+        $url = $order->get_checkout_order_received_url();
+        if (!self::hook_enabled('woocommerce_payment_successful_result')) {
+            return $url;
+        }
+        $result = apply_filters('woocommerce_payment_successful_result', array('result' => 'success', 'redirect' => $url), $order->get_id());
+
+        return (is_array($result) && !empty($result['redirect']) && is_string($result['redirect'])) ? $result['redirect'] : $url;
+    }
+
+    /**
      * Fire the checkout actions that populate an order.
      *
      * Called once validation has passed and before the decision is sent, which
@@ -2840,6 +3096,12 @@ class Checkout_Handler
             ));
 
             $this->with_posted_data($data, function () use ($order, $data) {
+                // Core: process_customer() runs right before create_order() -
+                // in the classic checkout only; the Store API has no equivalent.
+                if ('classic' === self::get_stashed_posted_data_source()) {
+                    $this->fire_customer_hooks($data);
+                }
+
                 if (self::hook_enabled('woocommerce_checkout_create_order')) {
                     do_action('woocommerce_checkout_create_order', $order, $data);
                     $order->save();
@@ -3000,6 +3262,17 @@ class Checkout_Handler
         }
 
         try {
+            // Same gate as WC_Checkout::create_order(): calling the method on a
+            // shop with the feature off is a wc_doing_it_wrong notice per order.
+            if (is_callable(array($order, 'has_cogs')) && !$order->has_cogs()) {
+                return;
+            }
+            if (function_exists('wc_get_container') && class_exists('\\Automattic\\WooCommerce\\Internal\\CostOfGoodsSold\\CostOfGoodsSoldController')) {
+                $controller = wc_get_container()->get('Automattic\\WooCommerce\\Internal\\CostOfGoodsSold\\CostOfGoodsSoldController');
+                if (is_callable(array($controller, 'feature_is_enabled')) && !$controller->feature_is_enabled()) {
+                    return;
+                }
+            }
             $order->calculate_cogs_total_value();
         } catch (\Throwable $e) {
             Logger::error('Could not calculate COGS for order ' . $order->get_id() . ': ' . $e->getMessage());
@@ -3209,6 +3482,10 @@ class Checkout_Handler
      */
     private function get_hook_data()
     {
+        if (null !== $this->filtered_hook_data) {
+            return $this->filtered_hook_data;
+        }
+
         $data = self::get_stashed_posted_data();
 
         if ('blocks' === self::get_stashed_posted_data_source()) {

@@ -300,7 +300,7 @@ class ManualReviewHoldTest extends TestCase
 
         $hold_pos = strpos($source, '$this->maybe_hold_for_manual_review($order, $session);');
         $pending_pos = strpos($source, "update_status('pending'");
-        $redirect_pos = strpos($source, 'wp_safe_redirect($order->get_checkout_order_received_url());');
+        $redirect_pos = strpos($source, 'wp_safe_redirect($this->payment_success_redirect($order));');
 
         $this->assertNotFalse($hold_pos);
         $this->assertNotFalse($pending_pos);

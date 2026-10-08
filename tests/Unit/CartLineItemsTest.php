@@ -52,6 +52,7 @@ class CartLineItemsTest extends TestCase
 
     public function tearDown(): void
     {
+        \Briqpay_Test_Options::reset();
         WP_Mock::tearDown();
         Mockery::close();
         parent::tearDown();
@@ -59,9 +60,9 @@ class CartLineItemsTest extends TestCase
 
     private function hooksEnabled($enabled)
     {
-        WP_Mock::userFunction('get_option', array(
-            'return' => array('checkout_hooks_enabled' => $enabled ? 'yes' : 'no', 'logging' => 'no'),
-        ));
+        // The bootstrap's get_option() reads this store; a WP_Mock userFunction
+        // cannot replace a function that already exists.
+        \Briqpay_Test_Options::$store['woocommerce_briqpay_settings'] = array('checkout_hooks_enabled' => $enabled ? 'yes' : 'no', 'logging' => 'no');
     }
 
     private function product($id, $type = 'simple', $parent = 0, $sku = '')

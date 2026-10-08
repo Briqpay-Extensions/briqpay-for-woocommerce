@@ -97,6 +97,18 @@ class CheckoutHookGateTest extends TestCase
             'woocommerce_checkout_create_order_line_item_object',
             'woocommerce_store_api_checkout_update_order_meta',
             'woocommerce_store_api_checkout_order_processed',
+            // 1.1.22: the validation, customer and order-creation hooks.
+            'woocommerce_before_checkout_process',
+            'woocommerce_checkout_process',
+            'woocommerce_checkout_posted_data',
+            'woocommerce_check_cart_items',
+            'woocommerce_after_checkout_validation',
+            'woocommerce_checkout_update_customer',
+            'woocommerce_checkout_update_user_meta',
+            'woocommerce_checkout_customer_id',
+            'woocommerce_create_order',
+            'woocommerce_resume_order',
+            'woocommerce_payment_successful_result',
         );
 
         foreach ($hooks as $hook) {

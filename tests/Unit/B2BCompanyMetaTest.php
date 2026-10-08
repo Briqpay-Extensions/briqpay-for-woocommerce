@@ -204,20 +204,36 @@ class B2BCompanyMetaTest extends TestCase
     }
 
     /**
-     * B2B is NOT active → filter is a no-op, metadata unchanged.
+     * The B2B flag only marks the B2B shortcode page. A business purchase
+     * through the ordinary checkout (company lookup on a business session)
+     * carries a company too, and it must be stored just the same (1.1.22).
      */
-    public function testSaveCompanyMetadataIsNoOpWhenB2bInactive(): void
+    public function testSaveCompanyMetadataStoresTheCompanyOfABusinessSessionWithoutTheB2bFlag(): void
     {
         $this->deactivateB2B();
 
-        $session  = $this->makeSession(['name' => 'Should Not Appear', 'cin' => '000000-0001']);
+        $session  = $this->makeSession(['name' => 'Firma Muster GmbH', 'cin' => 'FN 123456a']);
         $order    = $this->mockOrder();
-        $metadata = [];
 
-        $result = $this->b2b->save_company_metadata($metadata, $order, $session);
+        $result = $this->b2b->save_company_metadata([], $order, $session);
 
-        $this->assertArrayNotHasKey('_briqpay_company_name', $result);
-        $this->assertArrayNotHasKey('_briqpay_company_cin',  $result);
+        $this->assertSame('Firma Muster GmbH', $result['_briqpay_company_name']);
+        $this->assertSame('FN 123456a', $result['_briqpay_company_cin']);
+    }
+
+    /**
+     * Neither the flag nor a company on the session: a consumer purchase, so
+     * the filter is a no-op and the metadata is unchanged.
+     */
+    public function testSaveCompanyMetadataIsNoOpForAConsumerSessionWithoutTheB2bFlag(): void
+    {
+        $this->deactivateB2B();
+
+        $session  = $this->makeSession([]);
+        $order    = $this->mockOrder();
+
+        $result = $this->b2b->save_company_metadata([], $order, $session);
+
         $this->assertSame([], $result);
     }
 

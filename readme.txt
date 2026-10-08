@@ -5,7 +5,7 @@ Tags: payments, gateway, briqpay, ecommerce, checkout
 Requires at least: 5.8
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.1.22
+Stable tag: 1.1.23
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -96,6 +96,12 @@ The use of this service is governed by Briqpay's legal documentation:
 7. Go live and start accepting payments.
 
 == Changelog ==
+
+= 1.1.23 =
+* Added: The rest of WooCommerce's checkout hooks, fired at the moment Briqpay approves a purchase, in the order WooCommerce fires them (all behind the existing "WooCommerce checkout actions" setting): the validation hooks `woocommerce_before_checkout_process`, `woocommerce_checkout_process`, `woocommerce_check_cart_items` and `woocommerce_after_checkout_validation`, plus the `woocommerce_checkout_posted_data` filter - a plugin that refuses the purchase on any of them (by an error notice, a WP_Error or an exception) now stops it, and its message is shown to the customer in the payment window; `woocommerce_checkout_update_customer` and `woocommerce_checkout_update_user_meta`, with the logged-in customer updated from the form as WooCommerce does it; the `woocommerce_checkout_customer_id` and `woocommerce_create_order` filters (with `woocommerce_resume_order`) around order creation; and `woocommerce_payment_successful_result` on the redirect after payment. Plugins that validate on `woocommerce_checkout_process` had silently never run for Briqpay orders. The validation hooks are classic-checkout only, as in WooCommerce; account creation at checkout is not offered. The setting must be on.
+* Fix: The company name and organisation number from a business purchase were only stored on the order (_briqpay_company_name / _briqpay_company_cin) when the purchase came through the B2B checkout page. A business purchase through the ordinary checkout (company lookup on a business session) now stores them too. When a business session carries no organisation number at all, the plugin logs an error naming the session, the country and what the company block did contain, so a missing number can be traced without verbose logging.
+* New: The Briqpay checkout fields - reference, customer order number, invoice email, GLN, and every other field the shop's Briqpay checkout has ever delivered - are now shown and editable on the order edit screen, next to the organisation number, and follow the payment method dropdown so they are there the moment Briqpay is chosen on an order built by hand. Values are saved into the same order meta the checkout writes (_briqpay_payment_field_<name> and so on), so exports and integrations read a manual order like a checkout order, and the invoice fields are sent on to Briqpay with a business hosted payment page. The briqpay_admin_order_fields filter adjusts the list.
+* Fix: On shops where WooCommerce's Cost of Goods Sold feature is off, every Briqpay order logged a "calculate_cogs_total_value was called incorrectly" notice under WP_DEBUG. The recalculation is now gated the way WooCommerce's own checkout gates it.
 
 = 1.1.22 =
 * Fix: Product add-ons and other per-item data from plugins were missing from orders the plugin created. When Briqpay approves a purchase the plugin builds the order itself, and its line items lacked the cart data that WooCommerce's own checkout attaches ($item->legacy_values and legacy_cart_item_key). Plugins that read that data while the line item is created - Product Add-Ons Ultimate (chosen add-ons), Discount Rules for WooCommerce (per-item rule details) and others - therefore saved nothing. Line items now carry it exactly as WooCommerce's checkout sets it. Orders created before this update cannot be repaired by the plugin, because the cart they came from no longer exists.
